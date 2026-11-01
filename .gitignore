@@ -1,0 +1,10 @@
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# 로컬 작업 파일(에이전트 작업 기록, 개인 Claude Code 설정)
+.superpowers/
+.claude/settings.local.json

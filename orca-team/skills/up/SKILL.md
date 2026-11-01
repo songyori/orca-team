@@ -1,0 +1,16 @@
+---
+name: up
+description: >
+  orca-team 프로젝트에서 세션을 다시 열었을 때 코디네이터와 메시지 watcher 를 되살린다.
+  트리거: "/orca-team:up", SessionStart 안내.
+---
+
+# /orca-team:up
+
+이 세션은 메인이다.
+
+1. `.orchestration/bin/orch status` 를 실행한다.
+2. `coordinator.alive` 가 true 가 아니면 `.orchestration/bin/orch up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다(Run 생성을 최대 180초 기다리므로 기본 2분 제한에 걸리지 않게 한다).
+3. `watch_alive` 가 false 면 Bash `run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. `unread_outbox` 가 0 보다 크면 watch 가 바로 끝나며 밀린 메시지를 준다.
+4. `open_questions`(답하지 않은 질문)가 비어 있지 않으면 `.orchestration/bin/orch reask` 를 실행한다. 출력은 watch 와 같은 형식의 메시지 배열이다. CLAUDE.md 의 "질문 표시 규칙"대로 하나씩 묻고 답을 `.orchestration/bin/orch answer <id> "<답>"` 으로 돌려준다. reask 는 watch 가 이미 전한 질문만 다시 준다. 아직 전하지 않은 질문은 watch 가 준다.
+5. 보고한다: 코디네이터 상태, 진행 중 태스크(id, 직무, 상태, 라운드) 표.

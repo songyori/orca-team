@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""가짜 codex. doctor 점검용. FAKE_CODEX_IMAGE_GENERATION(기본 true, absent 면 항목 없음)이 features list 의 값이다."""
+import os
+import sys
+
+if sys.argv[1:3] == ["login", "status"]:
+    print("Logged in using ChatGPT")
+    sys.exit(0)
+if sys.argv[1:3] == ["features", "list"]:
+    print("hooks                              stable             true")
+    image = os.environ.get("FAKE_CODEX_IMAGE_GENERATION", "true")
+    if image != "absent":
+        print(f"image_generation                   stable             {image}")
+    sys.exit(0)
+print("codex-cli 0.0.0-fake")

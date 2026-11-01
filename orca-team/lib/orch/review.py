@@ -1,0 +1,297 @@
+"""리뷰: 커밋·소유 경로 사전 검사 → 내장 Codex 래퍼(scripts/codex-run.sh)로 Codex 리뷰 → 판정 기록·커밋."""
+from __future__ import annotations
+
+import hashlib
+import os
+import re
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+from . import orca, plan
+from .config import Config
+from .globs import matches_any
+from .lint import DESIGN_ROLES, design_lint
+from .paths import TEMPLATES, OrchError, Project, codex_runner
+from .tasks import ACTIVE, TaskDoc, all_states, load_doc, must_state, owns_of, review_pid, save_state
+from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
+
+VERDICT_RE = re.compile(r"^VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$", re.M)
+BASE_EXCLUDE = [".orchestration/**", "docs/reviews/**"]
+
+
+def commit_paths(root: Path, sha: str) -> list[str]:
+    out = git(root, "diff-tree", "--no-commit-id", "--name-only", "--no-renames", "-r", "-z", "--root", sha)
+    return [name for name in out.split("\0") if name]
+
+
+def task_commits(root: Path, task_id: str, base: str) -> list[tuple[str, str]]:
+    """base 이후 `[T-xxx]` 작업 커밋. orch 가 만든 spec·review 커밋은 제목과 건드린 경로가 모두 맞을 때만 뺀다."""
+    tid = re.escape(task_id)
+    spec_re = re.compile(rf"^\[{tid}\] spec: ")
+    review_re = re.compile(rf"^\[{tid}\] review r\d+: (APPROVE|REQUEST_CHANGES)$")
+    commits = []
+    for line in git(root, "log", "--reverse", "--format=%H%x09%s", f"{base}..HEAD").splitlines():
+        sha, _, subject = line.partition("\t")
+        if not subject.startswith(f"[{task_id}]"):
+            continue
+        if spec_re.match(subject) and all(matches_any(f, [".orchestration/**"]) for f in commit_paths(root, sha)):
+            continue
+        if review_re.match(subject) and all(matches_any(f, [f"docs/reviews/{task_id}/**"]) for f in commit_paths(root, sha)):
+            continue
+        commits.append((sha, subject))
+    return commits
+
+
+def changed_files(root: Path, shas: list[str]) -> list[str]:
+    files = set()
+    for sha in shas:
+        files.update(commit_paths(root, sha))
+    return sorted(files)
+
+
+def violations(files: list[str], owns: list[str], task_id: str) -> list[str]:
+    allowed = [*owns, f"docs/tasks/{task_id}/**"]
+    return [f for f in files if not matches_any(f, allowed)]
+
+
+def worktree_status(root: Path, untracked: bool = True) -> tuple[dict[str, str], set[str]]:
+    """(추적 파일 변경 경로 → XY, 추적 안 된 파일 경로). 이름 바꾸기는 지움과 추가로 본다(--no-renames)."""
+    entries = git(root, "status", "--porcelain=v1", "-z", "--no-renames",
+                  f"--untracked-files={'all' if untracked else 'no'}").split("\0")
+    tracked, new, i = {}, set(), 0
+    while i < len(entries):
+        entry = entries[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        status, path = entry[:2], entry[3:]
+        if status[0] in "RC":  # --no-renames 라 나오지 않지만 원래 경로 항목을 건너뛴다
+            i += 1
+        if status == "??":
+            new.add(path)
+        else:
+            tracked[path] = status
+    return tracked, new
+
+
+def content_hash(target: Path) -> str:
+    """파일 내용 해시. 없으면 "-", 읽을 수 없으면(동시에 쓰거나 지우는 중) "?"."""
+    try:
+        return hashlib.sha1(target.read_bytes()).hexdigest() if target.is_file() else "-"
+    except OSError:
+        return "?"
+
+
+def snapshot(root: Path, exclude: list[str]) -> tuple[dict[str, str], set[str]]:
+    """(exclude 밖 추적 파일 변경의 내용 해시, 추적 안 된 파일 전체). 추적 안 된 파일은 호출한 쪽이 거른다."""
+    tracked, untracked = worktree_status(root)
+    hashes = {path: content_hash(root / path) for path in tracked if not matches_any(path, exclude)}
+    return hashes, untracked
+
+
+def uncommitted_owned(root: Path, owns: list[str], task_id: str) -> list[str]:
+    """이 태스크 경로(소유 경로와 리포트)에서 커밋하지 않은 추적 파일 변경."""
+    tracked, _ = worktree_status(root, untracked=False)
+    allowed = [*owns, f"docs/tasks/{task_id}/**"]
+    return sorted(path for path in tracked if matches_any(path, allowed))
+
+
+def read_verdict(path: Path) -> str | None:
+    if not path.is_file():
+        return None
+    found = VERDICT_RE.findall(path.read_text(encoding="utf-8"))
+    return found[-1] if found else None
+
+
+def run_dir_for(p: Project, task_id: str, rnd: int, attempt: int) -> Path:
+    base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    path = base / "orca-team" / "runs" / p.root.name / f"{task_id}-r{rnd}-{stamp}-a{attempt}"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def design_section(p: Project, cfg: Config, role: str, files: list[str]) -> str:
+    """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 다음 절과 사이의 빈 줄까지
+    붙여 돌려준다(review-prompt.md 의 자리표시가 다음 절 제목 바로 앞에 있다). 다른 직무와, director 직무가 없는
+    이전 버전(0.3.0) 프로젝트는 빈 문자열."""
+    if role not in DESIGN_ROLES or plan.DIRECTOR_ROLE not in cfg.roles:
+        return ""
+    found = design_lint(p.root, files)
+    listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
+    return render((TEMPLATES / "review-design.md").read_text(encoding="utf-8"), {"design_lint": listing}) + "\n"
+
+
+def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
+                   commits: list[tuple[str, str]], files: list[str]) -> str:
+    prior = [f"docs/reviews/{doc.id}/r{n}.md" for n in range(1, rnd)
+             if (p.root / f"docs/reviews/{doc.id}/r{n}.md").is_file()]
+    return render((TEMPLATES / "review-prompt.md").read_text(encoding="utf-8"), {
+        "task_id": doc.id, "round": rnd, "role": doc.role, "role_title": cfg.title(doc.role), "title": doc.title,
+        "review_path": review_rel, "prior_reviews": ", ".join(prior) or "없음",
+        "commits": "\n".join(f"- {sha[:10]} {subject}" for sha, subject in commits),
+        "files": "\n".join(f"- {f}" for f in files),
+        "design_section": design_section(p, cfg, doc.role, files)})
+
+
+def review_exclusions(p: Project, task_id: str) -> list[str]:
+    exclude = list(BASE_EXCLUDE)
+    for st in all_states(p):
+        if st["id"] != task_id and st.get("status") in ACTIVE:
+            exclude += [*st.get("owns", []), f"docs/tasks/{st['id']}/**"]
+    return exclude
+
+
+def codex_review(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
+                 prompt: str) -> tuple[str, list[str]]:
+    """(판정, 리뷰 중 새로 생긴 추적 안 된 파일). 추적 파일 내용 변경이나 HEAD 이동이 있으면 판정 무효(OrchError)."""
+    launch = cfg.codex(doc.role, doc.front)
+    runner = codex_runner()
+    review_file = p.root / review_rel
+    exclude_start = review_exclusions(p, doc.id)
+    last_dir, untracked_new = None, set()
+    for attempt in (1, 2):
+        review_file.unlink(missing_ok=True)
+        before, untracked_before = snapshot(p.root, exclude_start)
+        head_before = git(p.root, "rev-parse", "HEAD").strip()
+        run_dir = last_dir = run_dir_for(p, doc.id, rnd, attempt)
+        (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+        try:
+            proc = subprocess.run([str(runner), "--profile", "run", "--cwd", str(p.root),
+                                   "--prompt-file", str(run_dir / "prompt.txt"), "--run-dir", str(run_dir),
+                                   "--model", launch.model, "--effort", launch.effort, "--bypass-hook-trust"],
+                                  capture_output=True, text=True)
+        except OSError as exc:
+            raise OrchError(f"Codex 래퍼를 실행하지 못했다({runner}): {exc}", 12) from exc
+        if proc.returncode in (2, 12):
+            raise OrchError(f"Codex 래퍼 실행 불가(exit {proc.returncode}): {(proc.stdout + proc.stderr)[-600:]}",
+                            12 if proc.returncode == 12 else 1)
+        # 리뷰 도중 시작된 태스크의 소유 경로도 뺀다(시작 전·후 진행 태스크의 합집합).
+        exclude = exclude_start + review_exclusions(p, doc.id)
+        after, untracked_after = snapshot(p.root, exclude)
+        head_after = git(p.root, "rev-parse", "HEAD").strip()
+        if head_after != head_before:
+            ff = git_ok(p.root, "merge-base", "--is-ancestor", head_before, head_after)
+            moved = []
+            if ff:
+                log = git(p.root, "log", "--format=", "--name-only", "--no-renames", "-z",
+                          f"{head_before}..{head_after}")
+                net = git(p.root, "diff", "--name-only", "--no-renames", "-z", head_before, head_after)
+                names = {n.strip("\n") for n in (log + "\0" + net).split("\0")}
+                moved = sorted(n for n in names if n and not matches_any(n, exclude))
+            if not ff or moved:
+                why = "되돌리기/재작성(fast-forward 아님)" if not ff else f"허용 밖 경로 커밋: {', '.join(moved)}"
+                raise OrchError(f"Codex 가 리뷰 중 HEAD 를 바꿨다({head_before[:10]} -> {head_after[:10]}): {why}. "
+                                f"판정 무효. 변경은 그대로 두고 orch notify --type question 으로 메인에 올린다. "
+                                f"run-dir: {run_dir}")
+        touched = sorted(path for path in set(before) | set(after)
+                         if before.get(path) != after.get(path) and not matches_any(path, exclude))
+        if touched:
+            raise OrchError(f"Codex 가 리뷰 중 추적 파일을 바꿨다: {', '.join(touched)}. 판정 무효. 변경은 그대로 두고 "
+                            f"orch notify --type question 으로 메인에 올린다. run-dir: {run_dir}")
+        # 테스트·빌드 산출물(__pycache__, dist 등)은 판정을 무효로 하지 않고 경고로만 남긴다.
+        untracked_new |= {path for path in untracked_after - untracked_before if not matches_any(path, exclude)}
+        status = read_json(run_dir / "status.json", {})
+        if status.get("terminal_event") == "turn.completed":
+            verdict = read_verdict(review_file)
+            if verdict:
+                return verdict, sorted(untracked_new)
+    raise OrchError(f"Codex 리뷰가 2회 모두 판정을 내지 못했다. run-dir: {last_dir}. "
+                    "orch notify --type question 으로 메인에 올린다")
+
+
+def auto_review(p: Project, review_rel: str, task_id: str, rnd: int, reason: str) -> str:
+    path = p.root / review_rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# {task_id} r{rnd} 리뷰 (orch 사전 검사)\n\n{reason}\n\nVERDICT: REQUEST_CHANGES\n",
+                    encoding="utf-8")
+    return "REQUEST_CHANGES"
+
+
+def plan_problem(p: Project, cfg: Config, files: list[str]) -> str | None:
+    """이 태스크 커밋이 tasks.toml 을 바꿨으면 plan apply 와 같은 규칙으로 검증하고, 어긴 곳이 있으면 그 설명을 돌려준다.
+
+    accept 뒤(done)에는 fix 로 기획 태스크를 되돌릴 수 없으므로 리뷰에서 먼저 잡는다."""
+    if plan.PLAN_FILE not in files:
+        return None
+    try:
+        plan.check(p, cfg, append=bool(plan.load_plan_state(p)["tasks"]))
+    except OrchError as exc:
+        return str(exc)
+    return None
+
+
+def review(p: Project, cfg: Config, task_id: str) -> dict:
+    """리뷰는 태스크마다 하나만 돈다(review.pid). reviewing 이 남았는데 리뷰 프로세스가 없으면 다시 리뷰한다."""
+    require_coordinator(p)
+    doc = load_doc(p, cfg, task_id)
+    pid = review_pid(p, task_id)
+    acquire_pid(pid, f"orch review {task_id}")
+    try:
+        return run_review(p, cfg, doc)
+    finally:
+        release_pid(pid)
+
+
+def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
+    task_id = doc.id
+    st = must_state(p, task_id)
+    if st.get("status") not in ("working", "reviewing"):
+        raise OrchError(f"{task_id}: 리뷰는 워커가 끝난 working 상태(또는 리뷰가 끊긴 reviewing)에서만 한다"
+                        f"(status={st.get('status')})", 2)
+    rnd, owns = st["round"], owns_of(doc, cfg)
+    review_rel = f"docs/reviews/{task_id}/r{rnd}.md"
+    if st.get("dispatch_id"):
+        try:  # 보존 요청은 최선 노력이다. orca 가 없을 때(12)만 멈춘다.
+            orca.call(["orchestration", "worker-retain", "--dispatch", st["dispatch_id"]], check=False)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+    st["status"] = "reviewing"
+    save_state(p, st)
+    untracked: list[str] = []
+    try:
+        commits = task_commits(p.root, task_id, st["base"])
+        files = changed_files(p.root, [sha for sha, _ in commits])
+        bad = violations(files, owns, task_id)
+        if not commits:
+            reason = f"`[{task_id}]` 로 시작하는 작업 커밋이 base({st['base'][:10]}) 이후에 없다."
+            verdict, source = auto_review(p, review_rel, task_id, rnd, reason), "orch"
+        elif bad:
+            reason = (f"소유 경로 밖 파일을 커밋했다(허용: {', '.join(owns)}, docs/tasks/{task_id}/**):\n"
+                      + "\n".join(f"- {f}" for f in bad))
+            verdict, source = auto_review(p, review_rel, task_id, rnd, reason), "orch"
+        else:
+            dirty = uncommitted_owned(p.root, owns, task_id)
+            if dirty:
+                raise OrchError(f"{task_id}: 소유 경로에 커밋하지 않은 변경이 있다: {', '.join(dirty)}. 리뷰는 커밋만 본다. "
+                                f"워커가 먼저 커밋해야 한다. `orch fix {task_id} --note \"커밋 안 된 변경을 커밋\"` 으로 "
+                                "되돌려 보낸다", 2)
+            problem = plan_problem(p, cfg, files)
+            if problem:
+                reason = f"`{plan.PLAN_FILE}` 가 orch plan apply 검증을 통과하지 못한다:\n{problem}"
+                verdict, source = auto_review(p, review_rel, task_id, rnd, reason), "orch"
+            else:
+                prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files)
+                (verdict, untracked), source = codex_review(p, cfg, doc, rnd, review_rel, prompt), "codex"
+        message = f"[{task_id}] review r{rnd}: {verdict}"
+        if untracked:
+            message += ("\n\n리뷰 중 새로 생긴 추적 안 된 파일(판정에는 영향 없음):\n"
+                        + "\n".join(f"- {f}" for f in untracked))
+        git_commit_paths(p.root, [review_rel], message)
+    except BaseException as exc:
+        st["status"] = "working"
+        save_state(p, st)
+        if isinstance(exc, (OSError, UnicodeDecodeError)):
+            raise OrchError(f"리뷰 중 입출력 오류: {exc}") from exc
+        raise
+    st.setdefault("verdicts", {})[str(rnd)] = verdict
+    st["status"] = "approved" if verdict == "APPROVE" else "changes"
+    entry = {"stage": "review", "round": rnd, "at": now(), "verdict": verdict, "source": source}
+    result = {"id": task_id, "round": rnd, "verdict": verdict, "source": source, "review": review_rel}
+    if untracked:
+        entry["untracked"] = result["untracked"] = untracked
+    st["history"].append(entry)
+    save_state(p, st)
+    return result
