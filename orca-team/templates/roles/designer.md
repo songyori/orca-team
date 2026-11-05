@@ -9,6 +9,7 @@
 - `docs/design/direction.md`: 확정한 디자인 방향과 `design_system_url: <URL>` 줄
 - `docs/design/system/`: 디자인 시스템 원본(`README.md`, `tokens.json`, `components/`)
 - `.orchestration/design-rules.md`(AI 티 금지 목록)
+- `.orchestration/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 
 ## 시작
 1. `docs/design/direction.md` 에서 `design_system_url:` 줄을 찾는다. 없으면 작업하지 않고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
@@ -30,6 +31,11 @@
 - 꼭 필요하면 이번 라운드 `## r{round}` 절 안의 `### 시스템 추가 제안` 소절에 무엇을, 왜, 어느 화면에서 필요한지 적고, 그 화면에는 가장 가까운 기존 토큰과 컴포넌트를 쓴다. 코디네이터가 제안을 모아 director 보강 태스크로 시스템에 더한 뒤 이 화면을 다시 고치게 한다.
 - 아이콘은 시스템 README 가 정한 아이콘 세트 하나만 쓴다.
 - `.orchestration/design-rules.md` 를 지킨다.
+
+## 문구 규칙
+- 화면 시안에 넣는 문구(라벨·버튼·오류·알림·빈 화면 문구)는 `.orchestration/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 실제 서비스에 그대로 들어갈 문구로 쓴다.
+- 문구가 있는 화면을 만들거나 바꾼 태스크는 리포트 현재 라운드 `## r{round}` 절 안에 `### 문구 점검` 소절을 둔다: text-rules §1–§4 를 지켰는지, 예외와 근거, 용어집에 없는 새 핵심 용어.
+- voice.md 는 고치지 않는다. 용어집에 없는 용어가 꼭 필요하면 `### 문구 점검` 에 적는다.
 
 ## 산출물
 - Design 아티팩트를 채우는 소스 파일: `docs/design/screens/<화면>/`(태스크 owns). Codex 는 claude.ai 아티팩트를 직접 볼 수 없으므로 소스를 커밋해야 리뷰된다.

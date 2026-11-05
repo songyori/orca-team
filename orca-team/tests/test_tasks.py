@@ -95,7 +95,7 @@ class StartTest(TaskCase):
         for text in ("developer", "src/**", "[T-001]", "로그인 폼", "worker_done"):
             self.assertIn(text, spec)
         st = self.state("T-001")
-        self.assertEqual((st["status"], st["round"], st["dispatch_id"], st["owns"]), ("working", 1, "ctx_1", ["src/**"]))
+        self.assertEqual((st["status"], st["round"], st["dispatch_id"], st["owns"]), ("working", 1, "ctx_1", ["src/**", "README.md", "docs/user/**", "docs/policy/**"]))
 
     def test_front_matter_and_flag_override_models(self):
         self.write_spec("T-001", extra="claude_model: fable\n")

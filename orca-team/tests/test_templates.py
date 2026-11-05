@@ -165,11 +165,12 @@ class TemplateTest(unittest.TestCase):
                     "exit 3", "AskUserQuestion", "한 번에 한 질문", "예시, 추천, 추천 사유", "자동 결정", "확정 (추천)",
                     "수정할 부분 있음", "docs/planning/spec.md", "docs/planning/contracts.md",
                     "docs/planning/tasks.toml", "docs/planning/interview.md", "depends_on", "질문 수에는 상한이 없다",
-                    "`context`", "4000자 이하"):
+                    "`context`", "4000자 이하", "docs/planning/voice.md", "산출물 다섯 개"):
             self.assertIn(key, text)
         for item in ("목적과 성공 기준", "사용자와 사용 맥락", "기능 범위", "사용자 흐름", "화면 목록", "데이터와 상태",
                      "예외와 오류 처리", "비기능(성능, 접근성, 보안, 지원 환경)", "기술 스택과 실행 환경",
-                     "인터페이스 약속(API, 데이터 형태, 모듈 경계)", "브랜드 자산(로고, 색, 글꼴)과 사용자가 아는 레퍼런스. 없으면 없다고 적는다", "범위 밖"):
+                     "인터페이스 약속(API, 데이터 형태, 모듈 경계)", "브랜드 자산(로고, 색, 글꼴)과 사용자가 아는 레퍼런스. 없으면 없다고 적는다",
+                     "문구 기준(서비스 문구·정책 문서·사용자 문서의 문체, 사용자 호칭, 버튼·메뉴 라벨 형태, 핵심 용어 표기)", "범위 밖"):
             self.assertIn(f"- {item}\n", text)
 
     def test_question_docs_say_render_adds_example_prefix(self):
@@ -326,6 +327,32 @@ class TemplateTest(unittest.TestCase):
                     "docs/superpowers/plans/2026-10-31-orca-team-design-director.md",
                     "owns 가 모두 `assets/` 아래인 에셋 전용 designer"):
             self.assertIn(key, text)
+
+    def test_planner_writes_voice_doc(self):
+        text = (T / "roles" / "planner.md").read_text(encoding="utf-8")
+        for key in ("# 문구 기준", "## 용어집", "| 쓰는 표기 | 쓰지 않는 표기 | 메모 |", "서비스 문구: 해요체",
+                    "정책 문서: 하십시오체", "사용자 문서: 해요체", "용어집 표", "`docs/policy/**`", "`docs/user/**`",
+                    "`README.md`"):
+            self.assertIn(key, text)
+
+    def test_writers_follow_text_rules(self):
+        for name in ("designer", "developer"):
+            with self.subTest(role=name):
+                text = (T / "roles" / f"{name}.md").read_text(encoding="utf-8")
+                for key in ("## 문구 규칙", ".orchestration/text-rules.md", "docs/planning/voice.md",
+                            "`### 문구 점검`", "voice.md 는 고치지 않는다"):
+                    self.assertIn(key, text)
+
+    def test_developer_owns_user_and_policy_docs(self):
+        cfg = tomllib.loads((T / "config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["roles"]["developer"]["owns"], ["src/**", "README.md", "docs/user/**", "docs/policy/**"])
+
+    def test_locations_name_text_rules(self):
+        claude = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        for key in ("`.orchestration/text-rules.md`", "voice.md"):
+            self.assertIn(key, claude)
+        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
+        self.assertIn("`docs/planning/voice.md`", coordinator)
 
     def test_spec_section_13_design_director(self):
         text = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")

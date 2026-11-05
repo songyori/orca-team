@@ -29,7 +29,7 @@
 |---|---|
 | subject `[main] reply out-NNNN` | 네가 올린 question·approval 에 대한 사용자 답. 디자인 승인 답이면 아래 "디자인 일괄 승인", 워커 ask 였으면 `orca orchestration reply --id <워커 메시지 id> --body "<답>"`, 그 밖에는 기다리던 일에 반영한다 |
 | subject `[main] ...` | 사용자 요청. 아래 "요청 처리" |
-| question (워커 ask) | 먼저 `docs/planning/spec.md`, `docs/planning/contracts.md`, `docs/planning/interview.md` 와 spec·직무 정의·project.md 로 답한다: `orca orchestration reply --id <id> --body "<답>"`. 문서가 다루지 않는 제품 결정이 필요하거나 문서끼리 모순될 때만 아래 "사용자에게 묻기"대로 `orch notify --type question --json -` 하고, 답이 오면 reply 한다 |
+| question (워커 ask) | 먼저 `docs/planning/spec.md`, `docs/planning/contracts.md`, `docs/planning/interview.md`, `docs/planning/voice.md` 와 spec·직무 정의·project.md 로 답한다: `orca orchestration reply --id <id> --body "<답>"`. 문서가 다루지 않는 제품 결정이 필요하거나 문서끼리 모순될 때만 아래 "사용자에게 묻기"대로 `orch notify --type question --json -` 하고, 답이 오면 reply 한다 |
 | worker_done (outcome succeeded) | `orch review T-xxx` 를 Bash `run_in_background: true` 로 실행 |
 | worker_done (outcome failed) | 리포트를 읽고 `orch fix T-xxx --note "<원인과 지시>"` 한 뒤 `orch start-ready`. 지시로 풀 수 없으면 `orch notify --type question --json -` |
 | escalation | 내용을 정리해 `orch notify --type question --json -` |
@@ -109,7 +109,7 @@ EOF
 drop 한 태스크는 다시 시작하지 않는다. 다시 하려면 `orch task new` 로 새 태스크를 만든다.
 
 ## 직무 선택
-- planner: 사용자 인터뷰(`orch ask-user`), 기획(`docs/planning/spec.md`), 인터페이스 약속(`docs/planning/contracts.md`), 태스크 그래프(`docs/planning/tasks.toml`)
+- planner: 사용자 인터뷰(`orch ask-user`), 기획(`docs/planning/spec.md`), 인터페이스 약속(`docs/planning/contracts.md`), 태스크 그래프(`docs/planning/tasks.toml`), 문구 기준(`docs/planning/voice.md`)
 - director: 디자인 방향. 레퍼런스 보드, 톤 시안, 디자인 시스템(Claude Design)을 `orch ask-user` 로 사용자에게 직접 확인받는다. 기획 뒤 화면 디자인보다 먼저 돈다. 디자인 시스템 보강 태스크도 맡는다
 - designer: 앱·웹 화면 디자인(Claude Design, 프로젝트 디자인 시스템 적용), 래스터 에셋(/orca-team:image)
 - developer: 구현

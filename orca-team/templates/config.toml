@@ -54,7 +54,7 @@ claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6-astra"
 codex_effort = "xhigh"
-owns = ["src/**"]
+owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]
 
 [roles.tester]
 title = "테스트"

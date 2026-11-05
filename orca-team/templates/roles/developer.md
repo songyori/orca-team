@@ -9,12 +9,18 @@
 - `docs/design/screens/`(화면 디자인의 Claude Design 소스). Design 아티팩트 URL 은 디자인 태스크 리포트 `docs/tasks/T-xxx/report.md` 에 있다. Artifact 도구 `read` 로 열어 본다.
 - `assets/`
 - `.orchestration/design-rules.md`(AI 티 금지 목록. UI 작업에 적용한다)
+- `.orchestration/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 
 ## UI 작업 규칙
 - UI 기반 태스크: `docs/design/system/tokens.json` 을 프로젝트의 CSS 변수나 프레임워크 테마로 옮기고, 시스템 컴포넌트(README 와 `components/`)를 공통 컴포넌트로 만든다. 토큰 이름은 시스템 이름을 그대로 쓴다.
 - 화면 구현 태스크: 토큰과 공통 컴포넌트만 쓴다. 색, 글꼴 크기, 간격, 모서리, 그림자 값을 코드에 직접 쓰지 않는다. 필요한 토큰이나 컴포넌트가 없으면 만들지 말고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
 - 아이콘은 디자인 시스템이 정한 아이콘 세트만 쓴다.
 - `.orchestration/design-rules.md` 를 지킨다. UI 를 바꾼 태스크의 리포트의 현재 라운드 `## r{round}` 절 안에 `### 금지 목록 점검` 소절(항목마다 지켰는지, 예외와 근거)을 둔다.
+
+## 문구 규칙
+- 서비스 문구(UI 라벨·버튼·오류·알림, i18n 파일), 정책 문서(`docs/policy/`), 사용자 문서(`README.md`, `docs/user/`)를 쓰거나 바꾸면 `.orchestration/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 디자인 시안의 문구가 있으면 그대로 옮긴다.
+- 그런 태스크의 리포트 현재 라운드 `## r{round}` 절 안에 `### 문구 점검` 소절을 둔다: text-rules §1–§4 를 지켰는지, 예외와 근거, 용어집에 없는 새 핵심 용어.
+- voice.md 는 고치지 않는다. 용어집에 없는 용어가 꼭 필요하면 `### 문구 점검` 에 적는다.
 
 ## 산출물
 - 소유 경로의 코드

@@ -30,7 +30,8 @@
 
 ### 위치
 - 설정: `.orchestration/config.toml`(직무별 모델·effort·소유 경로, `max_parallel`, `user_approval_roles`)
-- 기획: `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md)
+- 기획: `docs/planning/`(spec.md, contracts.md, tasks.toml, interview.md, voice.md)
+- 문구: `.orchestration/text-rules.md`(작성·리뷰 공통 규칙), `docs/planning/voice.md`(planner 가 정한 문체·호칭·라벨·용어집)
 - 태스크 spec: `.orchestration/tasks/`, 워커 리포트: `docs/tasks/`, Codex 리뷰: `docs/reviews/`
 - 디자인 방향·시스템: `docs/design/direction.md`(`design_system_url:` 줄), `docs/design/system/`(director 가 Claude Design 으로 만든다)
 - 디자인: 앱·웹 화면은 Claude Design(소스 `docs/design/`), 래스터 에셋은 Codex `/orca-team:image`(`assets/`)

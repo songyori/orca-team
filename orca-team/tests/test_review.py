@@ -62,10 +62,10 @@ class ReviewTest(ReviewCase):
         self.assertEqual(self.runner_calls(), [])
 
     def test_ownership_violation_is_auto_request_changes(self):
-        self.commit_work("README.md", "[T-001] docs: readme")
+        self.commit_work("NOTES.md", "[T-001] docs: readme")
         out = json.loads(self.review().stdout)
         self.assertEqual((out["verdict"], out["source"]), ("REQUEST_CHANGES", "orch"))
-        self.assertIn("README.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
+        self.assertIn("NOTES.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
         self.assertEqual(self.runner_calls(), [])
 
     def test_report_path_is_always_allowed(self):
@@ -156,10 +156,10 @@ class ReviewTest(ReviewCase):
         self.assertNotIn("\\354", prompt)
 
     def test_lookalike_subject_is_not_skipped(self):
-        self.commit_work("README.md", "[T-001] specialize parser")
+        self.commit_work("NOTES.md", "[T-001] specialize parser")
         out = json.loads(self.review().stdout)
         self.assertEqual((out["verdict"], out["source"]), ("REQUEST_CHANGES", "orch"))
-        self.assertIn("README.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
+        self.assertIn("NOTES.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
 
     def test_codex_commit_invalidates_verdict(self):
         self.commit_work()
@@ -193,10 +193,10 @@ class ReviewTest(ReviewCase):
         self.assertEqual(self.state("T-001")["status"], "working")
 
     def test_spec_subject_with_product_file_is_checked(self):
-        self.commit_work("README.md", "[T-001] spec: x")
+        self.commit_work("NOTES.md", "[T-001] spec: x")
         out = json.loads(self.review().stdout)
         self.assertEqual((out["verdict"], out["source"]), ("REQUEST_CHANGES", "orch"))
-        self.assertIn("README.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
+        self.assertIn("NOTES.md", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
 
     def test_review_requires_working_state(self):
         self.set_state("T-001", status="approved")
@@ -265,9 +265,9 @@ class ReviewTamperTest(ReviewCase):
         self.assertEqual(self.state("T-001")["status"], "working")
 
     def test_uncommitted_change_outside_owns_does_not_block(self):
-        self.commit_work("README.md", "chore: readme")
+        self.commit_work("NOTES.md", "chore: readme")
         self.commit_work()
-        (self.root / "README.md").write_text("사용자가 고치는 중\n", encoding="utf-8")
+        (self.root / "NOTES.md").write_text("사용자가 고치는 중\n", encoding="utf-8")
         self.modes("approve")
         self.assertEqual(json.loads(self.review().stdout)["verdict"], "APPROVE")
 
