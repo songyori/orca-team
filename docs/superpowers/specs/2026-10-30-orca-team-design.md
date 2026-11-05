@@ -459,3 +459,13 @@ E2E 반영 (Orca 1.4.240)
 - design-review 링크는 리포트의 마지막 claude.ai 아티팩트 주소에서 `docs/design/direction.md` 의 `design_system_url` 을 뺀 것이다(실환경 확인에서 화면 링크가 모두 시스템 링크로 나온 결함을 고쳤다).
 - 0.4.1: `orch fix --supplement T-yyy` 는 디자인 시스템 보강(status done 인 director 태스크)을 반영하는 fix 다. 이력에 `supplement` 를 남기고 awaiting_user 에서 해도 `user_requested` 를 남기지 않는다. 없는 ID, director 가 아니거나 done 이 아닌 태스크, `--retry` 와 함께 쓰기는 exit 2 다.
 - 0.4.1: 에셋 전용 designer 태스크(owns 가 모두 `assets/` 아래. owns 가 없으면 config 기본 owns 로 판단)는 `director_problems` 에서 뺀다. director 에 의존하지 않아도 되고, 화면 designer 와 섞이면 화면 designer 만 지적한다.
+
+### 문구 규칙 (2026-11-05, 0.5.0)
+
+설계: `2026-11-05-orca-team-text-rules-design.md`. 구현에서 정한 것:
+- `textlint.text_lint` 는 태스크 커밋마다 `git show -U0` 의 hunk 안 `+` 줄을 모으고, 내용이 같은 현재 줄만 본다. 파일 머리(`+++`)는 hunk 밖이라 빠지고 `++` 로 시작하는 내용 줄은 남는다. 오탈자 정규식은 긴 표기부터 맞춰 "안되요" 를 "되요" 로 두 번 세지 않는다.
+- 설계 §8.3 에 더해 이중피동은 "되어졌"(과거형), 쉼표는 "해서," 도 잡는다.
+- 높임법 섞임은 줄 끝 한글 낱말(뒤에 따옴표·`<`·`|`·줄 끝만 오는)로 판정한다. "필요·중요·개요·주요·수요" 로 끝나는 낱말은 해요체로 보지 않는다. 두 종결체 줄 수가 같으면 하십시오체 쪽 줄을 적는다.
+- 리뷰 프롬프트 자리는 `{design_section}{text_section}` 순서다. 문구 절은 직무와 무관하게 `.orchestration/text-rules.md` 가 있고 한글이 든 텍스트 대상 파일이 바뀌었을 때만 붙는다. 디자인 절의 "orch 자동 검사" 와 구분하려고 "orch 문구 자동 검사" 라고 부른다.
+- 기본 config 의 developer owns 에 `README.md`, `docs/user/**`, `docs/policy/**` 를 더해, owns 밖 커밋을 확인하던 리뷰 테스트는 `NOTES.md` 를 쓴다.
+- 업그레이드는 README 가 파일 복사로 안내한다. 설계 §9 의 init 재실행과 결과가 같다(scaffold 는 없는 파일만 만든다).

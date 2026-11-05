@@ -361,6 +361,23 @@ class TemplateTest(unittest.TestCase):
                     "review-design.md", "--append", "`orch fix --supplement T-yyy`", "에셋 전용 designer", "oklch()"):
             self.assertIn(key, section)
 
+    def test_readme_documents_text_rules(self):
+        text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        for key in ("## 문구 규칙", ".orchestration/text-rules.md", "docs/planning/voice.md", "### 문구 점검",
+                    "https://github.com/epoko77-ai/im-not-ai", "https://github.com/amondnet/yoonmoon",
+                    "0.4.x 로 만든 프로젝트는", "orca-team/templates/text-rules.md",
+                    "docs/superpowers/specs/2026-11-05-orca-team-text-rules-design.md",
+                    "docs/superpowers/plans/2026-11-05-orca-team-text-rules.md"):
+            self.assertIn(key, text)
+        self.assertLess(text.index("## 디자인 디렉터"), text.index("## 문구 규칙"))
+        self.assertLess(text.index("## 문구 규칙"), text.index("## 보안 주의"))
+
+    def test_spec_section_13_text_rules(self):
+        text = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
+        section = text[text.index("## 13."):]
+        for key in ("### 문구 규칙 (2026-11-05, 0.5.0)", "text_lint", "{text_section}", "NOTES.md", "파일 복사"):
+            self.assertIn(key, section)
+
 
 if __name__ == "__main__":
     unittest.main()
