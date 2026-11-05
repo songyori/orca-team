@@ -4,7 +4,9 @@ import unittest
 from pathlib import Path
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
-from orch.textlint import MAX_BYTES, ending_styles, load_glossary, scan_text, text_targets
+from helpers import ProjectCase
+from orch.textlint import (MAX_BYTES, MAX_FINDINGS, added_lines, ending_styles, load_glossary, scan_text, text_lint,
+                           text_targets)
 
 VOICE = """# 문구 기준
 
@@ -150,6 +152,56 @@ class GlossaryAndTargetTest(unittest.TestCase):
                  "docs/design/system/README.md", "docs/design/screens/home.html", "tests/a.test.ts", "src/logo.png",
                  "src/big.md", "src/latin1.md", "src/missing.tsx"]
         self.assertEqual(text_targets(self.root, files), ["src/a.tsx", "docs/design/screens/home.html"])
+
+
+class TextLintGitTest(ProjectCase):
+    """태스크 커밋이 추가한 줄만 본다. 같은 체크아웃의 다른 커밋과 기존 줄은 잡지 않는다."""
+
+    def commit(self, rel, text, message):
+        path = self.root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        self.git("add", "--", rel)
+        self.git("commit", "-q", "-m", message)
+        return self.git("rev-parse", "HEAD").strip()
+
+    def test_only_lines_added_by_task_commits(self):
+        self.commit("src/app.tsx", 'const a = "기존 문구가 완료됬어요";\n', "chore: base")
+        sha = self.commit("src/app.tsx", 'const a = "기존 문구가 완료됬어요";\nconst b = "새 문구도 완료됬어요";\n',
+                          "[T-001] feat")
+        self.assertEqual(text_lint(self.root, ["src/app.tsx"], [sha]),
+                         ['src/app.tsx:2: 오탈자 "됬"(const b = "새 문구도 완료됬어요";)'])
+
+    def test_lines_from_other_commits_are_ignored(self):
+        sha = self.commit("src/app.tsx", 'const a = "첫 문구";\n', "[T-001] feat")
+        self.commit("src/app.tsx", 'const a = "첫 문구";\nconst b = "남의 문구가 완료됬어요";\n', "[T-002] feat")
+        self.assertEqual(text_lint(self.root, ["src/app.tsx"], [sha]), [])
+
+    def test_content_line_starting_with_plus_is_kept(self):
+        sha = self.commit("docs/user/guide.md", "++ 완료됬어요\n", "[T-001] docs")
+        self.assertEqual(added_lines(self.root, [sha], "docs/user/guide.md"), {"++ 완료됬어요"})
+
+    def test_git_error_skips_file(self):
+        self.commit("src/app.tsx", 'const a = "완료됬어요";\n', "[T-001] feat")
+        self.assertIsNone(added_lines(self.root, ["0" * 40], "src/app.tsx"))
+        self.assertEqual(text_lint(self.root, ["src/app.tsx"], ["0" * 40]), [])
+
+    def test_glossary_from_voice_md(self):
+        self.commit("docs/planning/voice.md", VOICE, "chore: voice")
+        sha = self.commit("src/app.tsx", 'const a = "로그 인 해 주세요";\nconst b = "로그인 해 주세요";\n', "[T-001] feat")
+        self.assertEqual(text_lint(self.root, ["src/app.tsx"], [sha]),
+                         ['src/app.tsx:1: 금지 표기 "로그 인"→"로그인"(const a = "로그 인 해 주세요";)'])
+
+    def test_non_targets_are_skipped(self):
+        sha = self.commit("tests/app.test.ts", 'it("완료됬어요");\n', "[T-001] test")
+        self.assertEqual(text_lint(self.root, ["tests/app.test.ts"], [sha]), [])
+
+    def test_cap(self):
+        lines = "".join(f'const a{i} = "완료됬어요";\n' for i in range(MAX_FINDINGS + 3))
+        sha = self.commit("src/app.tsx", lines, "[T-001] feat")
+        found = text_lint(self.root, ["src/app.tsx"], [sha])
+        self.assertEqual(len(found), MAX_FINDINGS + 1)
+        self.assertEqual(found[-1], "… 외 3건")
 
 
 if __name__ == "__main__":

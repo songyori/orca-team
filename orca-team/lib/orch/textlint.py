@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 
 from .globs import matches_any
+from .paths import OrchError
+from .util import git
 
 RULES_FILE = ".orchestration/text-rules.md"
 VOICE_FILE = "docs/planning/voice.md"
@@ -166,3 +168,40 @@ def scan_text(rel: str, text: str, added: set[str] | None = None,
         found.append((minor[0], 1 << 30, f"{rel}:{minor[0]}: 높임법 섞임(해요체 {len(haeyo)}줄, "
                                           f"하십시오체 {len(hasipsio)}줄. {name} 줄: {numbers})"))
     return [item for _, _, item in sorted(found, key=lambda f: (f[0], f[1]))]
+
+
+def added_lines(root: Path, shas: list[str], rel: str) -> set[str] | None:
+    """shas 커밋들이 rel 에 추가한 줄 내용. 파일 머리(--- / +++)는 hunk(@@) 밖이라 빠진다. git 오류면 None."""
+    added: set[str] = set()
+    for sha in shas:
+        try:
+            out = git(root, "show", "--format=", "--no-color", "--no-ext-diff", "--no-renames", "-U0", sha, "--", rel)
+        except OrchError:
+            return None
+        in_hunk = False
+        for line in out.split("\n"):
+            if line.startswith("diff --git"):
+                in_hunk = False
+            elif line.startswith("@@"):
+                in_hunk = True
+            elif in_hunk and line.startswith("+"):
+                added.add(line[1:])
+    return added
+
+
+def text_lint(root: Path, files: list[str], shas: list[str]) -> list[str]:
+    """files(저장소 기준 상대 경로) 중 텍스트 대상에서 shas 가 추가한 줄의 의심 위치 목록.
+    git 오류가 난 파일은 건너뛴다. MAX_FINDINGS 를 넘으면 마지막 항목이 "… 외 N건" 이다."""
+    glossary = load_glossary(root / VOICE_FILE)
+    found: list[str] = []
+    for rel in files:
+        text = read_target(root, rel)
+        if text is None:
+            continue
+        added = added_lines(root, shas, rel)
+        if added is None:
+            continue
+        found += scan_text(rel, text, added, glossary)
+    if len(found) > MAX_FINDINGS:
+        found = [*found[:MAX_FINDINGS], f"… 외 {len(found) - MAX_FINDINGS}건"]
+    return found
