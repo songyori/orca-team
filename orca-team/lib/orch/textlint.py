@@ -14,12 +14,13 @@ from .util import git
 RULES_FILE = ".orchestration/text-rules.md"
 VOICE_FILE = "docs/planning/voice.md"
 TEXT_SUFFIXES = {".md", ".mdx", ".txt", ".html", ".htm", ".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte",
-                 ".json", ".yaml", ".yml", ".po"}
-CODE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".yaml", ".yml"}
-HTML_SUFFIXES = {".html", ".htm"}
+                 ".json", ".yaml", ".yml", ".po", ".arb", ".dart", ".strings", ".xcstrings", ".xml", ".kt", ".swift"}
+CODE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".yaml", ".yml", ".dart", ".kt", ".swift", ".strings"}
+HTML_SUFFIXES = {".html", ".htm", ".xml"}
 MARKDOWN_SUFFIXES = {".md", ".mdx"}
 TEXT_EXCLUDE = ["docs/planning/**", "docs/tasks/**", "docs/reviews/**", "docs/qa/**", "docs/design/*.md",
-                "docs/design/system/**/*.md", "tests/**", ".orchestration/**"]
+                "docs/design/system/**/*.md", "tests/**", ".orchestration/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**",
+                "e2e/**"]
 MAX_BYTES = 1 << 20  # 이보다 큰 파일(번들·데이터)은 대상이 아니다
 MAX_FINDINGS = 50  # 리뷰 프롬프트가 커지지 않게 이만큼만 싣는다
 SNIPPET = 60
@@ -36,14 +37,14 @@ CHECKS: list[tuple[str, re.Pattern]] = [
     ("이중피동", re.compile("(?:되어|보여|쓰여|불려)(?:지|진|짐|져|졌)")),
     ("번역투", re.compile(r"에 있어(?:서|\s)")),
     ("상투어", re.compile(r"혁신적|획기적|최적의|극대화|차세대|시너지|패러다임|게임 체인저"
-                       r"|\b(?:seamless(?:ly)?|unlock|elevate|empower)\b", re.I)),
+                       r"|\b(?:seamless(?:ly)?|empower)\b", re.I)),
     ("hedging", re.compile("라고 할 수 있|다고 볼 수 있|것으로 보여지|것으로 보인다고")),
     ("챗봇 잔재", re.compile("도움이 되셨길|도움이 되었길|도움이 되셨으면|궁금한 점이 있으시면 언제든|물론입니다")),
     ("쉼표", re.compile(r"(?<![가-힣])(?:그리고|또한|그러나|따라서|하지만),"
-                      r"|(?<=[가-힣])(?:며|고|지만|면서|아서|어서|여서|해서),")),
+                      r"|(?<=[가-힣])(?:며|지만|면서|아서|어서|여서|해서),|(?<=[하되있없않이었았했겠])고,")),
 ]
 ENDING_RE = re.compile(r"([가-힣]+)[.!?…~]*(?=\s*(?:[\"'`<|]|$))")
-HAEYO_EXCEPT = ("필요", "중요", "개요", "주요", "수요")  # "요" 로 끝나지만 해요체 종결이 아닌 낱말
+HAEYO_EXCEPT = ("필요", "중요", "개요", "주요", "수요", "아니요", "좋아요")  # "요" 로 끝나지만 해요체 종결이 아닌 낱말
 GLOSSARY_HEAD = ("쓰는 표기", "쓰지 않는 표기")
 
 
@@ -175,8 +176,8 @@ def added_lines(root: Path, shas: list[str], rel: str) -> set[str] | None:
     added: set[str] = set()
     for sha in shas:
         try:
-            out = git(root, "show", "--format=", "--no-color", "--no-ext-diff", "--no-renames", "-U0", sha, "--", rel)
-        except OrchError:
+            out = git(root, "show", "--format=", "--no-color", "--no-ext-diff", "--no-renames", "-U0", sha, "--", f":(literal){rel}")
+        except (OrchError, UnicodeDecodeError):
             return None
         in_hunk = False
         for line in out.split("\n"):

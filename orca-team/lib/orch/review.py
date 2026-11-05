@@ -12,9 +12,9 @@ from . import orca, plan
 from .config import Config
 from .globs import matches_any
 from .lint import DESIGN_ROLES, design_lint
-from .textlint import RULES_FILE, text_lint, text_targets
 from .paths import TEMPLATES, OrchError, Project, codex_runner
 from .tasks import ACTIVE, TaskDoc, all_states, load_doc, must_state, owns_of, review_pid, save_state
+from .textlint import RULES_FILE, text_lint, text_targets
 from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$", re.M)
@@ -130,7 +130,10 @@ def text_section(p: Project, files: list[str], shas: list[str]) -> str:
     한글이 든 텍스트 대상 파일을 바꾸지 않은 태스크는 빈 문자열."""
     if not (p.root / RULES_FILE).is_file() or not text_targets(p.root, files):
         return ""
-    found = text_lint(p.root, files, shas)
+    try:
+        found = text_lint(p.root, files, shas)
+    except Exception as exc:  # 검사 버그가 리뷰를 막으면 안 된다. 판정은 Codex 가 한다
+        found = [f"자동 검사 실패: {type(exc).__name__}: {exc}"[:200]]
     listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
     return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": listing}) + "\n"
 

@@ -1,7 +1,11 @@
 import json
 import os
 import unittest
+from unittest import mock
 
+import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
+from orch import review
+from orch.paths import Project
 from test_tasks import TaskCase
 
 
@@ -445,6 +449,23 @@ class ReviewTextSectionTest(ReviewCase):
         self.assertNotIn("## 문구 기준", prompt)
         self.assertNotIn("text-rules.md", prompt)
         self.assertNotIn("\n\n\n", prompt)
+
+    def test_text_section_without_design_section(self):
+        self.remove_role("director")
+        self.commit_text("src/login.tsx", 'export const done = "로그인이 완료됬어요";\n')
+        self.review()
+        prompt = self.prompt()
+        self.assertIn("## 문구 기준", prompt)
+        self.assertNotIn("## 디자인·UI 기준", prompt)
+        self.assertNotIn("\n\n\n", prompt)
+        self.assertRegex(prompt, r"[^\n]\n\n## REVIEW_FILE 형식\n")
+
+    def test_lint_failure_does_not_block_review(self):
+        self.commit_text("src/login.tsx", 'export const done = "로그인했어요";\n')
+        with mock.patch("orch.review.text_lint", side_effect=RuntimeError("boom")):
+            section = review.text_section(Project(self.root), ["src/login.tsx"], ["0" * 40])
+        self.assertIn("## 문구 기준", section)
+        self.assertIn("- 자동 검사 실패: RuntimeError: boom\n", section)
 
 
 if __name__ == "__main__":
