@@ -45,7 +45,7 @@ CHECKS: list[tuple[str, re.Pattern]] = [
 ]
 ENDING_RE = re.compile(r"([가-힣]+)[.!?…~]*(?=\s*(?:[\"'`<|]|$))")
 HAEYO_EXCEPT = ("필요", "중요", "개요", "주요", "수요", "아니요", "좋아요")  # "요" 로 끝나지만 해요체 종결이 아닌 낱말
-PAREN_TAIL_RE = re.compile(r"\s*\([^()]*\)\s*$")  # 용어집 쓰지 않는 표기 칸의 끝 괄호 조건: "지우기(라벨)"
+PAREN_RE = re.compile(r"[(（][^()（）]*[)）]")  # 괄호 조건이 붙은 쓰지 않는 표기("지우기(라벨)")는 조건을 평가할 수 없어 검사하지 않는다
 GLOSSARY_HEAD = ("쓰는 표기", "쓰지 않는 표기")
 
 
@@ -55,7 +55,7 @@ def snippet(text: str) -> str:
 
 
 def read_target(root: Path, rel: str) -> str | None:
-    """rel 이 텍스트 대상(확장자, 제외 경로 아님, 1MB 이하 UTF-8, 한글 있음)이면 내용, 아니면 None."""
+    """rel 이 텍스트 대상(확장자, 제외 경로 아님, 1MB 이하 UTF-8, 검사 대상 줄에 한글 있음)이면 내용, 아니면 None."""
     if Path(rel).suffix.lower() not in TEXT_SUFFIXES or matches_any(rel, TEXT_EXCLUDE):
         return None
     path = root / rel
@@ -65,7 +65,7 @@ def read_target(root: Path, rel: str) -> str | None:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
-    return text if HANGUL_RE.search(text) else None
+    return text if visible_lines(rel, text) else None
 
 
 def text_targets(root: Path, files: list[str]) -> list[str]:
@@ -96,7 +96,7 @@ def load_glossary(path: Path) -> list[tuple[str, list[str]]]:
     for cells in rows[2:]:
         if len(cells) < 2:
             continue
-        banned = [term for term in (PAREN_TAIL_RE.sub("", t).strip() for t in cells[1].split(",")) if term]
+        banned = [term for term in (t.strip() for t in cells[1].split(",")) if term and not PAREN_RE.search(term)]
         if cells[0] and banned:
             out.append((cells[0], banned))
     return out

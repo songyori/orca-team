@@ -5,8 +5,8 @@ from pathlib import Path
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
 from helpers import ProjectCase
-from orch.textlint import (MAX_BYTES, MAX_FINDINGS, added_lines, ending_styles, load_glossary, scan_text, text_lint,
-                           text_targets)
+from orch.textlint import (MAX_BYTES, MAX_FINDINGS, added_lines, ending_styles, load_glossary, read_target, scan_text,
+                           text_lint, text_targets)
 
 VOICE = """# 문구 기준
 
@@ -149,11 +149,16 @@ class GlossaryAndTargetTest(unittest.TestCase):
         self.assertEqual(load_glossary(self.root / "voice.md"),
                          [("로그인", ["로그 인", "로긴"]), ("회원가입", ["회원 가입"])])
 
-    def test_load_glossary_strips_trailing_parenthetical(self):
+    def test_load_glossary_skips_conditional_banned_terms(self):
         self.put("voice.md", "## 용어집\n\n| 쓰는 표기 | 쓰지 않는 표기 | 메모 |\n|---|---|---|\n"
                  "| 삭제 | 제거, 지우기(라벨) | |\n| 오늘할일 | 오늘 할 일(서비스 이름으로) | |\n")
-        self.assertEqual(load_glossary(self.root / "voice.md"),
-                         [("삭제", ["제거", "지우기"]), ("오늘할일", ["오늘 할 일"])])
+        self.assertEqual(load_glossary(self.root / "voice.md"), [("삭제", ["제거"])])
+
+    def test_comment_only_hangul_is_not_target(self):
+        self.put("e2e-config.js", "// 설정 주석\n// 한글 주석\nmodule.exports = {};\n")
+        self.put("app.js", '// 주석\nconst a = "저장";\n')
+        self.assertIsNone(read_target(self.root, "e2e-config.js"))
+        self.assertIsNotNone(read_target(self.root, "app.js"))
 
     def test_load_glossary_bad_or_missing(self):
         self.assertEqual(load_glossary(self.root / "없음.md"), [])
