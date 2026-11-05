@@ -1,4 +1,4 @@
-# orca-team 현재 상태 (2026-11-01, 0.4.1)
+# orca-team 현재 상태 (2026-11-05, 0.5.0)
 
 다음 작업을 시작할 때 먼저 읽는 문서다. 세부 결정은 각 설계 문서와 기본 설계 §13 에 있다.
 
@@ -11,10 +11,11 @@
 | 0.3.0 | 기획 인터뷰(`orch ask-user`), 태스크 그래프 `tasks.toml` 과 병렬 시작(`orch start-ready`), 디자인 일괄 승인(`orch design-review`) | `specs/2026-10-31-orca-team-grilling-parallel-design.md`, `plans/2026-10-31-orca-team-grilling-parallel.md` |
 | 0.4.0 | 디자인 디렉터: 레퍼런스 조사 → 톤 시안 3안 → Claude Design Design System, AI 티 금지 목록과 자동 검사, 시스템 추가 제안 보강 | `specs/2026-10-31-orca-team-design-director-design.md`, `plans/2026-10-31-orca-team-design-director.md` |
 | 0.4.1 | 사소한 문제 수정: `orch fix --supplement`, director 질문 header "디자인", 예시 앞 "예:" 제거, 자동 검사 정밀도와 속도, 에셋 전용 designer 예외 | 기본 설계 §13 "디자인 디렉터" |
+| 0.5.0 | 문구 규칙: 작성·리뷰 공통 text-rules.md, planner 문구 기준 voice.md, Codex 리뷰 문구 절, 추가된 줄만 보는 자동 검사(textlint) | `specs/2026-11-05-orca-team-text-rules-design.md`, `plans/2026-11-05-orca-team-text-rules.md` |
 
 ## 검증
 
-- 테스트: `bash orca-team/tests/run.sh`(461개, 2026-11-01 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
+- 테스트: `bash orca-team/tests/run.sh`(494개, 2026-11-05 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
 - 실환경 확인: 0.3.0 과 0.4.0 을 실제 Orca·Codex·Claude Design 으로 한 바퀴씩 돌렸다. 결과는 각 설계 문서 §12 에 있다.
 - 실환경 확인 방법:
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.
@@ -26,6 +27,7 @@
 - 톤 시안 피드백 분기: 세부 수정이면 수정안 1개, 방향 전환이면 새 3안. 확인 때 추천안을 골라 실행되지 않았다(단위 테스트는 있다).
 - 디렉터 흐름에서 디자인 일괄 승인 뒤 화면 구현과 QA 를 끝까지. 승인 뒤 구현이 시작되는 것까지만 봤다.
 - 기본 권한 모드의 무인 실행. 모든 확인이 bypass permissions 세션이었다.
+- 0.5.0 문구 규칙: planner 의 문구 기준 질문과 voice.md, 워커의 문구 점검, Codex 리뷰의 문구 절을 실제 Orca·Codex 로 돌려 보지 않았다(단위·통합 테스트와 자동 검사 샘플 실행만 했다).
 
 ## 알려진 사소한 문제 (고치지 않음)
 
