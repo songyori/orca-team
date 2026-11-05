@@ -467,6 +467,13 @@ class ReviewTextSectionTest(ReviewCase):
         self.assertIn("## 문구 기준", section)
         self.assertIn("- 자동 검사 실패: RuntimeError: boom\n", section)
 
+    def test_lint_failure_message_is_one_line(self):
+        self.commit_text("src/login.tsx", 'export const done = "로그인했어요";\n')
+        with mock.patch("orch.review.text_lint", side_effect=RuntimeError("git failed:\nfatal: bad\n")):
+            section = review.text_section(Project(self.root), ["src/login.tsx"], ["0" * 40])
+        self.assertIn("- 자동 검사 실패: RuntimeError: git failed: fatal: bad", section)
+        self.assertNotIn("\n\n\n", section)
+
 
 if __name__ == "__main__":
     unittest.main()

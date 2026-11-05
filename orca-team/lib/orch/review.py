@@ -133,7 +133,7 @@ def text_section(p: Project, files: list[str], shas: list[str]) -> str:
     try:
         found = text_lint(p.root, files, shas)
     except Exception as exc:  # 검사 버그가 리뷰를 막으면 안 된다. 판정은 Codex 가 한다
-        found = [f"자동 검사 실패: {type(exc).__name__}: {exc}"[:200]]
+        found = [" ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]]
     listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
     return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": listing}) + "\n"
 
