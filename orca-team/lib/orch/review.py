@@ -12,6 +12,7 @@ from . import orca, plan
 from .config import Config
 from .globs import matches_any
 from .lint import DESIGN_ROLES, design_lint
+from .textlint import RULES_FILE, text_lint, text_targets
 from .paths import TEMPLATES, OrchError, Project, codex_runner
 from .tasks import ACTIVE, TaskDoc, all_states, load_doc, must_state, owns_of, review_pid, save_state
 from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
@@ -123,6 +124,17 @@ def design_section(p: Project, cfg: Config, role: str, files: list[str]) -> str:
     return render((TEMPLATES / "review-design.md").read_text(encoding="utf-8"), {"design_lint": listing}) + "\n"
 
 
+def text_section(p: Project, files: list[str], shas: list[str]) -> str:
+    """서비스 문구·문서를 바꾼 태스크 리뷰에 넣는 문구 기준과 orch 문구 자동 검사 결과(templates/review-text.md).
+    직무와 무관하다. 다음 절과 사이의 빈 줄까지 붙여 돌려준다. text-rules.md 가 없는 이전 버전(0.4.x) 프로젝트와
+    한글이 든 텍스트 대상 파일을 바꾸지 않은 태스크는 빈 문자열."""
+    if not (p.root / RULES_FILE).is_file() or not text_targets(p.root, files):
+        return ""
+    found = text_lint(p.root, files, shas)
+    listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
+    return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": listing}) + "\n"
+
+
 def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
                    commits: list[tuple[str, str]], files: list[str]) -> str:
     prior = [f"docs/reviews/{doc.id}/r{n}.md" for n in range(1, rnd)
@@ -132,7 +144,8 @@ def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: 
         "review_path": review_rel, "prior_reviews": ", ".join(prior) or "없음",
         "commits": "\n".join(f"- {sha[:10]} {subject}" for sha, subject in commits),
         "files": "\n".join(f"- {f}" for f in files),
-        "design_section": design_section(p, cfg, doc.role, files)})
+        "design_section": design_section(p, cfg, doc.role, files),
+        "text_section": text_section(p, files, [sha for sha, _ in commits])})
 
 
 def review_exclusions(p: Project, task_id: str) -> list[str]:

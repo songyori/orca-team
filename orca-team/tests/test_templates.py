@@ -97,6 +97,11 @@ class TemplateTest(unittest.TestCase):
         for key in ("{design_lint}", ".orchestration/design-rules.md", "docs/design/system/tokens.json",
                     "### 금지 목록 점검", "### 시스템 추가 제안", "REQUEST_CHANGES"):
             self.assertIn(key, design)
+        self.assertIn("{design_section}{text_section}## REVIEW_FILE 형식", prompt)
+        text = (T / "review-text.md").read_text(encoding="utf-8")
+        for key in ("## 문구 기준", "{text_lint}", ".orchestration/text-rules.md", "docs/planning/voice.md",
+                    "### 문구 점검", "text-rules §5", "P3", "orch 문구 자동 검사"):
+            self.assertIn(key, text)
 
     def test_design_tool_rules(self):
         designer = (T / "roles" / "designer.md").read_text(encoding="utf-8")

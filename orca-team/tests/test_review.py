@@ -385,5 +385,67 @@ class ReviewDesignSectionTest(ReviewCase):
         self.assertRegex(prompt, r"[^\n]\n\n## REVIEW_FILE 형식\n")
 
 
+class ReviewTextSectionTest(ReviewCase):
+    """서비스 문구·문서(한글이 든 텍스트 대상 파일)를 바꾼 태스크 리뷰에만 문구 기준과 orch 문구 자동 검사가 들어간다."""
+
+    def prompt(self):
+        return sorted((self.tmp / "cache/orca-team/runs").rglob("prompt.txt"))[-1].read_text(encoding="utf-8")
+
+    def commit_text(self, path, text, task_id="T-001"):
+        target = self.root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text, encoding="utf-8")
+        self.git("add", "--", path)
+        self.git("commit", "-q", "-m", f"[{task_id}] feat: {path}")
+
+    def test_korean_ui_text_adds_text_section_with_lint(self):
+        self.commit_text("src/login.tsx", 'export const done = "로그인이 완료됬어요";\n')
+        self.review()
+        prompt = self.prompt()
+        self.assertIn("## 문구 기준", prompt)
+        self.assertIn(".orchestration/text-rules.md", prompt)
+        self.assertIn('- src/login.tsx:1: 오탈자 "됬"(export const done = "로그인이 완료됬어요";)\n\n'
+                      "## REVIEW_FILE 형식\n", prompt)
+        for raw in ("{text_section}", "{text_lint}", "{design_section}"):
+            self.assertNotIn(raw, prompt)
+        self.assertNotIn("\n\n\n", prompt)
+        self.assertLess(prompt.index("## 디자인·UI 기준"), prompt.index("## 문구 기준"))
+
+    def test_clean_korean_text_reports_none(self):
+        self.commit_text("src/login.tsx", 'export const done = "로그인했어요";\n')
+        self.review()
+        section = self.prompt().split("## 문구 기준", 1)[1]
+        self.assertIn("orch 문구 자동 검사", section)
+        self.assertIn("\n- 없음\n", section)
+
+    def test_no_korean_text_has_no_text_section(self):
+        self.commit_text("src/login.ts", "export const done = 1;\n")
+        self.review()
+        prompt = self.prompt()
+        self.assertNotIn("## 문구 기준", prompt)
+        self.assertNotIn("{text_section}", prompt)
+        self.assertNotIn("\n\n\n", prompt)
+
+    def test_excluded_paths_have_no_text_section(self):
+        self.write_spec("T-002", role="tester", title="로그인 테스트")
+        self.git("add", "--", ".orchestration/tasks/T-002.md")
+        self.git("commit", "-q", "-m", "[T-002] spec: 로그인 테스트")
+        self.orch("start", "T-002")
+        self.commit_text("tests/login.test.ts", 'it("로그인이 완료됬어요", () => {});\n', task_id="T-002")
+        self.orch("review", "T-002")
+        self.assertNotIn("## 문구 기준", self.prompt())
+
+    def test_project_without_text_rules_has_no_text_section(self):
+        """0.4.x 프로젝트(.orchestration/text-rules.md 없음)는 문구 기준 없이 지금 흐름 그대로 리뷰한다."""
+        self.git("rm", "-q", "--", ".orchestration/text-rules.md")
+        self.git("commit", "-q", "-m", "chore: 0.4 프로젝트")
+        self.commit_text("src/login.tsx", 'export const done = "로그인이 완료됬어요";\n')
+        self.review()
+        prompt = self.prompt()
+        self.assertNotIn("## 문구 기준", prompt)
+        self.assertNotIn("text-rules.md", prompt)
+        self.assertNotIn("\n\n\n", prompt)
+
+
 if __name__ == "__main__":
     unittest.main()

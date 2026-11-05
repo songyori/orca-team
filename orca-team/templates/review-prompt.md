@@ -30,7 +30,7 @@ diff 는 `git show <sha>` 로 본다.
 3. 버그, 보안, 회귀 위험.
 4. 수정 라운드면 이전 리뷰 지적이 모두 반영됐는가.
 
-{design_section}## REVIEW_FILE 형식
+{design_section}{text_section}## REVIEW_FILE 형식
 # {task_id} r{round} 리뷰
 ## 판정 근거
 ## 지적 사항
