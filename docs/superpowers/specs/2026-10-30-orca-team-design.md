@@ -471,6 +471,7 @@ E2E 반영 (Orca 1.4.240)
 - git pathspec 은 `:(literal)` 로 넘겨 `[id]` 같은 경로가 glob 으로 풀리지 않게 한다.
 - "아니요"·"좋아요" 는 해요체 종결로 세지 않고, 영문 `unlock`·`elevate` 는 상투어에서 뺐다(코드 식별자·i18n 키 오탐). 제외 경로에 `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `e2e/**` 를 더했다.
 - 높임법 섞임은 줄 끝 한글 낱말(뒤에 따옴표·`<`·`|`·줄 끝만 오는)로 판정한다. "필요·중요·개요·주요·수요" 로 끝나는 낱말은 해요체로 보지 않는다. 두 종결체 줄 수가 같으면 하십시오체 쪽 줄을 적는다.
+- 디렉터 산출물(`docs/design/board/**`, `docs/design/pilots/**`, `docs/design/system/**`)은 문구 대상이 아니고, `### 문구 점검` 은 designer·developer 태스크만 적는다(실환경 점검에서 나옴).
 - 리뷰 프롬프트 자리는 `{design_section}{text_section}` 순서다. 문구 절은 직무와 무관하게 `.orchestration/text-rules.md` 가 있고 한글이 든 텍스트 대상 파일이 바뀌었을 때만 붙는다. 디자인 절의 "orch 자동 검사" 와 구분하려고 "orch 문구 자동 검사" 라고 부른다.
 - 기본 config 의 developer owns 에 `README.md`, `docs/user/**`, `docs/policy/**` 를 더해, owns 밖 커밋을 확인하던 리뷰 테스트는 `NOTES.md` 를 쓴다.
 - 업그레이드는 README 가 파일 복사로 안내한다. 설계 §9 의 init 재실행과 결과가 같다(scaffold 는 없는 파일만 만든다).

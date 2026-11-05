@@ -176,6 +176,10 @@ class GlossaryAndTargetTest(unittest.TestCase):
         self.put("docs/design/direction.md", "# 방향\n")
         self.put("docs/design/system/README.md", "# 시스템\n")
         self.put("docs/design/screens/home.html", "<p>홈</p>\n")
+        self.put("docs/design/screens/todo/index.html", "<p>할 일</p>\n")
+        self.put("docs/design/board/project/x.html", "<p>투두</p>\n")
+        self.put("docs/design/pilots/project/A-terms.dc.html", "<p>약관</p>\n")
+        self.put("docs/design/system/components/preview.html", "<p>미리보기</p>\n")
         self.put("tests/a.test.ts", 'it("저장");\n')
         self.put("src/a.test.tsx", 'it("저장");\n')
         self.put("src/__tests__/a.tsx", 'it("저장");\n')
@@ -186,12 +190,14 @@ class GlossaryAndTargetTest(unittest.TestCase):
         self.put("src/big.md", "가" * (MAX_BYTES // 3 + 1))
         self.put("src/latin1.md", b"\xff\xfe")
         files = ["src/a.tsx", "src/b.tsx", "docs/planning/spec.md", "docs/design/direction.md",
-                 "docs/design/system/README.md", "docs/design/screens/home.html", "tests/a.test.ts", "src/logo.png",
+                 "docs/design/system/README.md", "docs/design/screens/home.html", "docs/design/screens/todo/index.html",
+                 "docs/design/board/project/x.html", "docs/design/pilots/project/A-terms.dc.html",
+                 "docs/design/system/components/preview.html", "tests/a.test.ts", "src/logo.png",
                  "src/big.md", "src/latin1.md", "src/missing.tsx", "src/a.test.tsx", "src/__tests__/a.tsx",
                  "lib/l10n/app_ko.arb", "ios/App/ko.lproj/Localizable.strings",
                  "android/app/src/main/res/values-ko/strings.xml"]
         self.assertEqual(text_targets(self.root, files),
-                         ["src/a.tsx", "docs/design/screens/home.html", "lib/l10n/app_ko.arb",
+                         ["src/a.tsx", "docs/design/screens/home.html", "docs/design/screens/todo/index.html", "lib/l10n/app_ko.arb",
                           "ios/App/ko.lproj/Localizable.strings", "android/app/src/main/res/values-ko/strings.xml"])
 
 

@@ -163,7 +163,7 @@ orch 문구 자동 검사(이 태스크가 추가한 줄의 의심 위치. 정�
 1. 프로젝트에 `.orchestration/text-rules.md`가 있다(0.5.0 이후 설치). 없으면 빈 문자열(이전 버전 호환).
 2. 태스크가 바꾼 파일 중 텍스트 대상이 하나 이상 있다. 텍스트 대상은 다음을 모두 만족하는 파일이다.
    - 확장자: `.md`, `.mdx`, `.txt`, `.html`, `.htm`, `.js`, `.jsx`, `.ts`, `.tsx`, `.vue`, `.svelte`, `.json`, `.yaml`, `.yml`, `.po`, 모바일 문구 파일 `.arb`, `.dart`, `.strings`, `.xcstrings`, `.xml`, `.kt`, `.swift`(웹·Flutter·iOS·Android)
-   - 제외 경로가 아니다: `docs/planning/**`, `docs/tasks/**`, `docs/reviews/**`, `docs/qa/**`, `docs/design/*.md`, `docs/design/system/**/*.md`, `tests/**`, `.orchestration/**`, `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `e2e/**`
+   - 제외 경로가 아니다: `docs/planning/**`, `docs/tasks/**`, `docs/reviews/**`, `docs/qa/**`, `docs/design/*.md`, `docs/design/board/**`, `docs/design/pilots/**`, `docs/design/system/**`, `tests/**`, `.orchestration/**`, `**/*.test.*`, `**/*.spec.*`, `**/__tests__/**`, `e2e/**`
    - 검사 대상 줄(코드 주석 줄, Markdown 코드 블록·인라인 코드 제외)에 한글 음절(U+AC00–U+D7A3)이 하나 이상 있다. 1MB 초과·UTF-8 아님·없음이면 대상이 아니다.
 
 `templates/review-prompt.md`는 `{design_section}{text_section}## REVIEW_FILE 형식` 순서로 자리를 둔다. `text_section`도 `design_section`처럼 다음 절과 사이의 빈 줄까지 붙여 돌려준다.

@@ -19,7 +19,8 @@ CODE_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".vue", ".svelte", ".yaml", ".yml
 HTML_SUFFIXES = {".html", ".htm", ".xml"}
 MARKDOWN_SUFFIXES = {".md", ".mdx"}
 TEXT_EXCLUDE = ["docs/planning/**", "docs/tasks/**", "docs/reviews/**", "docs/qa/**", "docs/design/*.md",
-                "docs/design/system/**/*.md", "tests/**", ".orchestration/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**",
+                "docs/design/board/**", "docs/design/pilots/**",
+                "docs/design/system/**", "tests/**", ".orchestration/**", "**/*.test.*", "**/*.spec.*", "**/__tests__/**",
                 "e2e/**"]
 MAX_BYTES = 1 << 20  # 이보다 큰 파일(번들·데이터)은 대상이 아니다
 MAX_FINDINGS = 50  # 리뷰 프롬프트가 커지지 않게 이만큼만 싣는다

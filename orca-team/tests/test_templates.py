@@ -70,6 +70,7 @@ class TemplateTest(unittest.TestCase):
                     ".orchestration/design-rules.md", "https://github.com/epoko77-ai/im-not-ai",
                     "https://github.com/amondnet/yoonmoon", "MIT"):
             self.assertIn(key, text)
+        self.assertIn("designer·developer 태스크", text)
         self.assertLess(text.index("## §1 보존"), text.index("## §4 AI 티·번역투"))
         self.assertNotRegex(text, r"\d~\d")
 
