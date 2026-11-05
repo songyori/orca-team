@@ -45,6 +45,7 @@ CHECKS: list[tuple[str, re.Pattern]] = [
 ]
 ENDING_RE = re.compile(r"([가-힣]+)[.!?…~]*(?=\s*(?:[\"'`<|]|$))")
 HAEYO_EXCEPT = ("필요", "중요", "개요", "주요", "수요", "아니요", "좋아요")  # "요" 로 끝나지만 해요체 종결이 아닌 낱말
+PAREN_TAIL_RE = re.compile(r"\s*\([^()]*\)\s*$")  # 용어집 쓰지 않는 표기 칸의 끝 괄호 조건: "지우기(라벨)"
 GLOSSARY_HEAD = ("쓰는 표기", "쓰지 않는 표기")
 
 
@@ -95,7 +96,7 @@ def load_glossary(path: Path) -> list[tuple[str, list[str]]]:
     for cells in rows[2:]:
         if len(cells) < 2:
             continue
-        banned = [term.strip() for term in cells[1].split(",") if term.strip()]
+        banned = [term for term in (PAREN_TAIL_RE.sub("", t).strip() for t in cells[1].split(",")) if term]
         if cells[0] and banned:
             out.append((cells[0], banned))
     return out
@@ -136,10 +137,10 @@ def ending_styles(body: str) -> set[str]:
 
 
 def banned_hits(body: str, glossary) -> list[tuple[int, str]]:
-    """용어집 금지 표기 위치. 같은 자리를 쓰는 표기가 덮으면(금지 "가입" 이 "회원가입" 안) 건너뛴다."""
+    """용어집 금지 표기 위치. 어느 행이든 쓰는 표기가 그 자리를 덮으면(금지 "가입" 이 "회원가입" 안, 금지 "할일" 이 "오늘할일" 안) 건너뛴다."""
+    keep = [(m.start(), m.end()) for preferred, _ in glossary for m in re.finditer(re.escape(preferred), body)]
     hits = []
     for preferred, banned in glossary:
-        keep = [(m.start(), m.end()) for m in re.finditer(re.escape(preferred), body)]
         for term in banned:
             for m in re.finditer(re.escape(term), body):
                 if not any(s <= m.start() and m.end() <= e for s, e in keep):

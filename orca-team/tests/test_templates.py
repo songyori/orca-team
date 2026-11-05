@@ -332,7 +332,7 @@ class TemplateTest(unittest.TestCase):
         text = (T / "roles" / "planner.md").read_text(encoding="utf-8")
         for key in ("# 문구 기준", "## 용어집", "| 쓰는 표기 | 쓰지 않는 표기 | 메모 |", "서비스 문구: 해요체",
                     "정책 문서: 하십시오체", "사용자 문서: 해요체", "용어집 표", "`docs/policy/**`", "`docs/user/**`",
-                    "`README.md`"):
+                    "`README.md`", "쓰는 조건(예: 이용약관 안에서만)은 메모 칸에 적는다"):
             self.assertIn(key, text)
 
     def test_writers_follow_text_rules(self):

@@ -94,6 +94,12 @@ class ScanTextTest(unittest.TestCase):
         self.assertEqual(self.scan('const a = "가입 완료";\n', glossary=glossary),
                          ['src/app.tsx:1: 금지 표기 "가입"→"회원가입"(const a = "가입 완료";)'])
 
+    def test_banned_term_inside_other_rows_preferred_is_skipped(self):
+        glossary = [("오늘할일", ["오늘 할일"]), ("할 일", ["할일"])]
+        self.assertEqual(self.scan('const t = "오늘할일에 오신 걸 환영해요";\n', glossary=glossary), [])
+        self.assertEqual(self.scan('const t = "할일 추가";\n', glossary=glossary),
+                         ['src/app.tsx:1: 금지 표기 "할일"→"할 일"(const t = "할일 추가";)'])
+
     def test_mixed_endings_reported_once_with_minor_lines(self):
         text = "# 안내\n\n저장했어요.\n\n삭제합니다.\n\n복원합니다.\n"
         found = self.scan(text, rel="docs/user/guide.md")
@@ -142,6 +148,12 @@ class GlossaryAndTargetTest(unittest.TestCase):
         self.put("voice.md", VOICE)
         self.assertEqual(load_glossary(self.root / "voice.md"),
                          [("로그인", ["로그 인", "로긴"]), ("회원가입", ["회원 가입"])])
+
+    def test_load_glossary_strips_trailing_parenthetical(self):
+        self.put("voice.md", "## 용어집\n\n| 쓰는 표기 | 쓰지 않는 표기 | 메모 |\n|---|---|---|\n"
+                 "| 삭제 | 제거, 지우기(라벨) | |\n| 오늘할일 | 오늘 할 일(서비스 이름으로) | |\n")
+        self.assertEqual(load_glossary(self.root / "voice.md"),
+                         [("삭제", ["제거", "지우기"]), ("오늘할일", ["오늘 할 일"])])
 
     def test_load_glossary_bad_or_missing(self):
         self.assertEqual(load_glossary(self.root / "없음.md"), [])
