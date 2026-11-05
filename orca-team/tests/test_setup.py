@@ -19,7 +19,7 @@ class ScaffoldTest(ProjectCase):
         out = self.run_scaffold()
         for rel in (".orchestration/config.toml", ".orchestration/coordinator.md", ".orchestration/roles/designer.md",
                     ".orchestration/roles/director.md", ".orchestration/design-rules.md",
-                    ".orchestration/bin/orch", ".orchestration/project.md", ".orchestration/tasks/.gitkeep",
+                    ".orchestration/text-rules.md", ".orchestration/bin/orch", ".orchestration/project.md", ".orchestration/tasks/.gitkeep",
                     "CLAUDE.md", "AGENTS.md", ".gitignore"):
             self.assertTrue((self.root / rel).exists(), rel)
         self.assertIn("할 일 앱. 웹.", (self.root / ".orchestration/project.md").read_text(encoding="utf-8"))

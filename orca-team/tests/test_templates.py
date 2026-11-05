@@ -60,6 +60,19 @@ class TemplateTest(unittest.TestCase):
             self.assertIn(key, text)
         self.assertEqual(len(re.findall(r"^\d+\. ", text, re.M)), 10)
 
+    def test_text_rules(self):
+        text = (T / "text-rules.md").read_text(encoding="utf-8")
+        for heading in ("## §0 범위", "## §1 보존", "## §2 맞춤법·표기", "## §3 문체·용어 일관성", "## §4 AI 티·번역투",
+                        "## §5 리뷰 심각도", "## 출처"):
+            self.assertIn(f"\n{heading}", text)
+        for key in ("docs/planning/voice.md", "`### 문구 점검`", "{name}", "%s", "하여야 한다", "할 수 있다",
+                    "A가 아니라 B", "되어지다", "에 있어서", "P1(REQUEST_CHANGES)", "P2:", "P3:", "orch review",
+                    ".orchestration/design-rules.md", "https://github.com/epoko77-ai/im-not-ai",
+                    "https://github.com/amondnet/yoonmoon", "MIT"):
+            self.assertIn(key, text)
+        self.assertLess(text.index("## §1 보존"), text.index("## §4 AI 티·번역투"))
+        self.assertNotRegex(text, r"\d~\d")
+
     def test_parallel_and_approval_defaults(self):
         cfg = tomllib.loads((T / "config.toml").read_text(encoding="utf-8"))
         self.assertEqual((cfg["max_parallel"], cfg["user_approval_roles"]), (4, ["designer"]))

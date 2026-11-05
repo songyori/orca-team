@@ -25,6 +25,7 @@ SCAFFOLD_FILES = [
     ("config.toml", ".orchestration/config.toml"),
     ("coordinator.md", ".orchestration/coordinator.md"),
     ("design-rules.md", ".orchestration/design-rules.md"),
+    ("text-rules.md", ".orchestration/text-rules.md"),
     ("roles/planner.md", ".orchestration/roles/planner.md"),
     ("roles/director.md", ".orchestration/roles/director.md"),
     ("roles/designer.md", ".orchestration/roles/designer.md"),
