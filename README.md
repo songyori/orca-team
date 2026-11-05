@@ -73,7 +73,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 
 ## 문구 규칙
 
-- 서비스 내 문구(UI 라벨·버튼·오류·알림), 정책·법률 문서(`docs/policy/`), 사용자용 문서(`README.md`, `docs/user/`)의 한국어 텍스트를 규칙 하나(`.orchestration/text-rules.md`)로 쓰고 리뷰한다. 규칙은 공개 한국어 윤문 스킬 [im-not-ai](https://github.com/epoko77-ai/im-not-ai)(서법 보존, 실측 AI 신호, 과교정 방지)와 [yoonmoon](https://github.com/amondnet/yoonmoon)(교정·문체 체계, AI 티 분류)에서 개발 텍스트에 필요한 것만 가져와 압축하고(둘 다 MIT), UI 라벨·오류 메시지·i18n 변수 규칙을 더했다.
+- 서비스 내 문구(UI 라벨·버튼·오류·알림), 정책·법률 문서(`docs/policy/`), 사용자용 문서(`README.md`, `docs/user/`)의 한국어 텍스트를 규칙 하나(`.orchestration/text-rules.md`)로 쓰고 리뷰한다. 문구 파일은 웹(`.tsx`·`.json`·`.html` 등), Flutter(`.arb`·`.dart`), iOS(`.strings`·`.xcstrings`·`.swift`), Android(`.xml`·`.kt`)를 지원한다. 규칙은 공개 한국어 윤문 스킬 [im-not-ai](https://github.com/epoko77-ai/im-not-ai)(서법 보존, 실측 AI 신호, 과교정 방지)와 [yoonmoon](https://github.com/amondnet/yoonmoon)(교정·문체 체계, AI 티 분류)에서 개발 텍스트에 필요한 것만 가져와 압축하고(둘 다 MIT), UI 라벨·오류 메시지·i18n 변수 규칙을 더했다.
 - planner 가 인터뷰 점검표 "문구 기준"으로 서비스 문체(기본 해요체), 정책 문서 문체(기본 하십시오체), 호칭, 라벨 형태, 용어집을 정해 `docs/planning/voice.md` 에 남긴다. 용어집은 확정 질문 요약에서 함께 승인받는다.
 - designer·developer 는 문구를 쓰거나 바꾸면 이 규칙과 voice.md 를 지키고 리포트에 `### 문구 점검` 을 적는다. 정책·사용자 문서는 developer 가 맡는다(기본 owns 에 `README.md`, `docs/user/**`, `docs/policy/**`).
 - `orch review` 는 태스크가 한글이 든 서비스 문구·문서 파일을 바꿨으면 리뷰 프롬프트에 "문구 기준" 절을 붙인다. Codex 는 text-rules §5 심각도로 판정하고(정책 문서의 의무·권한 표현 변경, i18n 변수 손상, 사용자에게 보이는 확정 맞춤법 오류는 P1), 이 태스크가 바꾼 텍스트만 지적한다. orch 는 그 전에 태스크가 추가한 줄에서 확정 오탈자, 이중피동, "에 있어서", 상투어, 메타 hedging, 챗봇 잔재, 접속어·연결어미 뒤 쉼표, voice.md 금지 표기, 높임법 섞임의 의심 위치를 찾아 넣는다(자동 불합격은 아니다).
@@ -81,6 +81,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
   1. `orca-team/templates/text-rules.md` 를 `.orchestration/text-rules.md` 로 복사한다. 이것만으로 Codex 리뷰에 문구 기준 절이 붙는다.
   2. 워커가 작성에도 쓰게 하려면 `.orchestration/roles/planner.md`, `designer.md`, `developer.md` 와 `.orchestration/coordinator.md` 를 `orca-team/templates/` 의 같은 파일로 바꾸고, `CLAUDE.md` 의 `<!-- orca-team -->` 절을 `orca-team/templates/CLAUDE.section.md` 로 바꾼다. 정책·사용자 문서를 developer 가 맡게 하려면 `.orchestration/config.toml` 의 `[roles.developer]` owns 에 `"README.md", "docs/user/**", "docs/policy/**"` 를 더한다. 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
   3. voice.md 는 다음 기획(증분 기획 포함)에서 planner 가 만든다. 없는 동안은 용어집 검사를 건너뛴다.
+- 플러그인을 업데이트한 뒤에는 `orca-team/templates/text-rules.md` 를 `.orchestration/text-rules.md` 로 다시 복사해야 새 규칙이 적용된다(scaffold 는 있는 파일을 덮어쓰지 않는다).
 - 설계: `docs/superpowers/specs/2026-11-05-orca-team-text-rules-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-05-orca-team-text-rules.md`.
 
 ## 보안 주의

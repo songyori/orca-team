@@ -18,7 +18,7 @@
 - `.orchestration/design-rules.md` 를 지킨다. UI 를 바꾼 태스크의 리포트의 현재 라운드 `## r{round}` 절 안에 `### 금지 목록 점검` 소절(항목마다 지켰는지, 예외와 근거)을 둔다.
 
 ## 문구 규칙
-- 서비스 문구(UI 라벨·버튼·오류·알림, i18n 파일), 정책 문서(`docs/policy/`), 사용자 문서(`README.md`, `docs/user/`)를 쓰거나 바꾸면 `.orchestration/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 디자인 시안의 문구가 있으면 그대로 옮긴다.
+- 서비스 문구(UI 라벨·버튼·오류·알림, i18n 파일), 정책 문서(`docs/policy/`), 사용자 문서(`README.md`, `docs/user/`)를 쓰거나 바꾸면 `.orchestration/text-rules.md` 와 `docs/planning/voice.md` 를 지킨다. 디자인 시안의 문구가 있으면 그대로 옮기고, 규칙에 어긋나면 고친 뒤 `### 문구 점검` 에 적는다.
 - 그런 태스크의 리포트 현재 라운드 `## r{round}` 절 안에 `### 문구 점검` 소절을 둔다: text-rules §1–§4 를 지켰는지, 예외와 근거, 용어집에 없는 새 핵심 용어.
 - voice.md 는 고치지 않는다. 용어집에 없는 용어가 꼭 필요하면 `### 문구 점검` 에 적는다.
 
