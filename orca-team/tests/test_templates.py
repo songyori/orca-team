@@ -391,7 +391,8 @@ class TemplateTest(unittest.TestCase):
         up = (PLUGIN / "skills/up/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("수동 복구", up)
         readme = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
-        for key in ("auto_up = false", "자동으로 다시 띄운다", "docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md"):
+        for key in ("auto_up = false", "자동으로 다시 띄운다", "docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md",
+                    "10분 안에 다시 꺼지면 더 띄우지 않고", "같은 안내는 바뀔 때와 세션 시작 때만 한다"):
             self.assertIn(key, readme)
         spec = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
         self.assertIn("### 코디네이터 자동 부활 (2026-11-06, 0.5.1)", spec[spec.index("## 13."):])

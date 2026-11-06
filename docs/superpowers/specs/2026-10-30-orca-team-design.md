@@ -485,3 +485,11 @@ E2E 반영 (Orca 1.4.240)
 - `autoup.spawn_up` 은 `/bin/sh -c` 로 `orch up` 을 백그라운드에 띄우고 sh 는 pid 를 출력한 뒤 바로 끝난다. 훅이 시간 제한으로 끊겨도 `orch up` 은 계속 돌고, 남는 Popen 객체가 없어 ResourceWarning 도 없다.
 - `autoup` 은 훅의 `auto_up_context` 안에서 늦게 import 한다. guard 훅은 매 도구 호출마다 돈다.
 - 세션 시작 안내에 자동 부활 문구가 없으면 기본 줄에 `/orca-team:up` 을 수동 복구로 남긴다.
+- 최종 리뷰 반영:
+  - `setup.up` 은 run.json 잠금 안에서 시작 유예를 다시 보고 기동을 선점한다. 선점에 진 `orch up` 은 `agent launch` 없이 `starting` 을 돌려줘 코디네이터가 둘 뜨지 않는다.
+  - 자동으로 띄운 뒤 10분(`RETRY_WINDOW_SECONDS`) 안에 다시 `dead` 면 띄우지 않고 재사망 문구(`FAILED`)만 넘긴다. 시각은 `auto-up.json` 의 `spawned_at` 이다.
+  - `orca.call` 에 `timeout` 을 더했다. `terminal_state` 만 3초(`TERMINAL_STATE_TIMEOUT`)를 넘기고, 넘으면 `unknown` 이다. `terminal_alive` 는 제한이 없다.
+  - 같은 문구는 `auto-up.json` 의 `notice` 와 비교해 다시 넘기지 않는다. 세션 시작(force)은 같아도 넘기고, 문구가 없으면 `notice` 를 지운다.
+  - 60초(`PID_STALE_SECONDS`)보다 오래된 `auto-up.pid` 는 살아 있는 pid 라도 진행 중으로 보지 않는다.
+  - 다시 띄움 문구는 `코디네이터가 꺼져 있어 자동으로 다시 띄우는 중이다.` 로 시작한다. 훅이 돌아올 때 `orch up` 은 아직 도는 중이다.
+  - `terminal_state` 는 `result` 가 dict 가 아니거나 `OSError`(실행 권한 없음 등)가 나도 `unknown` 이다.

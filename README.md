@@ -108,7 +108,7 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
   | `done`, `dropped` | 없음(`null`) |
 
 - `orch drop T-xxx --reason "<이유>"`(코디네이터): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. 메인에는 progress 로 알린다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.
-- 코디네이터가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 코디네이터 터미널을 확인하고, 닫힌 핸들이거나 Claude 가 끝난 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 그사이 보낸 요청은 Run 메일함에 쌓였다가 새 코디네이터가 처리한다. Orca 에 연결하지 못하면 띄우지 않고 확인을 부탁한다. 끄려면 `.orchestration/config.toml` 의 `[coordinator]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 살아 있지만 멈춘 코디네이터(권한 창 대기 등)는 감지하지 못한다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
+- 코디네이터가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 코디네이터 터미널을 확인하고, 닫힌 핸들이거나 Claude 가 끝난 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 그사이 보낸 요청은 Run 메일함에 쌓였다가 새 코디네이터가 처리한다. Orca 에 연결하지 못하면 띄우지 않고 확인을 부탁한다. 끄려면 `.orchestration/config.toml` 의 `[coordinator]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 자동으로 띄운 코디네이터가 10분 안에 다시 꺼지면 더 띄우지 않고 /orca-team:up 을 안내한다. 같은 안내는 바뀔 때와 세션 시작 때만 한다. 살아 있지만 멈춘 코디네이터(권한 창 대기 등)는 감지하지 못한다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
 - 수동 복구는 메인에서 `/orca-team:up` 을 실행한다. 살아 있는 코디네이터는 그대로 두고, 없으면 새로 띄운다. 새 코디네이터는 `orch bind` 로 기존 Run 에 다시 붙고 `orch status` 의 `next` 로 이어 간다.
 
 ## 개발

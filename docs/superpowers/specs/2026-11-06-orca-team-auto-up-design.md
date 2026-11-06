@@ -48,7 +48,8 @@
 3. `config.toml` 을 읽을 수 있고 `[coordinator] auto_up` 이 false 가 아니다.
 4. `run.json` 에 `coordinator_handle` 이 있고 `terminal_state` 가 `dead` 다.
 5. 시작 유예 중이 아니다(`setup.starting(run)` 이 false).
-6. 진행 중인 자동 실행이 없다(`.orchestration/state/auto-up.pid` 의 pid 가 살아 있지 않다).
+6. 진행 중인 자동 실행이 없다(`.orchestration/state/auto-up.pid` 의 pid 가 살아 있지 않거나, pid 파일이 60초(`PID_STALE_SECONDS`)보다 오래됐다).
+7. 직전 자동 실행 뒤 10분(`RETRY_WINDOW_SECONDS = 600`)이 지났다(`auto-up.json` 의 `spawned_at`). 그 안에 다시 `dead` 면 띄우지 않고 재사망 문구만 넘긴다.
 
 ### 4.1 결정 결과
 
@@ -57,9 +58,9 @@
 판정 순서(앞에서 결과가 정해지면 멈춘다):
 1. 조건 1·2 불만족 또는 설정 파일 오류 → None, 문구 없음
 2. 시작 유예 중 → None, 문구 없음
-3. 자동 실행 진행 중(pid 살아 있음) → None, 문구 없음
+3. 자동 실행 진행 중(pid 살아 있고 pid 파일이 60초 안) → None, 문구 없음
 4. `coordinator_handle` 없음 → None, 기록 불확실 문구
-5. `terminal_state`: `alive` → None, 문구 없음 / `unknown` → None, 확인 불가 문구 / `dead` → `auto_up` 이 true 면 spawn·다시 띄움 문구, false 면 None·자동 꺼짐 문구
+5. `terminal_state`: `alive` → None, 문구 없음 / `unknown` → None, 확인 불가 문구 / `dead` → `spawned_at` 이 10분 안이면 None·재사망 문구, 아니면 `auto_up` 이 true 면 spawn·다시 띄움 문구, false 면 None·자동 꺼짐 문구
 
 | 상황 | action | 메인에게 넘기는 문구 |
 |---|---|---|
@@ -68,25 +69,31 @@
 | 조건을 모두 만족 | spawn | 다시 띄움 문구 |
 | `auto_up = false` 이고 `dead` | None | 자동 꺼짐 문구 |
 | `coordinator_handle` 없음, 시작 유예 아님 | None | 기록 불확실 문구 |
+| 자동 실행 뒤 10분 안에 다시 `dead`(`auto_up` 과 무관) | None | 재사망 문구 |
 | `unknown` | None | 확인 불가 문구 |
 
 문구(모두 `orca-team:` 으로 시작한다):
 
-- 다시 띄움: `코디네이터가 꺼져 있어 자동으로 다시 띄웠다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 알린다. 요청은 평소대로 orch tell 로 넘긴다(Run 메일함에 쌓였다가 코디네이터가 붙으면 처리된다). 메시지 watcher 가 꺼져 있으면 띄우고, 답하지 않은 질문이 있으면 orch reask 로 다시 보여 준다.`
+- 다시 띄움: `코디네이터가 꺼져 있어 자동으로 다시 띄우는 중이다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 알린다. 요청은 평소대로 orch tell 로 넘긴다(Run 메일함에 쌓였다가 코디네이터가 붙으면 처리된다). 메시지 watcher 가 꺼져 있으면 띄우고, 답하지 않은 질문이 있으면 orch reask 로 다시 보여 준다.`
 - 확인 불가: `Orca 에 연결하지 못해 코디네이터가 살아 있는지 확인하지 못했다. 답변 첫 줄에 사용자에게 Orca 가 켜져 있는지 확인해 달라고 한 줄로 알린다. 확인되면 /orca-team:up 을 실행한다.`
 - 기록 불확실: `코디네이터 실행 기록이 불확실하다(run.json 에 코디네이터 터미널이 없다). 답변 첫 줄에 사용자에게 한 줄로 알리고 /orca-team:up 결과를 확인한다.`
 - 자동 꺼짐: `코디네이터가 꺼져 있다(config.toml 의 auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 알리고 /orca-team:up 을 안내한다.`
+- 재사망: `자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌다(기록: .orchestration/state/auto-up.log). 답변 첫 줄에 사용자에게 한 줄로 알리고, 원인을 확인한 뒤 /orca-team:up 을 실행하도록 안내한다. 자동으로는 더 띄우지 않는다.`
 
 ## 5. 실행과 확인 간격
 
 ### 5.1 `spawn_up(p)`
 - `[sys.executable, <플러그인>/bin/orch, "up"]` 을 프로젝트 루트에서 `start_new_session=True` 로 띄운다. 표준 출력·오류는 `.orchestration/state/auto-up.log` 에 덧붙인다. 대기 플래그(`--wait-run`)는 주지 않는다.
-- 띄운 pid 를 `.orchestration/state/auto-up.pid` 에 쓴다. 훅은 기다리지 않고 돌아온다.
+- 띄운 pid 를 `.orchestration/state/auto-up.pid` 에 쓴다. 훅은 기다리지 않고 돌아온다. `orch up` 은 대기 없이 몇 초 안에 끝나므로 60초(`PID_STALE_SECONDS`)보다 오래된 pid 파일은 진행 중으로 보지 않는다(다른 프로세스가 재사용한 pid 일 수 있다).
+- 띄우면 `auto-up.json` 에 `spawned_at` 을 쓴다. 4절 조건 7(10분 안 재사망은 띄우지 않음)이 이 값을 본다.
+- `setup.up` 은 run.json 잠금 안에서 시작 유예를 다시 확인하고 `launched_at` 을 써서 기동을 선점한다. 동시에 돈 두 `orch up` 중 선점에 진 쪽은 `agent launch` 를 부르지 않고 `starting` 을 돌려준다.
 - 환경은 훅 프로세스 것을 그대로 물려준다. `ORCA_TERMINAL_HANDLE`(메인 터미널)이 있어야 `orch up` 이 메인 자신의 핸들을 코디네이터로 기록하는 실수를 막는다(`setup.up` 의 기존 검사).
 - 실행에 실패하면(예: OSError) 확인 불가 문구를 넘긴다.
 
 ### 5.2 확인 간격
-- `.orchestration/state/auto-up.json` 에 `{"checked_at": "<ISO 8601>"}` 를 쓴다. SessionStart 와 UserPromptSubmit 이 함께 갱신한다.
+- `.orchestration/state/auto-up.json` 에 `{"checked_at": "<ISO 8601>"}` 를 쓴다. SessionStart 와 UserPromptSubmit 이 함께 갱신한다. 같은 파일에 `spawned_at`(5.1)과 `notice` 도 둔다.
+- `notice` 는 마지막으로 넘긴 문구다. UserPromptSubmit 은 문구가 직전 `notice` 와 같으면 넘기지 않는다. SessionStart(force)는 같아도 넘긴다. 문구가 없으면 `notice` 를 지워 다음 문제는 다시 알린다.
+- 생존 확인(`terminal_state`)은 Orca 응답을 3초(`orca.TERMINAL_STATE_TIMEOUT`)만 기다리고, 넘으면 `unknown` 이다.
 - SessionStart 는 간격과 무관하게 확인한다. UserPromptSubmit 은 `checked_at` 뒤 60초(`CHECK_INTERVAL_SECONDS`)가 지났을 때만 확인한다. 기록이 없거나 읽을 수 없으면 확인한다.
 - 조건 1·2(메인, 세팅 끝)를 만족하지 않으면 간격 기록도 하지 않는다.
 
@@ -104,7 +111,7 @@
 - 밀린 메시지·답하지 않은 질문 안내 줄은 그대로 둔다.
 
 ### 6.3 시간 제한과 오류
-- 훅 시간 제한은 10초 그대로다. 확인은 Orca 호출 1번과 프로세스 실행뿐이다.
+- 훅 시간 제한은 10초 그대로다. 확인은 Orca 호출 1번(3초 제한, 넘으면 `unknown`)과 프로세스 실행뿐이다.
 - 훅 안의 예외는 지금처럼 `.orchestration/state/hook-errors.log` 에 기록하고 세션을 막지 않는다.
 
 ## 7. 설정 (`lib/orch/config.py`, `templates/config.toml`)
@@ -144,6 +151,8 @@
 - 실환경 확인(사용자 승인 뒤):
   1. 시험 프로젝트에서 코디네이터 터미널만 닫고 메인에 요청을 보낸다. 자동으로 다시 뜨는지, 메인이 한 줄로 알리는지, 그 요청이 처리되는지 본다.
   2. Orca 를 재시작한 뒤 메인 세션을 다시 연다(SessionStart). Orca 재시작은 별도 승인이 필요하다.
+  3. 바쁜 코디네이터가 잠깐이라도 shell-only(dead)로 보이지 않는지 본다.
+  4. Orca 재시작 뒤 Orca 가 코디네이터를 되살리면 새 핸들로 바뀌어 옛 핸들이 stale 로 보이는지 본다(중복 실행 위험).
 
 ## 12. 범위 밖
 - 멈춘(hung) 코디네이터 감지와 강제 재시작
