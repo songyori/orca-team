@@ -61,7 +61,8 @@ class TemplateTest(unittest.TestCase):
     def test_design_rules(self):
         text = (T / "design-rules.md").read_text(encoding="utf-8")
         headings = ("# 디자인 규칙", "## §0 범위", "## §1 금지 목록 (AI 티)", "## §2 접근성", "## §3 색", "## §4 글자",
-                    "## §5 레이아웃", "## §6 표면·동작", "## §7 상태", "## 자동 검사", "## 출처")
+                    "## §5 레이아웃", "## §6 표면·동작", "## §7 상태", "## 즉시 차단 항목", "## 자동 검사",
+                    "## 출처")
         positions = [text.index(heading) for heading in headings]
         self.assertEqual(positions, sorted(positions))
         banned = text[text.index("## §1"):text.index("## §2")]
@@ -124,6 +125,29 @@ class TemplateTest(unittest.TestCase):
         for key in ("## 문구 기준", "{text_lint}", ".orchestration/text-rules.md", "docs/planning/voice.md",
                     "### 문구 점검", "text-rules §5", "P3", "orch 문구 자동 검사", ".orchestration/roles/"):
             self.assertIn(key, text)
+
+    def test_blocker_list_matches_between_rules_and_review(self):
+        rules = (T / "design-rules.md").read_text(encoding="utf-8")
+        review = (T / "review-design.md").read_text(encoding="utf-8")
+        section = rules[rules.index("## 즉시 차단 항목"):rules.index("## 자동 검사")]
+        in_rules = set(re.findall(r"^- (.+)$", section, re.M))
+        p1 = review[review.index("   - P1:"):review.index("   - P2:")]
+        in_review = set(re.findall(r"^     - (.+)$", p1, re.M))
+        self.assertEqual(len(in_review), 10)
+        self.assertEqual(in_rules, in_review)
+        state = rules[rules.index("## §7 상태"):rules.index("## 즉시 차단 항목")]
+        for key in ("되돌리기", "다시 시도", "임시 페이지를 연결했다면 확인 뒤 되돌린다"):
+            self.assertIn(key, state)
+        self.assertIn("예외가 인정되지 않는다", rules)
+        self.assertIn("즉시 차단 항목은 리포트에 예외를 적었어도 P1 이다.", review)
+        self.assertIn("이 태스크가 만든 것(`(새로 생김)`·`(회귀)`)은 REQUEST_CHANGES 사유다", review)
+        self.assertIn("`(기존)`(§1 위반 포함)", review)
+        self.assertIn("대비는 토큰·색 값으로 계산할 수 있으면", review)
+        self.assertIn("§ 제목이 없는 이전 버전 규칙 파일이면 P2 는 적지 않고", review)
+        self.assertIn("developer 는 ask 로 묻는다.", rules[rules.index("## §3"):rules.index("## §4")])
+        self.assertIn("동작 줄이기 설정에서는 줄이지 않는다(§2 의 10번)", rules)
+        self.assertIn("임시 페이지를 연결했다면 확인 뒤 되돌린다",
+                      (T / "roles" / "developer.md").read_text(encoding="utf-8"))
 
     def test_design_tool_rules(self):
         designer = (T / "roles" / "designer.md").read_text(encoding="utf-8")
@@ -243,7 +267,6 @@ class TemplateTest(unittest.TestCase):
         self.assertRegex(item, r"\(1\) `render\.context`[^()]*그대로 출력.*\(2\) .*AskUserQuestion.*\(3\) .*orch answer")
         self.assertRegex(text, r"`render` 가 있으면\(ask, approval, question\) 그대로 AskUserQuestion")
         self.assertNotIn("tell --reply", text)
-
 
     def test_worker_spec_names_ask_roles(self):
         text = (T / "worker-spec.md").read_text(encoding="utf-8")
@@ -420,7 +443,6 @@ class TemplateTest(unittest.TestCase):
                 self.assertIn("### 디자인 점검", text)
                 self.assertNotIn("### 금지 목록 점검", text)
                 self.assertIn("§2–§7", text)
-
 
     def test_docs_describe_design_rules(self):
         readme = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")

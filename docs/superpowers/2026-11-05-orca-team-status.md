@@ -17,7 +17,7 @@
 
 ## 검증
 
-- 테스트: `bash orca-team/tests/run.sh`(565개, 2026-11-06 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
+- 테스트: `bash orca-team/tests/run.sh`(574개, 2026-11-06 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
 - 실환경 확인: 0.3.0, 0.4.0, 0.5.0 을 실제 Orca·Codex·Claude Design 으로 한 바퀴씩 돌렸다. 결과는 0.3.0·0.4.0 설계 문서 §12, 0.5.0 설계 문서 §14 에 있다.
 - 실환경 확인 방법:
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.
@@ -35,6 +35,7 @@
 - 자동 검사(`lib/orch/lint.py`): U+FE0F 가 두 번 겹치면 보이지 않는 발췌로 보고된다. 여러 줄에 걸친 Tailwind className 은 검사하지 않는다.
 - `tests/test_lint.py`: 그라디언트 줄 번호 테스트가 `str.count` 호출 0회를 요구한다. 선형 비용보다 엄격하다.
 - 코디네이터가 `orch notify --type question` 으로 올린 질문은 직무 정보가 없어 header 기본값이 "기획"이다.
+- 0.5.2 디자인 diff 검사(`lib/orch/designdiff.py`): 추가한 줄과 내용이 같은 기존 줄도 함께 잡힌다. `focus-visible:outline-none` 만 있어도 대체 포커스로 본다. CSS `.a:focus:not(...)` 도 대체로 본다. 리뷰마다 파일×커밋 수만큼 `git show` 를 문구 검사와 디자인 검사가 따로 부른다(캐시 없음).
 - 그 밖의 한계: 기본 설계 §13 "v0.1 알려진 한계", "0.3.0 알려진 한계".
 
 ## 저장소 규칙

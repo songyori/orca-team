@@ -72,7 +72,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
   2. `orca-team/templates/roles/director.md` 를 `.orchestration/roles/director.md` 로, `orca-team/templates/design-rules.md` 를 `.orchestration/design-rules.md` 로 복사한다.
   3. `.orchestration/roles/planner.md`, `designer.md`, `developer.md` 와 `.orchestration/coordinator.md` 를 `orca-team/templates/` 의 같은 파일로 바꾸고, `CLAUDE.md` 의 `<!-- orca-team -->` 절을 `orca-team/templates/CLAUDE.section.md` 로 바꾼다. 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
   4. 새 흐름은 경로가 바뀐다: 화면 디자인 `docs/design/<화면>/` → `docs/design/screens/<화면>/`, `docs/design/system.md` → `docs/design/system/`(director 가 만든다). 기존 파일은 그대로 두고 새 태스크부터 새 경로를 쓴다.
-- 0.5.1 이하로 만든 프로젝트도 플러그인을 업데이트하면 새 리뷰 방식과 자동 검사가 바로 붙는다(리포트의 이전 소절 이름 `### 금지 목록 점검` 도 받는다). 워커가 새 규칙으로 작업하게 하려면 `orca-team/templates/design-rules.md` 를 `.orchestration/design-rules.md` 로, `orca-team/templates/roles/director.md`·`designer.md`·`developer.md` 를 `.orchestration/roles/` 로 복사한다(프로젝트에서 직무 문서를 고쳤다면 비교해 합친다). 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
+- 0.5.1 이하로 만든 프로젝트도(`[roles.director]` 가 있는 0.4.0 이후 프로젝트) 플러그인을 업데이트하면 새 리뷰 방식과 자동 검사가 바로 붙는다(리포트의 이전 소절 이름 `### 금지 목록 점검` 도 받는다). 워커가 새 규칙으로 작업하게 하려면 `orca-team/templates/design-rules.md` 를 `.orchestration/design-rules.md` 로, `orca-team/templates/roles/director.md`·`designer.md`·`developer.md` 를 `.orchestration/roles/` 로 복사한다(프로젝트에서 직무 문서를 고쳤다면 비교해 합친다). 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
 - 설계: `docs/superpowers/specs/2026-11-06-orca-team-design-rules-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-06-orca-team-design-rules.md`.
 
 ## 문구 규칙
