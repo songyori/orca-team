@@ -43,8 +43,9 @@ class TemplateTest(unittest.TestCase):
                     "자기가 연 탭만 닫는다", "${XDG_CACHE_HOME:-$HOME/.cache}/orca-team/refs/", "캡처 불가",
                     "docs/design/references.md", "docs/design/board/", "docs/design/pilots/", "docs/design/system/",
                     "design_system_url: <URL>", "Design System 타입", '"quickstart"', "orch ask-user --task",
-                    "timeout: 600000", "--pending", "--wait out-NNNN", "수정안 1개", "새 3안", "### 금지 목록 점검",
-                    ".orchestration/design-rules.md", "## 보강 태스크", "AskUserQuestion"):
+                    "timeout: 600000", "--pending", "--wait out-NNNN", "수정안 1개", "새 3안", "### 디자인 점검",
+                    ".orchestration/design-rules.md", "## 보강 태스크", "AskUserQuestion", "§3 의 7번",
+                    "word-break: keep-all", "눌림"):
             self.assertIn(key, text)
 
     def test_director_questions_pass_orch_validation(self):
@@ -59,11 +60,21 @@ class TemplateTest(unittest.TestCase):
 
     def test_design_rules(self):
         text = (T / "design-rules.md").read_text(encoding="utf-8")
+        headings = ("# 디자인 규칙", "## §0 범위", "## §1 금지 목록 (AI 티)", "## §2 접근성", "## §3 색", "## §4 글자",
+                    "## §5 레이아웃", "## §6 표면·동작", "## §7 상태", "## 자동 검사", "## 출처")
+        positions = [text.index(heading) for heading in headings]
+        self.assertEqual(positions, sorted(positions))
+        banned = text[text.index("## §1"):text.index("## §2")]
+        self.assertEqual(len(re.findall(r"^\d+\. ", banned, re.M)), 10)
         for key in ("이모지", "Lucide", "Phosphor", "Tabler", "border-left", "border-l-4", "파랑→보라", "글래스모피즘",
                     "블롭", "3열 카드", "가운데 정렬", "Inter", "한글 글꼴", "4.5:1", "3:1", "Unlock the power of",
-                    "AI-powered", "lorem ipsum", "### 금지 목록 점검", "orch review"):
+                    "AI-powered", "lorem ipsum", "### 디자인 점검", "orch review", ":focus-visible",
+                    "prefers-reduced-motion", "user-scalable=no", "word-break: keep-all", "tabular-nums", "0.96",
+                    "@media (hover: hover)", "overscroll-behavior: contain", "Storybook", "커밋하지 않는다",
+                    "44pt", "48dp", "https://github.com/jakubkrehel/skills", "MIT"):
             self.assertIn(key, text)
-        self.assertEqual(len(re.findall(r"^\d+\. ", text, re.M)), 10)
+        self.assertNotIn("### 금지 목록 점검", text)
+        self.assertNotRegex(text, r"\d~\d")
 
     def test_text_rules(self):
         text = (T / "text-rules.md").read_text(encoding="utf-8")
@@ -72,7 +83,7 @@ class TemplateTest(unittest.TestCase):
             self.assertIn(f"\n{heading}", text)
         for key in ("docs/planning/voice.md", "`### 문구 점검`", "{name}", "%s", "하여야 한다", "할 수 있다",
                     "A가 아니라 B", "되어지다", "에 있어서", "P1(REQUEST_CHANGES)", "P2:", "P3:", "orch review",
-                    ".orchestration/design-rules.md", "https://github.com/epoko77-ai/im-not-ai",
+                    ".orchestration/design-rules.md", "design-rules.md` §1 의 1번", "https://github.com/epoko77-ai/im-not-ai",
                     "https://github.com/amondnet/yoonmoon", "MIT"):
             self.assertIn(key, text)
         self.assertIn("designer·developer 태스크", text)
@@ -303,14 +314,14 @@ class TemplateTest(unittest.TestCase):
         text = (T / "roles/designer.md").read_text(encoding="utf-8")
         for key in ("docs/design/direction.md", "design_system_url", "project/README.md", "design_systems: false",
                     "`### 시스템 추가 제안`", "assets/<화면>/", "docs/design/screens/", ".orchestration/design-rules.md",
-                    "`### 금지 목록 점검`", "빈 상태, 로딩, 오류", "반응형", "가장 가까운 기존 토큰"):
+                    "`### 디자인 점검`", "빈 상태, 로딩, 오류", "반응형", "가장 가까운 기존 토큰", "§7 의 상태"):
             self.assertIn(key, text)
         self.assertNotIn("docs/design/system.md", text)
 
     def test_developer_uses_tokens_and_components_only(self):
         text = (T / "roles/developer.md").read_text(encoding="utf-8")
         for key in ("docs/design/system/tokens.json", "CSS 변수", "공통 컴포넌트", "토큰과 공통 컴포넌트만 쓴다",
-                    ".orchestration/design-rules.md", "`### 금지 목록 점검`"):
+                    ".orchestration/design-rules.md", "`### 디자인 점검`", "Storybook", "커밋하지 않는다"):
             self.assertIn(key, text)
 
     def test_coordinator_handles_director_and_system_proposals(self):
@@ -401,6 +412,14 @@ class TemplateTest(unittest.TestCase):
             self.assertIn(key, readme)
         spec = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
         self.assertIn("### 코디네이터 자동 부활 (2026-11-06, 0.5.1)", spec[spec.index("## 13."):])
+
+    def test_role_docs_drop_old_report_name(self):
+        for name in ("director", "designer", "developer"):
+            with self.subTest(role=name):
+                text = (T / "roles" / f"{name}.md").read_text(encoding="utf-8")
+                self.assertIn("### 디자인 점검", text)
+                self.assertNotIn("### 금지 목록 점검", text)
+                self.assertIn("§2–§7", text)
 
 
 if __name__ == "__main__":

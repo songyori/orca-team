@@ -7,7 +7,7 @@
 ## 입력
 - `docs/planning/spec.md`(화면 목록, 사용자 흐름), `docs/planning/contracts.md`, `docs/planning/interview.md`(브랜드 자산, 사용자가 아는 레퍼런스)
 - 태스크 spec 의 Change: 기획이 정한 시안 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)
-- `.orchestration/design-rules.md`: AI 티 금지 목록. 모든 단계의 산출물이 지킨다.
+- `.orchestration/design-rules.md`: 디자인 규칙(§1 AI 티 금지 목록, §2–§7 접근성·색·글자·레이아웃·표면·동작·상태). 모든 단계의 산출물이 지킨다.
 
 ## 도구
 | 일 | 도구 |
@@ -89,7 +89,9 @@ EOF
 ## 단계 ③ 디자인 시스템
 1. Design System 타입으로 프로젝트 디자인 시스템을 만든다. 확정한 시안에서 값을 뽑아 정리하고, 타입이 돌려주는 지침(대비 4.5:1, 토큰 이름 규칙, `tokens.json` 목록 형태, 파일 순서)을 따른다.
    - 토큰: 색(라이트 테마 필수, 다크는 기획이 요구할 때만), 글꼴 패밀리와 크기 단계, 간격, 모서리, 그림자
-   - 컴포넌트: 기획 화면에 필요한 것 전부. 최소한 버튼, 입력, 선택, 카드, 목록 항목, 내비게이션, 모달, 토스트, 빈 상태, 로딩, 오류. 컴포넌트마다 상태(기본, hover, focus, disabled, error)별 미리보기와 사용 규칙
+   - 색 토큰은 design-rules §3 을 따른다: 중립·강조 램프와 실제로 쓰는 상태 램프만 두고, 기본 토큰은 색 이름, 의미 토큰은 역할 이름으로 짓는다. 의미 토큰의 대비는 실제로 그 위에 렌더되는 배경과 잰다.
+   - 글자 토큰은 design-rules §4 를 따른다: 크기 단계마다 줄간격·굵기를 묶어 쓰임 이름을 붙인다. 한글 줄바꿈(`word-break: keep-all`)과 웹폰트 불러오기 방법(서브셋, `font-display: swap`)을 README 사용 규칙에 적는다.
+   - 컴포넌트: 기획 화면에 필요한 것 전부. 최소한 버튼, 입력, 선택, 카드, 목록 항목, 내비게이션, 모달, 토스트, 빈 상태, 로딩, 오류. 컴포넌트마다 상태(기본, hover, focus, 눌림, disabled, 로딩, error 중 해당하는 것)별 미리보기와 사용 규칙
    - README: 브랜드 원칙, 시각 기초, 아이콘 세트(Lucide·Phosphor·Tabler 중 하나), 사용 규칙
 2. 타입이 `project/` 아래에 두라는 파일을 저장소 `docs/design/system/` 아래 같은 상대 경로로 쓴다(예: `project/tokens.json` → `docs/design/system/tokens.json`). 게시할 때 `files` 로 `project/<경로>` 를 그 파일에 연결한다. 개발자와 Codex 는 `docs/design/system/tokens.json` 과 `docs/design/system/README.md` 를 읽는다.
 3. **질문.**
@@ -126,9 +128,9 @@ EOF
 | `docs/design/board/` | 레퍼런스 보드 원본 |
 | `docs/design/pilots/` | 확정 시안 원본 |
 | `docs/design/system/` | 디자인 시스템 원본(`tokens.json`, `README.md`, `components/…`) |
-| `docs/tasks/T-xxx/report.md` | 리포트: 보드·시안·시스템 URL, 시안 라운드 수, 현재 라운드 `## r{round}` 절 안의 `### 금지 목록 점검` |
+| `docs/tasks/T-xxx/report.md` | 리포트: 보드·시안·시스템 URL, 시안 라운드 수, 현재 라운드 `## r{round}` 절 안의 `### 디자인 점검` |
 
-- 리포트 `### 금지 목록 점검` 소절(현재 라운드 `## r{round}` 절 안)에는 `.orchestration/design-rules.md` 항목마다 지켰는지와, 예외가 있으면 그 근거를 적는다.
+- 리포트 `### 디자인 점검` 소절(현재 라운드 `## r{round}` 절 안)에는 `.orchestration/design-rules.md` 첫머리가 정한 세 가지를 적는다: §1 항목마다 지켰는지, §2–§6 에서 어긴 곳과 예외·근거, §7 에서 확인한 상태와 확인 방법.
 
 ## 수정 라운드에서 이어 가기
 - 이전 워커가 질문의 답을 기다리다 끝났을 수 있다. 먼저 `docs/design/direction.md` 를 읽고 `.orchestration/bin/orch ask-user --task T-xxx --pending` 을 실행한다. `pending` 의 답은 direction.md 에 옮겨 적는다. `waiting` 에 id 가 있으면 새 질문 대신 `--wait <그 id>` 로 그 답부터 기다린다.
@@ -144,7 +146,7 @@ EOF
 ## 품질 기준
 - 레퍼런스는 이 서비스와 같은 분야이거나 인접 분야의 실제 상용 서비스다. "깔끔한 디자인" 같은 막연한 말 대신 가져올 점을 구체적으로 적는다.
 - 톤 A·B·C 는 사용자가 한눈에 구별할 만큼 다르다.
-- 디자인 시스템의 색 대비는 본문 4.5:1, 24px 이상 글자와 아이콘·테두리 3:1 이상이다.
+- 디자인 시스템의 색 대비는 `.orchestration/design-rules.md` §3 의 7번을 지킨다(본문 4.5:1, 24px 이상 글자와 아이콘·테두리 3:1 이상).
 - 모든 산출물이 `.orchestration/design-rules.md` 를 지킨다.
 
 ## 하지 않는 것

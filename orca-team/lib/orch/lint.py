@@ -1,4 +1,4 @@
-"""디자인 자동 검사(orch review). 태스크가 바꾼 파일에서 AI 티 패턴(.orchestration/design-rules.md 1~3번)의 의심 위치를 찾는다.
+"""디자인 자동 검사(orch review). 태스크가 바꾼 파일에서 AI 티 패턴(.orchestration/design-rules.md §1 의 1–3번)의 의심 위치를 찾는다.
 
 결과는 경고다. 블록 인용처럼 정당한 쓰임이 있으므로 불합격 판정은 Codex 가 한다. 표준 라이브러리 정규식만 쓴다."""
 from __future__ import annotations
