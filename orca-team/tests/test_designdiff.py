@@ -122,5 +122,63 @@ class DesignDiffTest(ProjectCase):
         self.assertEqual(self.lint(["src/Icon.tsx"], sha), [f"src/Icon.tsx: {LOST.format(name='aria-label', n=1)}"])
 
 
+    def test_moved_file_is_not_reported(self):
+        body = ('<button aria-label="닫기"><img alt="x" /></button>\n<h1 className="break-keep">제목</h1>\n'
+                '<a className="outline-none">a</a>\n<meta name="viewport" content="user-scalable=no">\n')
+        self.commit("src/Close.tsx", body, "chore: base")
+        (self.root / "src/ui").mkdir(parents=True, exist_ok=True)
+        self.git("mv", "src/Close.tsx", "src/ui/Close.tsx")
+        self.git("commit", "-q", "-m", "[T-001] refactor: move")
+        sha = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(self.lint(["src/Close.tsx", "src/ui/Close.tsx"], sha), [])
+
+    def test_extracted_component_is_not_reported(self):
+        self.commit("src/A.tsx", '<button aria-label="닫기">x</button>\n', "chore: base")
+        a = self.commit("src/A.tsx", "<Close />\n")
+        b = self.commit("src/B.tsx", 'export const Close = () => (\n  <button\n    aria-label="닫기"\n  >x</button>\n);\n')
+        self.assertEqual(self.lint(["src/A.tsx", "src/B.tsx"], a, b), [])
+
+    def test_removed_then_restored_over_commits_is_not_reported(self):
+        self.commit("src/Close.tsx", '<button aria-label="닫기">x</button>\n', "chore: base")
+        one = self.commit("src/Close.tsx", "<button>x</button>\n")
+        two = self.commit("src/Close.tsx", '<button aria-label="닫기">x</button>\n')
+        self.assertEqual(self.lint(["src/Close.tsx"], one, two), [])
+
+    def test_net_loss_still_reported_per_file(self):
+        self.commit("src/A.tsx", '<i aria-label="a">x</i>\n<i aria-label="b">x</i>\n', "chore: base")
+        a = self.commit("src/A.tsx", "<i>x</i>\n<i>x</i>\n")
+        b = self.commit("src/B.tsx", '<i aria-label="c">x</i>\n')
+        self.assertEqual(self.lint(["src/A.tsx", "src/B.tsx"], a, b),
+                         [f"src/A.tsx: {LOST.format(name='aria-label', n=2)}"])
+
+    def test_plain_identifiers_are_not_signals(self):
+        base = ("const role = user.role;\nif (role === 'admin') {}\nconst lang = navigator.language;\nconst alt = 1;\n"
+                "theme: { focus: { color: 'red' } },\n")
+        self.commit("src/util.ts", base, "chore: base")
+        sha = self.commit("src/util.ts", "const x = 1;\n")
+        self.assertEqual(self.lint(["src/util.ts"], sha), [])
+
+    def test_attribute_forms_still_signals(self):
+        self.commit("src/A.tsx", '<div role="dialog" lang={l} alt=\'x\' className="focus:ring-2 motion-safe:a">\n', "chore: base")
+        sha = self.commit("src/A.tsx", "<div>\n")
+        names = [m.split(" ")[3] for m in self.lint(["src/A.tsx"], sha)]
+        self.assertEqual(names, ["role", "alt", "focus:", "motion-safe:", "lang"])
+
+    def test_markdown_is_not_a_target(self):
+        self.commit("docs/design/system/README.md", "keep-all 을 쓴다\n", "chore: base")
+        sha = self.commit("docs/design/system/README.md", "없다\n")
+        self.assertEqual(self.lint(["docs/design/system/README.md"], sha), [])
+
+    def test_weak_focus_replacements_and_outline_hidden(self):
+        ring0 = self.commit("src/R.tsx", '<a className="outline-none focus:ring-0">a</a>\n')
+        shadow = self.commit("src/S.tsx", '<a className="outline-none focus:shadow-none">a</a>\n')
+        transp = self.commit("src/T.tsx", '<a className="outline-none focus:ring-transparent">a</a>\n')
+        hidden = self.commit("src/H.tsx", '<a className="outline-hidden">a</a>\n')
+        style = self.commit("src/s.css", ".a { outline-style: none; }\n")
+        files = ["src/R.tsx", "src/S.tsx", "src/T.tsx", "src/H.tsx", "src/s.css"]
+        out = self.lint(files, ring0, shadow, transp, hidden, style)
+        self.assertEqual([m.split(":")[0] for m in out], files)
+
+
 if __name__ == "__main__":
     unittest.main()

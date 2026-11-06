@@ -349,13 +349,13 @@ class ReviewDesignSectionTest(ReviewCase):
     def head(self):
         return self.git("rev-parse", "HEAD").strip()
 
-    def test_diff_lint_follows_content_lint(self):
+    def test_diff_lint_comes_before_content_lint(self):
         self.commit_text("src/close.tsx", '<button aria-label="닫기">x</button>\n')
         self.commit_text("src/close.tsx", "<span>🚀</span>\n<button>x</button>\n")
         section = self.section(["src/close.tsx"], [self.head()])
         emoji = section.index("- src/close.tsx:1: 이모지(🚀)")
         lost = section.index("- src/close.tsx: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)")
-        self.assertLess(emoji, lost)
+        self.assertLess(lost, emoji)
 
     def test_review_prompt_has_zoom_block(self):
         self.commit_text("src/index.html", '<meta name="viewport" content="width=device-width, user-scalable=no">\n')
@@ -366,8 +366,9 @@ class ReviewDesignSectionTest(ReviewCase):
         with mock.patch("orch.review.design_findings", return_value=[f"a.css:{n}: x" for n in range(40)]), \
                 mock.patch("orch.review.design_diff_lint", return_value=[f"b.css: y{n}" for n in range(20)]):
             section = self.section(["a.css"], [])
-        self.assertIn("- b.css: y9\n", section)
-        self.assertNotIn("b.css: y10", section)
+        self.assertIn("- b.css: y19\n", section)
+        self.assertIn("- a.css:29: x\n", section)
+        self.assertNotIn("a.css:30: x", section)
         self.assertIn("- … 외 10건\n", section)
 
     def test_failing_check_keeps_the_other(self):

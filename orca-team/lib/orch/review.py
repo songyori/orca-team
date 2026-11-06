@@ -128,13 +128,13 @@ def bullets(found: list[str]) -> str:
 
 
 def design_section(p: Project, cfg: Config, role: str, files: list[str], shas: list[str]) -> str:
-    """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 자동 검사는 바뀐 파일 내용
-    검사(lint.design_findings) 다음에 태스크 커밋 diff 검사(designdiff.design_diff_lint)를 이어 붙여 50건으로 자른다.
+    """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 자동 검사는 태스크 커밋 diff
+    검사(designdiff.design_diff_lint) 다음에 바뀐 파일 내용 검사(lint.design_findings)를 이어 붙여 50건으로 자른다.
     다음 절과 사이의 빈 줄까지 붙여 돌려준다(review-prompt.md 의 자리표시가 다음 절 제목 바로 앞에 있다). 다른 직무와,
     director 직무가 없는 이전 버전(0.3.0) 프로젝트는 빈 문자열."""
     if role not in DESIGN_ROLES or plan.DIRECTOR_ROLE not in cfg.roles:
         return ""
-    found = cap([*guarded(design_findings, p.root, files), *guarded(design_diff_lint, p.root, files, shas)])
+    found = cap([*guarded(design_diff_lint, p.root, files, shas), *guarded(design_findings, p.root, files)])
     return render((TEMPLATES / "review-design.md").read_text(encoding="utf-8"), {"design_lint": bullets(found)}) + "\n"
 
 
