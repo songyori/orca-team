@@ -18,7 +18,7 @@
   - progress: 한두 줄로 전한다.
   - ask(기획·디자인 디렉터 워커의 질문), approval(디자인 일괄 승인), question(코디네이터 질문. 답은 코디네이터로 간다): 이 순서로 처리한다. (1) `render.context` 가 있으면 그 내용을 평문으로 그대로 출력한다. (2) `render` 로 AskUserQuestion 을 부른다(아래 "질문 표시 규칙"). (3) 답을 `.orchestration/bin/orch answer <id> "<답>"` 으로 돌려준다. `-` 로 시작하는 답은 `.orchestration/bin/orch answer <id> -- "<답>"`. 답은 `orch answer` 하나로만 돌려준다.
   - done: 결과, 바뀐 주요 파일, 리뷰 판정을 요약해 전한다.
-- 세션을 다시 열었으면 `/orca-team:up` 을 먼저 실행한다.
+- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다(config.toml auto_up). 훅 안내가 없는데 코디네이터 상태가 의심되면 `/orca-team:up` 을 실행한다.
 
 ### 질문 표시 규칙
 - `render.context` 가 있으면 그 내용을 먼저 사용자에게 평문으로 그대로 보여 준 뒤 AskUserQuestion 을 부른다(선택지가 없으면 평문 질문 앞에 둔다). 요약하거나 자기 설명을 덧붙이지 않는다. 보여 주지 않고 부르면 훅이 그 질문을 한 번 거부하고 context 를 돌려준다.

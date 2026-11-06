@@ -384,6 +384,18 @@ class TemplateTest(unittest.TestCase):
         for key in ("### 문구 규칙 (2026-11-05, 0.5.0)", "text_lint", "{text_section}", "NOTES.md", "파일 복사"):
             self.assertIn(key, section)
 
+    def test_docs_describe_auto_up(self):
+        claude = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("자동으로 다시 띄운다(config.toml auto_up)", claude)
+        self.assertNotIn("세션을 다시 열었으면 `/orca-team:up` 을 먼저 실행한다", claude)
+        up = (PLUGIN / "skills/up/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("수동 복구", up)
+        readme = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        for key in ("auto_up = false", "자동으로 다시 띄운다", "docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md"):
+            self.assertIn(key, readme)
+        spec = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
+        self.assertIn("### 코디네이터 자동 부활 (2026-11-06, 0.5.1)", spec[spec.index("## 13."):])
+
 
 if __name__ == "__main__":
     unittest.main()

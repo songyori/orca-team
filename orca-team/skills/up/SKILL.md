@@ -1,7 +1,7 @@
 ---
 name: up
 description: >
-  orca-team 프로젝트에서 세션을 다시 열었을 때 코디네이터와 메시지 watcher 를 되살린다.
+  orca-team 프로젝트의 코디네이터와 메시지 watcher 를 되살리는 수동 복구. 코디네이터는 보통 메인 세션 훅이 자동으로 살린다(config.toml auto_up). 자동 부활이 꺼져 있거나 훅이 안내했을 때 쓴다.
   트리거: "/orca-team:up", SessionStart 안내.
 ---
 

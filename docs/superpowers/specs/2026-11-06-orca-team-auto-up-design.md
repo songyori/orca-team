@@ -33,8 +33,8 @@
 | 판정 | 조건 |
 |---|---|
 | `alive` | `ok: true`, `result.terminal.connected: true`, `result.terminal.agentIdentity: "claude"` |
-| `dead` | `ok: false` 이고 `error.code` 가 `terminal_handle_stale`(닫힌 핸들, Orca 재시작 뒤의 옛 핸들). 또는 `ok: true` 인데 `connected` 가 true 가 아니거나 `agentIdentity` 가 `"claude"` 가 아님(Claude 가 끝나고 셸만 남음) |
-| `unknown` | 그 밖의 모든 경우: orca 실행 파일 없음(`OrchError` 코드 12), 출력 파싱 실패, 다른 오류 코드 |
+| `dead` | `ok: false` 이고 `error.code` 가 `terminal_handle_stale`(닫힌 핸들, Orca 재시작 뒤의 옛 핸들). 또는 `ok: true` 이고 `result.terminal` 이 있는데 `connected` 가 true 가 아니거나 `agentIdentity` 가 `"claude"` 가 아님(Claude 가 끝나고 셸만 남음) |
+| `unknown` | 그 밖의 모든 경우: orca 실행 파일 없음(`OrchError` 코드 12), 출력 파싱 실패, 다른 오류 코드, `ok: true` 인데 `result.terminal` 이 없거나 빔 |
 
 - 2026-11-06 Orca 1.4.245 에서 닫힌 핸들과 없는 핸들 모두 `ok: false`, `error.code: "terminal_handle_stale"`, exit 1 을 확인했다.
 - 기존 `terminal_alive(handle)` 은 `terminal_state(handle) == "alive"` 로 바꾼다. 코드 12 는 지금처럼 전파한다(`status`·`up` 의 기존 동작 유지). `terminal_state` 는 코드 12 를 전파하지 않고 `unknown` 으로 돌려준다.
@@ -100,7 +100,7 @@
 - 메인 세션이면 간격과 무관하게 `decide`·`spawn_up` 을 실행한다.
 - 지금 안내의 `- 먼저 /orca-team:up 으로 코디네이터와 메시지 watcher 를 확인한다.` 줄은 결정 결과로 바꾼다.
   - 문구가 있으면 그 문구를 넣는다.
-  - 문구가 없으면 `- 코디네이터는 훅이 확인한다. 메시지 watcher 가 꺼져 있으면 Bash run_in_background: true 로 .orchestration/bin/orch watch 를 띄운다.` 를 넣는다.
+  - 문구가 없으면 ``- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다. 메시지 watcher 가 꺼져 있으면 Bash `run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. 코디네이터 상태가 의심되면 `/orca-team:up` 을 실행한다.`` 를 넣는다.
 - 밀린 메시지·답하지 않은 질문 안내 줄은 그대로 둔다.
 
 ### 6.3 시간 제한과 오류
