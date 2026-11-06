@@ -130,18 +130,20 @@ def spawn_up(p: Project) -> bool:
 
 def check(p: Project, force: bool = False) -> str | None:
     """훅 진입점. 확인 간격을 지키고(force 면 무시), 결정대로 실행한 뒤 메인에게 넘길 문구를 돌려준다.
-    직전에 넘긴 문구(notice)와 같으면 넘기지 않는다(force 면 넘긴다). 문구가 없으면 notice 를 지워 다음 문제는 다시 알린다."""
+    직전에 넘긴 문구(notice)와 같으면 넘기지 않는다(force 면 넘긴다). 실제로 다시 띄웠으면 항상 넘긴다. 문구가 없으면 notice 를 지워 다음 문제는 다시 알린다."""
     if not eligible(p) or not (force or due(p)):
         return None
     record = {**check_record(p), "checked_at": now()}
     write_json(check_file(p), record)
     action, context = decide(p)
+    spawned = False
     if action == "spawn":
         if spawn_up(p):
+            spawned = True
             record["spawned_at"] = now()
         else:
             context = UNKNOWN
-    repeated = context is not None and context == record.get("notice")
+    repeated = not spawned and context is not None and context == record.get("notice")
     if context is None:
         record.pop("notice", None)
     else:

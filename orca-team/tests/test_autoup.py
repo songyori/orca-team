@@ -154,6 +154,17 @@ class CheckTest(AutoUpCase):
             self.assertEqual(autoup.check(self.p, force=True), autoup.REVIVED)
         self.assertEqual(spawn.call_count, 2)
 
+    def test_real_spawn_is_always_announced(self):
+        self.respond("terminal show", STALE, code=1)
+        with patch.object(autoup, "spawn_up", return_value=True) as spawn:
+            self.assertEqual(autoup.check(self.p), autoup.REVIVED)
+            self.set_check(
+                checked_at=self.ago(autoup.CHECK_INTERVAL_SECONDS + 1),
+                spawned_at=self.ago(autoup.RETRY_WINDOW_SECONDS + 1),
+            )
+            self.assertEqual(autoup.check(self.p), autoup.REVIVED)
+        self.assertEqual(spawn.call_count, 2)
+
     def test_same_notice_once_until_changed_or_forced(self):
         self.set_auto_up("false")
         self.respond("terminal show", STALE, code=1)

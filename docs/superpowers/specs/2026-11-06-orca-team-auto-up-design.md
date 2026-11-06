@@ -92,7 +92,7 @@
 
 ### 5.2 확인 간격
 - `.orchestration/state/auto-up.json` 에 `{"checked_at": "<ISO 8601>"}` 를 쓴다. SessionStart 와 UserPromptSubmit 이 함께 갱신한다. 같은 파일에 `spawned_at`(5.1)과 `notice` 도 둔다.
-- `notice` 는 마지막으로 넘긴 문구다. UserPromptSubmit 은 문구가 직전 `notice` 와 같으면 넘기지 않는다. SessionStart(force)는 같아도 넘긴다. 문구가 없으면 `notice` 를 지워 다음 문제는 다시 알린다.
+- `notice` 는 마지막으로 넘긴 문구다. UserPromptSubmit 은 문구가 직전 `notice` 와 같으면 넘기지 않는다. SessionStart(force)는 같아도 넘긴다. 실제로 코디네이터를 다시 띄운 안내(REVIVED)는 `notice` 와 같아도 항상 넘긴다. 문구가 없으면 `notice` 를 지워 다음 문제는 다시 알린다.
 - 생존 확인(`terminal_state`)은 Orca 응답을 3초(`orca.TERMINAL_STATE_TIMEOUT`)만 기다리고, 넘으면 `unknown` 이다.
 - SessionStart 는 간격과 무관하게 확인한다. UserPromptSubmit 은 `checked_at` 뒤 60초(`CHECK_INTERVAL_SECONDS`)가 지났을 때만 확인한다. 기록이 없거나 읽을 수 없으면 확인한다.
 - 조건 1·2(메인, 세팅 끝)를 만족하지 않으면 간격 기록도 하지 않는다.
