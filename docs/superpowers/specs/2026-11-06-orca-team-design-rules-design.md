@@ -135,7 +135,7 @@ Codex ── 변경분만 지적, (새로 생김)·(회귀)·(기존), 즉시 �
 - `orch review` 는 Codex 를 부르기 전에 태스크가 바꾼 파일에서 다음 의심 위치를 찾아 리뷰 프롬프트에 넣는다. 정당한 쓰임이 있으므로 자동 불합격은 아니다. 나머지는 리뷰어가 화면과 코드를 직접 보고 판단한다.
   - §1 의 1번(이모지), 2번(왼쪽 줄 강조), 3번(파랑·보라 그라디언트)
   - 지운 줄에서 줄어든 접근성·글자 신호(접근 가능한 이름, 포커스, 동작 줄이기, 대체 텍스트, 라벨 연결, `lang`, `keep-all`, `tabular-nums`)
-  - 추가한 줄의 확대 막기(`user-scalable=no`·`maximum-scale=1`)와 대체 없는 포커스 제거(`outline: none`)
+  - 추가한 줄의 확대 막기(`user-scalable=no`·`maximum-scale=1`)와 `focus-visible` 없는 포커스 제거(`outline: none`)
 
 ### 4.10 출처
 §2–§7 과 리뷰 방식(변경분 분류, 지운 줄 읽기, 즉시 차단 항목, 싼 수정 순서)은 jakubkrehel/skills(https://github.com/jakubkrehel/skills, MIT)의 better-accessibility·better-colors·better-typography·better-layout·better-ui·interface-review·better-interface·state-machine 에서 가져와 orca-team 흐름에 맞게 새로 압축했다. 한글 줄바꿈·기울임·웹폰트 서브셋, 앱 플랫폼 대응, 리포트·리뷰 연결은 orca-team 이 더했다.
@@ -221,18 +221,19 @@ orch 자동 검사(의심 위치. 정당한 쓰임도 있으니 직접 열어 �
   - 언어: `lang=`
   - 한글 줄바꿈: `keep-all`, `break-keep`(Tailwind)
   - 고정폭 숫자: `tabular-nums`
-  - 앱: `semanticsLabel`, `Semantics(`, `accessibilityLabel`, `accessibilityHint`, `contentDescription`, `accessibilityReduceMotion`, `isReduceMotionEnabled`, `disableAnimations`
+  - 앱: `semanticsLabel`, `semanticLabel`, `Semantics(`, `accessibilityLabel`, `accessibilityHint`, `contentDescription`, `accessibilityReduceMotion`, `isReduceMotionEnabled`, `disableAnimations`
   - 출력: `{rel}: 지운 줄에서 {신호 이름} {n}개가 줄었다(대체가 있는지 확인)`. 신호 이름은 위 묶음 이름이 아니라 개별 신호(`aria-label`, `keep-all` 등)다.
 - **추가한 줄 검사**: 지금 파일의 줄 중 이 태스크가 추가한 줄(`diff_lines` 의 추가한 줄 집합에 든 줄)을 본다. 줄 번호는 지금 파일 기준이다.
-  - 확대 막기: `user-scalable\s*=\s*(no|0)`, `maximum-scale\s*=\s*1`(뒤에 숫자·점이 이어지지 않고, `1.0` 도 포함) → `{rel}:{line}: 확대 막기({조각})`
-  - 포커스 제거: `outline\s*:\s*(none|0)`(뒤에 숫자·점이 이어지지 않는 것), Tailwind `outline-none` → 지금 파일 전체에 `focus-visible`·`focus:`·`:focus` 가 없을 때만 `{rel}:{line}: 대체 없는 포커스 제거({조각})`
-  - 조각은 `lint.snippet` 으로 줄인다.
+  - 확대 막기: `user-scalable\s*=\s*(no|0)`, `maximum-scale\s*=\s*1`(뒤에 숫자·점이 이어지지 않고, `1.0` 도 포함), Next.js `viewport` 객체의 `userScalable: false`·`maximumScale: 1` → `{rel}:{line}: 확대 막기({조각})`
+  - 포커스 제거: `outline\s*:\s*(none|0|0px)`(따옴표 허용, 뒤에 숫자·점이 이어지지 않는 것), Tailwind `outline-none` → 지금 파일 전체에 `focus-visible` 도, `focus:outline-none` 이 아닌 Tailwind `focus:` 클래스(`focus:ring-2` 등)도 없을 때만 `{rel}:{line}: 포커스 표시 제거({조각}, 파일에 focus-visible 없음)`. `:focus` 셀렉터는 대체로 보지 않는다(`:focus { outline: none }` 이 바로 찾을 대상이다).
+  - 조각은 일치한 곳부터 줄 끝까지를 `lint.snippet` 으로 줄인 것이다.
 - git 오류(`diff_lines` 가 None)인 파일, 1MB 를 넘거나 UTF-8 이 아닌 파일의 추가한 줄 검사는 건너뛴다.
-- 결과 순서: 파일 순서대로, 파일 안에서는 지운 줄 검사 다음 추가한 줄 검사(줄 번호 순).
+- 결과 순서: 파일 순서대로, 파일 안에서는 지운 줄 검사(신호 목록 순) 다음 추가한 줄 검사(줄 번호 순).
+- 상한을 걸지 않는다. 상한은 부르는 쪽(`review.design_section`)이 건다.
 
 ### 7.3 리뷰 프롬프트 연결 (`lib/orch/review.py`)
 - `design_section(p, cfg, role, files, shas)` 로 `shas` 를 받는다. `compose_prompt` 가 커밋 SHA 목록을 넘긴다.
-- 목록은 `design_lint(root, files)` 결과 다음에 `design_diff_lint(root, files, shas)` 결과를 이어 붙인 뒤 50건(`lint.MAX_FINDINGS`)으로 자르고 마지막에 "… 외 N건"을 둔다. `design_lint` 는 자기 상한을 그대로 두고, 합친 목록에 같은 상한을 한 번 더 건다.
+- 목록은 `lint.design_findings(root, files)`(상한 없는 내용 검사) 결과 다음에 `design_diff_lint(root, files, shas)` 결과를 이어 붙인 뒤 `lint.cap` 으로 50건(`lint.MAX_FINDINGS`)과 "… 외 N건"으로 자른다. `lint.design_lint` 는 `cap(design_findings(...))` 로 남겨 기존 호출과 테스트를 유지한다.
 - 두 검사는 각각 예외를 잡는다. 실패한 검사는 "자동 검사 실패: {예외 이름}: {메시지}" 한 줄(200자 이내, `text_section` 과 같은 형식)로 바뀌고 다른 검사와 리뷰는 계속된다.
 
 ## 8. 업그레이드
@@ -256,9 +257,9 @@ orch 자동 검사(의심 위치. 정당한 쓰임도 있으니 직접 열어 �
 - `tests/test_designdiff.py`(새 파일)
   - 지운 줄에서 `aria-label` 이 줄면 알리고, 같은 수를 다시 넣으면(옮김·줄 바꿈) 알리지 않는다.
   - `aria-label` 과 `aria-labelledby` 를 따로 센다.
-  - `keep-all`·`break-keep`, `prefers-reduced-motion`, 앱 신호(`semanticsLabel`·`contentDescription`)를 잡는다.
+  - `keep-all`·`break-keep`, `prefers-reduced-motion`, 앱 신호(`semanticsLabel`·`semanticLabel`·`contentDescription`)를 잡는다.
   - 추가한 줄의 `user-scalable=no`·`maximum-scale=1.0` 을 잡고 `maximum-scale=5` 는 잡지 않는다.
-  - `outline: none` 은 파일에 `focus-visible` 이 없을 때만 잡는다. `outline-none focus-visible:ring-2` 는 잡지 않는다.
+  - `outline: none` 은 파일에 `focus-visible` 이 없을 때만 잡는다(`:focus { outline: none }` 은 잡는다). `outline-none focus-visible:ring-2`, `focus:outline-none focus:ring-2` 는 잡지 않는다.
   - 대상 확장자가 아닌 파일, 제외 경로, git 오류 파일을 건너뛴다. 지운 파일은 지운 줄 검사만 한다.
 - `tests/test_textlint.py`: `diff_lines` 가 추가·지운 줄을 수만큼 돌려주고, `added_lines` 결과가 예전과 같다.
 - `tests/test_review.py`(또는 지금 디자인 절 테스트가 있는 파일): 디자인 절에 diff 검사 결과가 들어간다. 합친 목록이 50건으로 잘린다. 한 검사가 예외를 내도 다른 검사 결과와 "자동 검사 실패" 줄이 들어간다.
