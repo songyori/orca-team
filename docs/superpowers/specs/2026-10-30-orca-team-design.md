@@ -498,7 +498,7 @@ E2E 반영 (Orca 1.4.240)
 
 설계: `2026-11-06-orca-team-design-rules-design.md`. 구현에서 정한 것:
 - `textlint.diff_lines` 가 태스크 커밋 diff 의 추가한 줄과 지운 줄을 수만큼 돌려준다. `added_lines` 는 그 추가한 줄의 집합이고, 문구 검사와 디자인 diff 검사가 같은 diff 읽기를 쓴다.
-- `designdiff.design_diff_lint` 는 먼저 대상 파일마다 추가한 줄·지운 줄을 모으고, 신호마다 태스크 전체의 순감소(지운 수 합 − 추가한 수 합)가 0보다 클 때 그 파일의 줄어든 수를 알린다. 같은 속성을 옮기거나 줄만 바꾼 경우, 파일 이동·컴포넌트 추출은 걸러진다. 태스크가 지운 줄과 내용이 같은 줄은 추가한 줄로 보지 않는다. `.md` 는 대상이 아니다. `role`·`alt`·`lang` 은 속성 값이 오는 꼴만, Tailwind 변형은 콜론 뒤에 클래스가 올 때만 센다. 태스크가 지운 파일은 지운 줄 검사만 한다.
+- `designdiff.design_diff_lint` 는 먼저 대상 파일마다 추가한 줄·지운 줄을 모으고, 지운 쪽과 추가한 쪽에 내용이 같은 줄(옮긴 줄)은 양쪽에서 뺀 뒤, 남은 줄로 신호마다 태스크 전체의 순감소(지운 수 합 − 추가한 수 합)가 0보다 클 때 그 파일의 줄어든 수를 알린다. 순수 이동 파일은 다른 파일의 실제 감소와 함께 잡히지 않고, 줄만 바꾼 경우·컴포넌트 추출은 순감소로 걸러진다. 태스크가 지운 줄과 내용이 같은 줄은 추가한 줄로 보지 않는다. `.md` 는 대상이 아니다. `role`·`alt`·`lang` 은 속성 값이 오는 꼴만, Tailwind 변형은 콜론 뒤에 클래스가 올 때만 센다. 태스크가 지운 파일은 지운 줄 검사만 한다.
 - 포커스 제거(`outline: none`·`outline-style: none`·`outline-none`·`outline-hidden`)는 파일에 `focus-visible` 도, `focus:outline-none`·`ring-0`·`shadow-none`·`ring-transparent` 가 아닌 Tailwind `focus:` 클래스도 없을 때만 알린다. `:focus` 셀렉터는 대체로 보지 않는다(`:focus { outline: none }` 이 찾을 대상이다). 확대 막기는 뷰포트 메타와 Next.js `viewport` 객체(`userScalable: false`, `maximumScale: 1`)를 본다.
 - 지운 줄의 포커스 신호는 `:focus-visible` 과 `:focus`(뒤에 `-visible`·`-within` 이 붙지 않은 것)로 나눠 센다. "대체 포커스" 판정은 겹친 Tailwind 변형(`dark:focus:ring-2`, `md:focus:ring-2`)과 중요 표시(`focus:!ring-2`)가 붙은 클래스도 받는다.
 - 내용 검사는 `lint.design_findings`(상한 없음)로 나누고, `review.design_section` 이 diff 검사 다음에 내용 검사를 이어 붙여 `lint.cap` 으로 50건에서 자른다. `lint.design_lint` 는 `cap(design_findings(...))` 로 남았다.
@@ -506,3 +506,4 @@ E2E 반영 (Orca 1.4.240)
 - 검사 예외는 `review.guarded` 가 "자동 검사 실패" 한 줄로 바꾼다. 디자인 절의 두 검사와 문구 절이 같은 함수를 쓰고, 경고 줄 모음은 `review.bullets` 가 만든다.
 - `design-rules.md` 에 §7 의 4·5번(되돌리기, 오류 복구)과 "즉시 차단 항목" 절을 두고 `review-design.md` 10번 P1 목록과 같은 문장으로 맞춘다(테스트가 같음을 확인한다). §1 위반도 이 태스크가 만든 것(`(새로 생김)`·`(회귀)`)만 P1 이고 `(기존)` 은 P3 다.
 - 리포트 소절은 `### 디자인 점검` 이다. 셋업이 기존 파일을 덮어쓰지 않아 이전 프로젝트는 예전 직무 문서를 쓰므로, `review-design.md` 5번이 `### 금지 목록 점검` 과 번호만 있는 금지 목록도 받는다.
+- 실환경 확인에서 순수 이동 파일이 다른 파일의 실제 감소 때문에 함께 잡히던 것을 고쳤다(옮긴 줄은 양쪽에서 빼고 센다).

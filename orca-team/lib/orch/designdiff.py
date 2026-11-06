@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from collections import Counter
 from pathlib import Path
 
 from .globs import matches_any
@@ -68,6 +69,17 @@ def signal_counts(lines: list[str]) -> list[int]:
     return [sum(len(pattern.findall(line)) for line in lines) for _, pattern in SIGNALS]
 
 
+def drop_moved(lines: list[str], budget: Counter) -> list[str]:
+    """budget 에 남은 만큼 같은 줄을 빼고 돌려준다. budget 은 부르는 쪽이 복사해 넘긴다(파일 순서대로 줄어든다)."""
+    kept: list[str] = []
+    for line in lines:
+        if budget[line] > 0:
+            budget[line] -= 1
+        else:
+            kept.append(line)
+    return kept
+
+
 def removed_signals(rel: str, lost: list[int], net: list[int]) -> list[str]:
     """파일별 줄어든 수(lost)가 0보다 크고 태스크 전체 순감소(net)도 0보다 큰 신호만 알린다."""
     return [f"{rel}: 지운 줄에서 {name} {n}개가 줄었다(대체가 있는지 확인)"
@@ -92,7 +104,8 @@ def added_blockers(rel: str, text: str, added: set[str]) -> list[str]:
 
 def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]:
     """files(저장소 기준 상대 경로) 중 대상 파일에서 shas 커밋들의 지운 줄로 줄어든 신호와, 추가한 줄의 확대 막기·포커스
-    표시 제거. 파일 이동·컴포넌트 추출로 옮긴 신호는 태스크 전체(대상 파일 전부)의 순감소가 0 이하면 알리지 않고, 태스크가
+    표시 제거. 지운 줄과 추가한 줄 양쪽에 같은 내용으로 있는 줄(파일 이동·옮긴 줄)은 양쪽에서 빼고 세며, 남은 줄로 센 신호가
+    태스크 전체(대상 파일 전부)의 순감소 0 이하면 컴포넌트 추출로 옮긴 것으로 보고 알리지 않는다. 태스크가
     지운 줄과 내용이 같은 줄은 추가한 줄로 보지 않는다. git 오류가 난 파일은 건너뛰고, 지금 없거나 1MB 를 넘거나 UTF-8 이
     아닌 파일은 지운 줄 검사만 한다. 상한은 부르는 쪽이 건다."""
     gathered: list[tuple[str, list[str], list[str]]] = []
@@ -103,7 +116,11 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
         if lines is not None:
             gathered.append((rel, *lines))
     all_removed = {line for _, _, removed in gathered for line in removed}
-    counts = [(rel, signal_counts(added), signal_counts(removed)) for rel, added, removed in gathered]
+    moved = Counter(line for _, _, removed in gathered for line in removed) & Counter(
+        line for _, added, _ in gathered for line in added)
+    removed_budget, added_budget = Counter(moved), Counter(moved)
+    counts = [(rel, signal_counts(drop_moved(added, added_budget)), signal_counts(drop_moved(removed, removed_budget)))
+              for rel, added, removed in gathered]
     net = [sum(removed[i] - added[i] for _, added, removed in counts) for i in range(len(SIGNALS))]
     found: list[str] = []
     for (rel, added, _), (_, added_n, removed_n) in zip(gathered, counts):

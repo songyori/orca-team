@@ -156,6 +156,19 @@ class DesignDiffTest(ProjectCase):
         self.assertEqual(self.lint(["src/A.tsx", "src/B.tsx"], a, b),
                          [f"src/A.tsx: {LOST.format(name='aria-label', n=2)}"])
 
+    def test_pure_moved_file_is_not_reported_when_another_file_really_loses(self):
+        self.commit("src/components/IconButton.tsx", '<button aria-label="닫기"><X /></button>\n', "chore: base 1")
+        self.commit("src/components/TodoItem.tsx", '<button aria-label="할 일 삭제"><X /></button>\n', "chore: base 2")
+        (self.root / "src/ui").mkdir(parents=True, exist_ok=True)
+        self.git("mv", "src/components/IconButton.tsx", "src/ui/IconButton.tsx")
+        self.git("mv", "src/components/TodoItem.tsx", "src/ui/TodoItem.tsx")
+        (self.root / "src/ui/TodoItem.tsx").write_text("<button><X /></button>\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "[T-001] refactor: move")
+        sha = self.git("rev-parse", "HEAD").strip()
+        files = ["src/components/IconButton.tsx", "src/components/TodoItem.tsx", "src/ui/IconButton.tsx", "src/ui/TodoItem.tsx"]
+        self.assertEqual(self.lint(files, sha), [f"src/components/TodoItem.tsx: {LOST.format(name='aria-label', n=1)}"])
+
     def test_plain_identifiers_are_not_signals(self):
         base = ("const role = user.role;\nif (role === 'admin') {}\nconst lang = navigator.language;\nconst alt = 1;\n"
                 "theme: { focus: { color: 'red' } },\n")
