@@ -68,6 +68,14 @@ class Config:
         return Launch(str(section.get("model", "opus")), str(section.get("effort", "xhigh")))
 
     @property
+    def auto_up(self) -> bool:
+        """[coordinator] auto_up. 메인 세션 훅이 죽은 코디네이터를 자동으로 다시 띄울지. 없으면 true."""
+        value = self.data.get("coordinator", {}).get("auto_up", True)
+        if not isinstance(value, bool):
+            raise OrchError(f"config.toml [coordinator].auto_up 은 true 또는 false 여야 한다: {value!r}", 2)
+        return value
+
+    @property
     def max_rounds(self) -> int:
         try:
             return int(self.data.get("review", {}).get("max_rounds", 3))

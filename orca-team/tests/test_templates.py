@@ -12,6 +12,11 @@ COMMIT_DOCS = sorted([*T.rglob("*.md"), *(PLUGIN / "skills").rglob("SKILL.md")])
 
 
 class TemplateTest(unittest.TestCase):
+    def test_config_enables_auto_up(self):
+        text = (T / "config.toml").read_text(encoding="utf-8")
+        self.assertIs(tomllib.loads(text)["coordinator"]["auto_up"], True)
+        self.assertIn("# auto_up:", text)
+
     def test_model_table_matches_spec(self):
         cfg = tomllib.loads((T / "config.toml").read_text(encoding="utf-8"))
         table = {name: (r["claude_model"], r["claude_effort"], r["codex_model"], r["codex_effort"])

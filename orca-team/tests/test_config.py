@@ -33,6 +33,13 @@ class ConfigTest(unittest.TestCase):
             self.cfg.role("nope")
         self.assertEqual(ctx.exception.code, 2)
 
+    def test_auto_up_defaults_true_and_rejects_non_bool(self):
+        self.assertTrue(Config({}).auto_up)
+        self.assertTrue(Config({"coordinator": {"auto_up": True}}).auto_up)
+        self.assertFalse(Config({"coordinator": {"auto_up": False}}).auto_up)
+        with self.assertRaises(OrchError):
+            Config({"coordinator": {"auto_up": "yes"}}).auto_up  # noqa: B018
+
     def test_owns(self):
         self.assertEqual(self.cfg.owns("developer"), ["src/**"])
         self.assertEqual(self.cfg.owns("developer", ["src/a/**"]), ["src/a/**"])
