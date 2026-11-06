@@ -15,6 +15,8 @@ PLUGIN = Path(__file__).resolve().parents[1]
 FAKES = PLUGIN / "tests" / "fakes"
 ORCH = PLUGIN / "bin" / "orch"
 sys.path.insert(0, str(PLUGIN / "lib"))
+# 같은 프로세스 테스트가 가짜 orca 설정을 빠뜨려도 실제 Orca 에 닿지 않는다(FAKE_DIR 이 없으면 가짜 orca 가 실패할 뿐).
+os.environ.setdefault("ORCA_TEAM_ORCA", str(FAKES / "orca"))
 
 
 class ProjectCase(unittest.TestCase):
@@ -61,10 +63,11 @@ class ProjectCase(unittest.TestCase):
             self.fail(f"orch {' '.join(args)} exit {proc.returncode}\nstdout:\n{proc.stdout}\nstderr:\n{proc.stderr}")
         return proc
 
-    def respond(self, key: str, body: dict, code: int = 0) -> None:
-        """가짜 orca 응답 등록. key 예: 'orchestration worker-start', 'status'."""
+    def respond(self, key: str, body: dict, code: int = 0, sleep: float = 0) -> None:
+        """가짜 orca 응답 등록. key 예: 'orchestration worker-start', 'status'. sleep 초만큼 늦게 응답한다."""
         path = self.fake_dir / (key.replace(" ", "_") + ".json")
-        path.write_text(json.dumps({"code": code, "body": body}), encoding="utf-8")
+        spec = {"code": code, "body": body, **({"sleep": sleep} if sleep else {})}
+        path.write_text(json.dumps(spec), encoding="utf-8")
 
     def respond_raw(self, key: str, text: str, code: int = 0) -> None:
         """가짜 orca 가 JSON 이 아닌 원문 text 를 그대로 출력하도록 등록한다."""

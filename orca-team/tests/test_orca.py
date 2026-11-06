@@ -1,5 +1,8 @@
 import json
 import os
+import subprocess
+import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -56,6 +59,24 @@ class CallTest(ProjectCase):
         code, data = orca.call(["status"], check=False)
         self.assertEqual(code, 0)
         self.assertFalse(data["ok"])
+
+    def test_timeout_raises_orch_error(self):
+        self.respond("status", {"ok": True}, sleep=3)
+        started = time.monotonic()
+        with self.assertRaises(OrchError) as cm:
+            orca.call(["status"], timeout=0.5)
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIn("orca status 시간 초과(0.5초)", str(cm.exception))
+        self.assertNotEqual(cm.exception.code, 12)
+
+
+class HelpersSafetyTest(unittest.TestCase):
+    def test_helpers_import_defaults_orca_to_fake(self):
+        """같은 프로세스 테스트가 가짜 orca 설정을 빠뜨려도 실제 Orca 에 닿지 않는다."""
+        env = {k: v for k, v in os.environ.items() if k not in ("ORCA_TEAM_ORCA", "ORCA_CLI_COMMAND")}
+        proc = subprocess.run([sys.executable, "-c", "import helpers\nfrom orch.paths import orca_bin\nprint(orca_bin())"],
+                              cwd=FAKES.parent, env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(proc.stdout.strip(), str(FAKES / "orca"))
 
 
 class TerminalAliveTest(ProjectCase):
@@ -181,6 +202,7 @@ class TerminalStateTest(ProjectCase):
             ({"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}}, 0, "dead"),
             ({"ok": True, "result": {"terminal": {"connected": False, "agentIdentity": "claude"}}}, 0, "dead"),
             ({"ok": True, "result": {}}, 0, "unknown"),
+            ({"ok": True, "result": "x"}, 0, "unknown"),
             ({"ok": False, "error": {"code": "runtime_unavailable"}}, 1, "unknown"),
         ]
         for body, code, expected in cases:
@@ -193,6 +215,22 @@ class TerminalStateTest(ProjectCase):
         self.assertEqual(orca.terminal_state("term_x"), "unknown")
         with patch.dict(os.environ, {"ORCA_TEAM_ORCA": str(self.tmp / "no-such-orca")}):
             self.assertEqual(orca.terminal_state("term_x"), "unknown")
+
+    def test_unexecutable_binary_is_unknown(self):
+        noexec = self.tmp / "orca-noexec"
+        noexec.write_text("#!/bin/sh\n", encoding="utf-8")
+        noexec.chmod(0o644)
+        with patch.dict(os.environ, {"ORCA_TEAM_ORCA": str(noexec)}):
+            self.assertEqual(orca.terminal_state("term_x"), "unknown")
+
+    def test_slow_orca_times_out_as_unknown(self):
+        """훅(10초 제한) 안에서 도는 확인이 느린 Orca 에 묶이지 않는다."""
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}},
+                     sleep=3)
+        started = time.monotonic()
+        with patch.object(orca, "TERMINAL_STATE_TIMEOUT", 0.5):
+            self.assertEqual(orca.terminal_state("term_x"), "unknown")
+        self.assertLess(time.monotonic() - started, 2)
 
     def test_no_handle_is_unknown_without_calling_orca(self):
         self.assertEqual(orca.terminal_state(None), "unknown")
