@@ -8,7 +8,7 @@ import re
 from pathlib import Path
 
 from .globs import matches_any
-from .lint import LINT_EXCLUDE, LINT_SUFFIXES, MAX_BYTES, snippet
+from .lint import LINT_EXCLUDE, LINT_SUFFIXES, read_source, snippet
 from .textlint import diff_lines
 
 APP_SUFFIXES = {".dart", ".swift", ".kt", ".xml"}
@@ -23,7 +23,8 @@ SIGNALS = [
     ("alt", re.compile(r"(?<![\w-])alt\s*=")),
     ("<label", re.compile(r"<label\b")),
     ("htmlFor", re.compile(r"\bhtmlFor\b")),
-    (":focus", re.compile(r":focus\b")),
+    (":focus-visible", re.compile(r":focus-visible\b")),
+    (":focus", re.compile(r":focus\b(?!-)")),
     ("focus-visible:", re.compile(r"(?<![\w-])focus-visible:")),
     ("focus:", re.compile(r"(?<![\w-])focus:")),
     (".focus(", re.compile(r"\.focus\(")),
@@ -51,9 +52,10 @@ SIGNALS = [
 ZOOM_RE = re.compile(r"user-scalable\s*=\s*[\"']?(?:no|0)(?![\w.])|maximum-scale\s*=\s*[\"']?1(?:\.0*)?(?![\d.])"
                      r"|\buserScalable\s*:\s*false\b|\bmaximumScale\s*:\s*1(?:\.0*)?(?![\d.])", re.I)
 FOCUS_OFF_RE = re.compile(r"\boutline\s*:\s*[\"']?(?:none|0(?:px)?)(?![\w.%-])|(?<![\w-])outline-none(?![\w-])")
-# 대체 포커스 표시: focus-visible(CSS·Tailwind), 또는 focus:outline-none 이 아닌 Tailwind focus: 클래스(focus:ring-2).
+# 대체 포커스 표시: focus-visible(CSS·Tailwind), 또는 focus:outline-none 이 아닌 Tailwind focus: 클래스(focus:ring-2,
+# 겹친 변형 dark:focus:ring-2, 중요 표시 focus:!ring-2).
 # :focus 셀렉터는 대체로 보지 않는다(:focus { outline: none } 이 바로 찾을 대상이다).
-FOCUS_ALT_RE = re.compile(r"focus-visible|(?<![\w:-])focus:(?!outline-none(?![\w-]))[\w\[]")
+FOCUS_ALT_RE = re.compile(r"focus-visible|(?<![\w-])focus:(?!outline-none(?![\w-]))[\w\[!]")
 
 
 def is_target(rel: str) -> bool:
@@ -68,16 +70,6 @@ def removed_signals(rel: str, added: list[str], removed: list[str]) -> list[str]
         if lost > 0:
             found.append(f"{rel}: 지운 줄에서 {name} {lost}개가 줄었다(대체가 있는지 확인)")
     return found
-
-
-def read_current(root: Path, rel: str) -> str | None:
-    path = root / rel
-    try:
-        if not path.is_file() or path.stat().st_size > MAX_BYTES:
-            return None
-        return path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return None
 
 
 def added_blockers(rel: str, text: str, added: set[str]) -> list[str]:
@@ -109,7 +101,7 @@ def design_diff_lint(root: Path, files: list[str], shas: list[str]) -> list[str]
             continue
         added, removed = lines
         found += removed_signals(rel, added, removed)
-        text = read_current(root, rel)
+        text = read_source(root, rel)
         if text is not None:
             found += added_blockers(rel, text, set(added))
     return found

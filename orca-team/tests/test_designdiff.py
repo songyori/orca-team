@@ -77,11 +77,31 @@ class DesignDiffTest(ProjectCase):
                                             '<a className="focus:outline-none focus:ring-2">y</a>\n')
         tw_bad = self.commit("src/Bad.tsx", '<button className="focus:outline-none">x</button>\n')
         offset = self.commit("src/offset.css", ".a { outline-offset: 0; }\n")
-        files = ["src/btn.css", "src/ok.css", "src/Ok.tsx", "src/Bad.tsx", "src/offset.css"]
-        self.assertEqual(self.lint(files, bad, good, tw_good, tw_bad, offset), [
+        dark = self.commit("src/Dark.tsx", '<a className="outline-none dark:focus:ring-2">a</a>\n'
+                                           '<a className="outline-none md:focus:ring-2">b</a>\n'
+                                           '<a className="outline-none focus:!ring-2">c</a>\n')
+        dark_bad = self.commit("src/DarkBad.tsx", '<button className="dark:focus:outline-none">x</button>\n')
+        files = ["src/btn.css", "src/ok.css", "src/Ok.tsx", "src/Bad.tsx", "src/offset.css", "src/Dark.tsx",
+                 "src/DarkBad.tsx"]
+        self.assertEqual(self.lint(files, bad, good, tw_good, tw_bad, offset, dark, dark_bad), [
             "src/btn.css:1: 포커스 표시 제거(outline: none; }, 파일에 focus-visible 없음)",
             'src/Bad.tsx:1: 포커스 표시 제거(outline-none">x</button>, 파일에 focus-visible 없음)',
+            'src/DarkBad.tsx:1: 포커스 표시 제거(outline-none">x</button>, 파일에 focus-visible 없음)',
         ])
+
+    def test_removed_focus_visible_is_not_named_focus(self):
+        self.commit("src/a.css", ".a:focus-visible { outline: 2px solid red; }\n", "chore: base")
+        sha = self.commit("src/a.css", ".a { }\n")
+        self.assertEqual(self.lint(["src/a.css"], sha), [f"src/a.css: {LOST.format(name=':focus-visible', n=1)}"])
+
+    def test_crlf_file_is_checked(self):
+        path = self.root / "src/crlf.html"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b'<meta name="viewport" content="width=device-width, user-scalable=no">\r\n')
+        self.git("add", "--", "src/crlf.html")
+        self.git("commit", "-q", "-m", "[T-001] feat: crlf")
+        sha = self.git("rev-parse", "HEAD").strip()
+        self.assertEqual(self.lint(["src/crlf.html"], sha), ['src/crlf.html:1: 확대 막기(user-scalable=no">)'])
 
     def test_only_lines_added_by_given_commits(self):
         self.commit("src/btn.css", ".btn { outline: none; }\n", "chore: base")

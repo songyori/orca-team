@@ -216,7 +216,7 @@ orch 자동 검사(의심 위치. 정당한 쓰임도 있으니 직접 열어 �
 - 대상 파일: `files` 중 확장자가 `lint.LINT_SUFFIXES` 이거나 `.dart` `.swift` `.kt` `.xml` 이고, `lint.LINT_EXCLUDE` 에 걸리지 않는 것.
 - **지운 줄 검사**: 파일마다 신호별로 지운 줄의 일치 수와 추가한 줄의 일치 수를 센다. 지운 쪽이 더 많을 때만 알린다. 같은 속성을 옮기거나 줄만 바꾼 경우는 수가 같아 걸러진다. 파일이 지금 없어도(삭제) 지운 줄 검사는 한다.
   - 접근 가능한 이름: `aria-label`(뒤에 `ledby` 가 붙지 않은 것), `aria-labelledby`, `aria-describedby`, `aria-live`, `role=`, `alt=`, `<label`, `htmlFor`
-  - 포커스: `:focus`(`:focus-visible` 포함), `focus-visible:`, `focus:`(Tailwind), `.focus(`, `tabindex`·`tabIndex`
+  - 포커스: `:focus-visible`, `:focus`(뒤에 `-visible`·`-within` 이 붙지 않은 것), `focus-visible:`, `focus:`(Tailwind), `.focus(`, `tabindex`·`tabIndex`
   - 동작 줄이기·대비 설정: `prefers-reduced-motion`, `motion-reduce:`, `motion-safe:`, `useReducedMotion`, `prefers-contrast`
   - 언어: `lang=`
   - 한글 줄바꿈: `keep-all`, `break-keep`(Tailwind)
@@ -225,7 +225,7 @@ orch 자동 검사(의심 위치. 정당한 쓰임도 있으니 직접 열어 �
   - 출력: `{rel}: 지운 줄에서 {신호 이름} {n}개가 줄었다(대체가 있는지 확인)`. 신호 이름은 위 묶음 이름이 아니라 개별 신호(`aria-label`, `keep-all` 등)다.
 - **추가한 줄 검사**: 지금 파일의 줄 중 이 태스크가 추가한 줄(`diff_lines` 의 추가한 줄 집합에 든 줄)을 본다. 줄 번호는 지금 파일 기준이다.
   - 확대 막기: `user-scalable\s*=\s*(no|0)`, `maximum-scale\s*=\s*1`(뒤에 숫자·점이 이어지지 않고, `1.0` 도 포함), Next.js `viewport` 객체의 `userScalable: false`·`maximumScale: 1` → `{rel}:{line}: 확대 막기({조각})`
-  - 포커스 제거: `outline\s*:\s*(none|0|0px)`(따옴표 허용, 뒤에 숫자·점이 이어지지 않는 것), Tailwind `outline-none` → 지금 파일 전체에 `focus-visible` 도, `focus:outline-none` 이 아닌 Tailwind `focus:` 클래스(`focus:ring-2` 등)도 없을 때만 `{rel}:{line}: 포커스 표시 제거({조각}, 파일에 focus-visible 없음)`. `:focus` 셀렉터는 대체로 보지 않는다(`:focus { outline: none }` 이 바로 찾을 대상이다).
+  - 포커스 제거: `outline\s*:\s*(none|0|0px)`(따옴표 허용, 뒤에 숫자·점이 이어지지 않는 것), Tailwind `outline-none` → 지금 파일 전체에 `focus-visible` 도, `focus:outline-none` 이 아닌 Tailwind `focus:` 클래스(`focus:ring-2`, `dark:focus:ring-2`, `focus:!ring-2` 등)도 없을 때만 `{rel}:{line}: 포커스 표시 제거({조각}, 파일에 focus-visible 없음)`. `:focus` 셀렉터는 대체로 보지 않는다(`:focus { outline: none }` 이 바로 찾을 대상이다).
   - 조각은 일치한 곳부터 줄 끝까지를 `lint.snippet` 으로 줄인 것이다.
 - git 오류(`diff_lines` 가 None)인 파일, 1MB 를 넘거나 UTF-8 이 아닌 파일의 추가한 줄 검사는 건너뛴다.
 - 결과 순서: 파일 순서대로, 파일 안에서는 지운 줄 검사(신호 목록 순) 다음 추가한 줄 검사(줄 번호 순).

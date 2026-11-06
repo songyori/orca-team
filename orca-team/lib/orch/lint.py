@@ -202,6 +202,17 @@ def cap(found: list[str]) -> list[str]:
     return [*found[:MAX_FINDINGS], f"… 외 {len(found) - MAX_FINDINGS}건"]
 
 
+def read_source(root: Path, rel: str) -> str | None:
+    """root 아래 rel 파일의 UTF-8 텍스트. 파일이 아니거나 1MB 를 넘거나 읽을 수 없으면 None."""
+    path = root / rel
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_BYTES:
+            return None
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
 def design_findings(root: Path, files: list[str]) -> list[str]:
     """files(저장소 기준 상대 경로) 중 검사 대상의 의심 위치 목록(상한 없음). 대상 확장자가 아니거나, 제외 경로거나,
     없거나, 1MB 를 넘거나, UTF-8 이 아니면 건너뛴다."""
@@ -209,14 +220,9 @@ def design_findings(root: Path, files: list[str]) -> list[str]:
     for rel in files:
         if Path(rel).suffix.lower() not in LINT_SUFFIXES or matches_any(rel, LINT_EXCLUDE):
             continue
-        path = root / rel
-        try:
-            if not path.is_file() or path.stat().st_size > MAX_BYTES:
-                continue
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            continue
-        found += scan(rel, text)
+        text = read_source(root, rel)
+        if text is not None:
+            found += scan(rel, text)
     return found
 
 
