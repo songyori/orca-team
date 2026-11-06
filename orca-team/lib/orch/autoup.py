@@ -32,7 +32,7 @@ DISABLED = (PREFIX + "코디네이터가 꺼져 있다(config.toml 의 auto_up =
             "알리고 /orca-team:up 을 안내한다.")
 FAILED = (PREFIX + "자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌다(기록: .orchestration/state/auto-up.log). "
           "답변 첫 줄에 사용자에게 한 줄로 알리고, 원인을 확인한 뒤 /orca-team:up 을 실행하도록 안내한다. "
-          "자동으로는 더 띄우지 않는다.")
+          "10분 동안은 자동으로 다시 띄우지 않는다.")
 # sh 가 orch up 을 백그라운드로 띄우고 pid 를 출력한 뒤 바로 끝난다. 훅이 시간 제한으로 끊겨도 orch up 은 계속 돈다.
 LAUNCHER = '"$0" "$@" </dev/null >>"$ORCA_TEAM_AUTO_UP_LOG" 2>&1 & echo $!'
 

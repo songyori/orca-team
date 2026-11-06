@@ -232,6 +232,11 @@ class TerminalStateTest(ProjectCase):
             self.assertEqual(orca.terminal_state("term_x"), "unknown")
         self.assertLess(time.monotonic() - started, 2)
 
+    def test_undecodable_output_is_unknown(self):
+        err = UnicodeDecodeError("utf-8", b"\xff", 0, 1, "x")
+        with patch.object(orca, "call", side_effect=err):
+            self.assertEqual(orca.terminal_state("term_x"), "unknown")
+
     def test_no_handle_is_unknown_without_calling_orca(self):
         self.assertEqual(orca.terminal_state(None), "unknown")
         self.assertEqual(self.calls(), [])

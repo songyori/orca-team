@@ -180,7 +180,7 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
     elif starting(load_run(p)):
         result = {"status": "starting", "handle": load_run(p).get("coordinator_handle"), "message": STARTING_MESSAGE}
     else:
-        result = launch_coordinator(p, cfg.coordinator())
+        result = launch_coordinator(p, cfg.coordinator(), handle)
     deadline = time.monotonic() + wait_run
     while not load_run(p).get("run_id") and time.monotonic() < deadline:
         time.sleep(1)
@@ -192,7 +192,7 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
     return result
 
 
-def launch_coordinator(p: Project, launch: Launch) -> dict:
+def launch_coordinator(p: Project, launch: Launch, checked_handle: str | None = None) -> dict:
     """run.json 잠금 안에서 기동을 선점한 뒤 코디네이터를 띄운다. 선점은 시작 유예를 잠금 안에서 다시 확인해
     동시에 돈 `orch up` 이 코디네이터를 둘 띄우지 않게 한다. 선점에 지면 띄우지 않고 starting 을 돌려준다."""
     p.ensure_state()
@@ -201,7 +201,7 @@ def launch_coordinator(p: Project, launch: Launch) -> dict:
     claimed = []
 
     def claim(r: dict) -> None:
-        if starting(r):
+        if starting(r) or r.get("coordinator_handle") != checked_handle:
             return
         r.pop("coordinator_handle", None)
         r.update(launched_at=launched_at)

@@ -229,6 +229,25 @@ class CoordinatorTest(ProjectCase):
         self.assertEqual(self.calls_for("agent launch"), [])
         self.assertEqual(self.run_state()["launched_at"], claimed_at)
 
+    def test_up_gives_up_claim_when_other_up_already_launched_new_handle(self):
+        """생존 확인 뒤 다른 프로세스가 이미 띄워 새 핸들을 기록하고 launched_at 을 지웠으면 선점하지 않는다."""
+        self.set_run(run_id="run_x", coordinator_handle="term_old")
+
+        def other_launched(handle):
+            other = self.run_state()
+            other.pop("launched_at", None)
+            other["coordinator_handle"] = "term_other"
+            self.set_run(**other)
+            return False
+
+        p = Project(self.root)
+        fake = {"ORCA_TEAM_ORCA": str(FAKES / "orca"), "FAKE_DIR": str(self.fake_dir)}
+        with mock.patch.dict(os.environ, fake), mock.patch.object(orca, "terminal_alive", side_effect=other_launched):
+            out = setup.up(p, Config.load(p.config_path))
+        self.assertEqual((out["status"], out["handle"]), ("starting", "term_other"))
+        self.assertEqual(self.calls_for("agent launch"), [])
+        self.assertEqual(self.run_state()["coordinator_handle"], "term_other")
+
     def test_bind_only_from_coordinator_then_rebinds(self):
         self.set_run(coordinator_handle="term_coord")
         self.assertEqual(self.orch("bind", check=False, env=MAIN).returncode, 2)

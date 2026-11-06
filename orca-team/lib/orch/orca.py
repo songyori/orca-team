@@ -86,7 +86,7 @@ def terminal_state(handle: str | None) -> str:
         return "unknown"
     try:
         code, data = call(["terminal", "show", "--terminal", handle], check=False, timeout=TERMINAL_STATE_TIMEOUT)
-    except (OrchError, OSError):
+    except (OrchError, OSError, ValueError):
         return "unknown"
     return _terminal_verdict(code, data)
 
