@@ -10,8 +10,9 @@ from pathlib import Path
 
 from . import orca, plan
 from .config import Config
+from .designdiff import design_diff_lint
 from .globs import matches_any
-from .lint import DESIGN_ROLES, design_lint
+from .lint import DESIGN_ROLES, cap, design_findings
 from .paths import TEMPLATES, OrchError, Project, codex_runner
 from .tasks import ACTIVE, TaskDoc, all_states, load_doc, must_state, owns_of, review_pid, save_state
 from .textlint import RULES_FILE, text_lint, text_targets
@@ -113,15 +114,28 @@ def run_dir_for(p: Project, task_id: str, rnd: int, attempt: int) -> Path:
     return path
 
 
-def design_section(p: Project, cfg: Config, role: str, files: list[str]) -> str:
-    """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 다음 절과 사이의 빈 줄까지
-    붙여 돌려준다(review-prompt.md 의 자리표시가 다음 절 제목 바로 앞에 있다). 다른 직무와, director 직무가 없는
-    이전 버전(0.3.0) 프로젝트는 빈 문자열."""
+def guarded(check, *args) -> list[str]:
+    """검사 하나의 결과. 검사 버그가 리뷰를 막으면 안 되므로 예외는 "자동 검사 실패" 한 줄(200자까지)이 된다.
+    판정은 Codex 가 한다."""
+    try:
+        return check(*args)
+    except Exception as exc:
+        return [" ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]]
+
+
+def bullets(found: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in found) if found else "- 없음"
+
+
+def design_section(p: Project, cfg: Config, role: str, files: list[str], shas: list[str]) -> str:
+    """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 자동 검사는 바뀐 파일 내용
+    검사(lint.design_findings) 다음에 태스크 커밋 diff 검사(designdiff.design_diff_lint)를 이어 붙여 50건으로 자른다.
+    다음 절과 사이의 빈 줄까지 붙여 돌려준다(review-prompt.md 의 자리표시가 다음 절 제목 바로 앞에 있다). 다른 직무와,
+    director 직무가 없는 이전 버전(0.3.0) 프로젝트는 빈 문자열."""
     if role not in DESIGN_ROLES or plan.DIRECTOR_ROLE not in cfg.roles:
         return ""
-    found = design_lint(p.root, files)
-    listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
-    return render((TEMPLATES / "review-design.md").read_text(encoding="utf-8"), {"design_lint": listing}) + "\n"
+    found = cap([*guarded(design_findings, p.root, files), *guarded(design_diff_lint, p.root, files, shas)])
+    return render((TEMPLATES / "review-design.md").read_text(encoding="utf-8"), {"design_lint": bullets(found)}) + "\n"
 
 
 def text_section(p: Project, files: list[str], shas: list[str]) -> str:
@@ -130,12 +144,8 @@ def text_section(p: Project, files: list[str], shas: list[str]) -> str:
     한글이 든 텍스트 대상 파일을 바꾸지 않은 태스크는 빈 문자열."""
     if not (p.root / RULES_FILE).is_file() or not text_targets(p.root, files):
         return ""
-    try:
-        found = text_lint(p.root, files, shas)
-    except Exception as exc:  # 검사 버그가 리뷰를 막으면 안 된다. 판정은 Codex 가 한다
-        found = [" ".join(f"자동 검사 실패: {type(exc).__name__}: {exc}".split())[:200]]
-    listing = "\n".join(f"- {item}" for item in found) if found else "- 없음"
-    return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": listing}) + "\n"
+    found = guarded(text_lint, p.root, files, shas)
+    return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": bullets(found)}) + "\n"
 
 
 def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
@@ -147,7 +157,7 @@ def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: 
         "review_path": review_rel, "prior_reviews": ", ".join(prior) or "없음",
         "commits": "\n".join(f"- {sha[:10]} {subject}" for sha, subject in commits),
         "files": "\n".join(f"- {f}" for f in files),
-        "design_section": design_section(p, cfg, doc.role, files),
+        "design_section": design_section(p, cfg, doc.role, files, [sha for sha, _ in commits]),
         "text_section": text_section(p, files, [sha for sha, _ in commits])})
 
 

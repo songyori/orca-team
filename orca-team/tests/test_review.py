@@ -5,6 +5,7 @@ from unittest import mock
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
 from orch import review
+from orch.config import Config
 from orch.paths import Project
 from test_tasks import TaskCase
 
@@ -340,6 +341,41 @@ class ReviewDesignSectionTest(ReviewCase):
         target.write_text(text, encoding="utf-8")
         self.git("add", "--", path)
         self.git("commit", "-q", "-m", f"[{task_id}] feat: {path}")
+
+    def section(self, files, shas):
+        p = Project(self.root)
+        return review.design_section(p, Config.load(p.config_path), "developer", files, shas)
+
+    def head(self):
+        return self.git("rev-parse", "HEAD").strip()
+
+    def test_diff_lint_follows_content_lint(self):
+        self.commit_text("src/close.tsx", '<button aria-label="닫기">x</button>\n')
+        self.commit_text("src/close.tsx", "<span>🚀</span>\n<button>x</button>\n")
+        section = self.section(["src/close.tsx"], [self.head()])
+        emoji = section.index("- src/close.tsx:1: 이모지(🚀)")
+        lost = section.index("- src/close.tsx: 지운 줄에서 aria-label 1개가 줄었다(대체가 있는지 확인)")
+        self.assertLess(emoji, lost)
+
+    def test_review_prompt_has_zoom_block(self):
+        self.commit_text("src/index.html", '<meta name="viewport" content="width=device-width, user-scalable=no">\n')
+        self.review()
+        self.assertIn('- src/index.html:1: 확대 막기(user-scalable=no">)\n', self.prompt())
+
+    def test_combined_findings_are_capped(self):
+        with mock.patch("orch.review.design_findings", return_value=[f"a.css:{n}: x" for n in range(40)]), \
+                mock.patch("orch.review.design_diff_lint", return_value=[f"b.css: y{n}" for n in range(20)]):
+            section = self.section(["a.css"], [])
+        self.assertIn("- b.css: y9\n", section)
+        self.assertNotIn("b.css: y10", section)
+        self.assertIn("- … 외 10건\n", section)
+
+    def test_failing_check_keeps_the_other(self):
+        self.commit_text("src/card.css", ".card {\n  border-left: 4px solid #2563eb;\n}\n")
+        with mock.patch("orch.review.design_diff_lint", side_effect=RuntimeError("boom")):
+            section = self.section(["src/card.css"], [self.head()])
+        self.assertIn("- src/card.css:2: 왼쪽 줄 강조(border-left: 4px solid #2563eb;)\n", section)
+        self.assertIn("- 자동 검사 실패: RuntimeError: boom\n", section)
 
     def test_developer_prompt_has_design_rules_and_lint_warnings(self):
         self.commit_text("src/card.css", ".card {\n  border-left: 4px solid #2563eb;\n}\n")

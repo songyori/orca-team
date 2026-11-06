@@ -101,8 +101,13 @@ class TemplateTest(unittest.TestCase):
         self.assertIn("{design_section}", prompt)
         design = (T / "review-design.md").read_text(encoding="utf-8")
         for key in ("{design_lint}", ".orchestration/design-rules.md", "docs/design/system/tokens.json",
-                    "### 금지 목록 점검", "### 시스템 추가 제안", "REQUEST_CHANGES"):
+                    "### 디자인 점검", "### 금지 목록 점검", "### 시스템 추가 제안", "REQUEST_CHANGES", "`(새로 생김)`",
+                    "`(회귀)`", "`(기존)`", "즉시 차단 항목", "prefers-reduced-motion", "320px", "지우기",
+                    "확인 못 함", "15개", "box-shadow"):
             self.assertIn(key, design)
+        self.assertEqual(design.count("{design_lint}"), 1)
+        self.assertEqual(re.findall(r"^(\d+)\. ", design, re.M), [str(n) for n in range(5, 14)])
+        self.assertNotRegex(design, r"\d~\d")
         self.assertIn("{design_section}{text_section}## REVIEW_FILE 형식", prompt)
         text = (T / "review-text.md").read_text(encoding="utf-8")
         for key in ("## 문구 기준", "{text_lint}", ".orchestration/text-rules.md", "docs/planning/voice.md",
