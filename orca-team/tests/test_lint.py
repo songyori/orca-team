@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
-from orch.lint import DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, design_lint, hue_family, scan
+from orch.lint import DESIGN_ROLES, MAX_BYTES, MAX_FINDINGS, cap, design_findings, design_lint, hue_family, scan
 
 VS16 = chr(0xFE0F)  # 이모지 표시 선택자. 소스에서 보이지 않으므로 이름으로 쓴다
 
@@ -179,6 +179,15 @@ class DesignLintTest(unittest.TestCase):
         found = design_lint(self.root, [rel])
         self.assertEqual(len(found), MAX_FINDINGS + 1)
         self.assertEqual(found[-1], "… 외 10건")
+
+    def test_design_findings_has_no_cap_and_cap_cuts(self):
+        lines = MAX_FINDINGS + 5
+        rel = self.put("src/ui/many.css", "linear-gradient(blue, purple)\n" * lines)
+        self.assertEqual(len(design_findings(self.root, [rel])), lines)
+        capped = design_lint(self.root, [rel])
+        self.assertEqual(len(capped), MAX_FINDINGS + 1)
+        self.assertEqual(capped[-1], "… 외 5건")
+        self.assertEqual(cap(["a", "b"]), ["a", "b"])
 
 
 if __name__ == "__main__":

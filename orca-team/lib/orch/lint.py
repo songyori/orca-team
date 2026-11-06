@@ -195,9 +195,16 @@ def scan(rel: str, text: str) -> list[str]:
     return [f"{rel}:{number}: {what}" for number, what in sorted(found, key=lambda item: item[0])]
 
 
-def design_lint(root: Path, files: list[str]) -> list[str]:
-    """files(저장소 기준 상대 경로) 중 검사 대상의 의심 위치 목록. 대상 확장자가 아니거나, 제외 경로거나, 없거나,
-    1MB 를 넘거나, UTF-8 이 아니면 건너뛴다. MAX_FINDINGS 를 넘으면 마지막 항목이 "… 외 N건" 이다."""
+def cap(found: list[str]) -> list[str]:
+    """MAX_FINDINGS 를 넘으면 앞 MAX_FINDINGS 개와 "… 외 N건" 한 줄로 줄인다."""
+    if len(found) <= MAX_FINDINGS:
+        return found
+    return [*found[:MAX_FINDINGS], f"… 외 {len(found) - MAX_FINDINGS}건"]
+
+
+def design_findings(root: Path, files: list[str]) -> list[str]:
+    """files(저장소 기준 상대 경로) 중 검사 대상의 의심 위치 목록(상한 없음). 대상 확장자가 아니거나, 제외 경로거나,
+    없거나, 1MB 를 넘거나, UTF-8 이 아니면 건너뛴다."""
     found: list[str] = []
     for rel in files:
         if Path(rel).suffix.lower() not in LINT_SUFFIXES or matches_any(rel, LINT_EXCLUDE):
@@ -210,6 +217,9 @@ def design_lint(root: Path, files: list[str]) -> list[str]:
         except (OSError, UnicodeDecodeError):
             continue
         found += scan(rel, text)
-    if len(found) > MAX_FINDINGS:
-        found = [*found[:MAX_FINDINGS], f"… 외 {len(found) - MAX_FINDINGS}건"]
     return found
+
+
+def design_lint(root: Path, files: list[str]) -> list[str]:
+    """design_findings 를 MAX_FINDINGS 로 자른 것. 넘으면 마지막 항목이 "… 외 N건" 이다."""
+    return cap(design_findings(root, files))
