@@ -165,5 +165,45 @@ class FindKeyTest(unittest.TestCase):
         self.assertIsNone(orca.find_key({"x": [{"y": {"z": "v"}}]}, ("missing",)))
 
 
+class TerminalStateTest(ProjectCase):
+    """자동 부활은 dead 일 때만 다시 띄운다. 확인할 수 없으면 unknown 이다."""
+
+    def setUp(self):
+        super().setUp()
+        patcher = patch.dict(os.environ, fake_env(self))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_states(self):
+        cases = [
+            ({"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}}, 0, "alive"),
+            ({"ok": False, "error": {"code": "terminal_handle_stale"}}, 1, "dead"),
+            ({"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}}, 0, "dead"),
+            ({"ok": True, "result": {"terminal": {"connected": False, "agentIdentity": "claude"}}}, 0, "dead"),
+            ({"ok": True, "result": {}}, 0, "unknown"),
+            ({"ok": False, "error": {"code": "runtime_unavailable"}}, 1, "unknown"),
+        ]
+        for body, code, expected in cases:
+            with self.subTest(body=body):
+                self.respond("terminal show", body, code=code)
+                self.assertEqual(orca.terminal_state("term_x"), expected)
+
+    def test_unparseable_and_missing_binary_are_unknown(self):
+        self.respond_raw("terminal show", "<<not json>>")
+        self.assertEqual(orca.terminal_state("term_x"), "unknown")
+        with patch.dict(os.environ, {"ORCA_TEAM_ORCA": str(self.tmp / "no-such-orca")}):
+            self.assertEqual(orca.terminal_state("term_x"), "unknown")
+
+    def test_no_handle_is_unknown_without_calling_orca(self):
+        self.assertEqual(orca.terminal_state(None), "unknown")
+        self.assertEqual(self.calls(), [])
+
+    def test_alive_uses_same_verdict(self):
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}})
+        self.assertFalse(orca.terminal_alive("term_x"))
+        self.respond("terminal show", {"ok": True, "result": {}})
+        self.assertFalse(orca.terminal_alive("term_x"))
+
+
 if __name__ == "__main__":
     unittest.main()

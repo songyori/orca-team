@@ -57,10 +57,35 @@ def find_key(node, names: tuple[str, ...]):
     return None
 
 
-def terminal_alive(handle: str | None) -> bool:
-    """터미널이 연결돼 있고 그 안에서 claude 에이전트가 도는지.
+def _terminal_verdict(code: int, data: dict) -> str:
+    """`orca terminal show` 응답 → "alive" | "dead" | "unknown".
 
-    Orca 1.4.240 의 orphaned 는 렌더러 pane 이 마운트됐는지일 뿐 생존과 무관해 보지 않는다."""
+    dead 는 닫힌 핸들(terminal_handle_stale, Orca 재시작 뒤 옛 핸들 포함)이거나, 터미널은 있는데 연결이 끊겼거나
+    claude 가 끝나 셸만 남은 경우다. Orca 1.4.240 의 orphaned 는 렌더러 pane 마운트 여부일 뿐 생존과 무관해 보지 않는다."""
+    if code == 0 and data.get("ok"):
+        term = (data.get("result") or {}).get("terminal")
+        if not isinstance(term, dict) or not term:
+            return "unknown"
+        return "alive" if term.get("connected") is True and term.get("agentIdentity") == "claude" else "dead"
+    error = data.get("error")
+    if isinstance(error, dict) and error.get("code") == "terminal_handle_stale":
+        return "dead"
+    return "unknown"
+
+
+def terminal_state(handle: str | None) -> str:
+    """코디네이터 자동 부활용 생존 판정. 예외를 내지 않는다(orca 없음·파싱 실패도 unknown)."""
+    if not handle:
+        return "unknown"
+    try:
+        code, data = call(["terminal", "show", "--terminal", handle], check=False)
+    except OrchError:
+        return "unknown"
+    return _terminal_verdict(code, data)
+
+
+def terminal_alive(handle: str | None) -> bool:
+    """터미널이 연결돼 있고 그 안에서 claude 에이전트가 도는지. 코드 12(orca 없음)는 전파한다."""
     if not handle:
         return False
     try:
@@ -69,9 +94,7 @@ def terminal_alive(handle: str | None) -> bool:
         if exc.code == 12:
             raise
         return False
-    term = (data.get("result") or {}).get("terminal") or {}
-    return (code == 0 and bool(data.get("ok")) and term.get("connected") is True
-            and term.get("agentIdentity") == "claude")
+    return _terminal_verdict(code, data) == "alive"
 
 
 def worker_info(dispatch_id: str) -> dict | None:
