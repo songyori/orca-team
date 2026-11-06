@@ -493,3 +493,15 @@ E2E 반영 (Orca 1.4.240)
   - 60초(`PID_STALE_SECONDS`)보다 오래된 `auto-up.pid` 는 살아 있는 pid 라도 진행 중으로 보지 않는다.
   - 다시 띄움 문구는 `코디네이터가 꺼져 있어 자동으로 다시 띄우는 중이다.` 로 시작한다. 훅이 돌아올 때 `orch up` 은 아직 도는 중이다.
   - `terminal_state` 는 `result` 가 dict 가 아니거나 `OSError`(실행 권한 없음 등)가 나도 `unknown` 이다.
+
+### 디자인 규칙 (2026-11-06, 0.5.2)
+
+설계: `2026-11-06-orca-team-design-rules-design.md`. 구현에서 정한 것:
+- `textlint.diff_lines` 가 태스크 커밋 diff 의 추가한 줄과 지운 줄을 수만큼 돌려준다. `added_lines` 는 그 추가한 줄의 집합이고, 문구 검사와 디자인 diff 검사가 같은 diff 읽기를 쓴다.
+- `designdiff.design_diff_lint` 는 신호마다 지운 줄과 추가한 줄의 일치 수를 비교해 줄어든 것만 알린다. 같은 속성을 옮기거나 줄만 바꾼 경우는 수가 같아 걸러진다. 태스크가 지운 파일은 지운 줄 검사만 한다.
+- 포커스 제거는 파일에 `focus-visible` 도, `focus:outline-none` 이 아닌 Tailwind `focus:` 클래스도 없을 때만 알린다. `:focus` 셀렉터는 대체로 보지 않는다(`:focus { outline: none }` 이 찾을 대상이다). 확대 막기는 뷰포트 메타와 Next.js `viewport` 객체(`userScalable: false`, `maximumScale: 1`)를 본다.
+- 지운 줄의 포커스 신호는 `:focus-visible` 과 `:focus`(뒤에 `-visible`·`-within` 이 붙지 않은 것)로 나눠 센다. "대체 포커스" 판정은 겹친 Tailwind 변형(`dark:focus:ring-2`, `md:focus:ring-2`)과 중요 표시(`focus:!ring-2`)가 붙은 클래스도 받는다.
+- 내용 검사는 `lint.design_findings`(상한 없음)로 나누고, `review.design_section` 이 내용 검사 다음에 diff 검사를 이어 붙여 `lint.cap` 으로 50건에서 자른다. `lint.design_lint` 는 `cap(design_findings(...))` 로 남았다.
+- 파일 읽기는 `lint.read_source(root, rel)` 하나를 `design_findings` 와 디자인 diff 검사가 함께 쓴다.
+- 검사 예외는 `review.guarded` 가 "자동 검사 실패" 한 줄로 바꾼다. 디자인 절의 두 검사와 문구 절이 같은 함수를 쓰고, 경고 줄 모음은 `review.bullets` 가 만든다.
+- 리포트 소절은 `### 디자인 점검` 이다. 셋업이 기존 파일을 덮어쓰지 않아 이전 프로젝트는 예전 직무 문서를 쓰므로, `review-design.md` 5번이 `### 금지 목록 점검` 과 번호만 있는 금지 목록도 받는다.

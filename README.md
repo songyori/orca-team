@@ -63,13 +63,17 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
   2. 톤 시안: 시안 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)를 톤 3가지로 그린 9장을 보여 준다. 세부 수정 피드백이면 수정안 1개, 방향을 바꾸는 피드백이면 새 3안으로 확정할 때까지 반복한다.
   3. 디자인 시스템: 확정한 톤으로 Claude Design Design System 문서(토큰, 상태별 컴포넌트 미리보기, 사용 규칙)를 만들어 확인받는다. 원본은 `docs/design/system/`, URL 은 `docs/design/direction.md` 의 `design_system_url:` 줄이다.
 - 화면 디자이너는 이 프로젝트 디자인 시스템만 쓴다. 시스템에 없는 값이 필요하면 리포트에 "시스템 추가 제안"을 적고, 코디네이터가 디자인 일괄 승인 전에 모아 director 보강 태스크로 처리한다. 개발은 `tokens.json` 을 CSS 변수·테마로 옮긴 UI 기반 태스크의 토큰과 공통 컴포넌트만 쓴다.
-- AI 티 금지 목록 `.orchestration/design-rules.md`(고정 이모지, 왼쪽 줄 카드, 파랑·보라 그라디언트 등 10개)를 director·designer·developer 가 지키고 리포트에 점검 결과를 적는다. Codex 리뷰가 이 목록으로 판정하고, `orch review` 는 Codex 를 부르기 전에 바뀐 파일에서 이모지·왼쪽 줄 강조·파랑·보라 그라디언트 의심 위치를 찾아 리뷰 프롬프트에 경고로 넣는다(자동 불합격은 아니다).
+- 디자인 규칙 `.orchestration/design-rules.md` 를 director·designer·developer 가 지키고 리포트 `### 디자인 점검` 에 점검 결과를 적는다. §1 은 AI 티 금지 목록(고정 이모지, 왼쪽 줄 카드, 파랑·보라 그라디언트 등 10개), §2–§7 은 접근성(WCAG 2.2 AA), 색, 글자(한글 어절 줄바꿈 포함), 레이아웃, 표면·동작, 상태 규칙이다. 품질 규칙은 [jakubkrehel/skills](https://github.com/jakubkrehel/skills)(MIT)에서 필요한 것만 가져와 압축하고 한국어·앱 플랫폼 내용을 더했다. developer 는 구현한 상태(빈 상태·로딩·오류·좁은 폭 등)를 실제로 렌더해 확인한다.
+- Codex 디자인 리뷰는 이 태스크가 만든 문제만 `(새로 생김)`·`(회귀)`·`(기존)` 으로 나눠 지적하고, diff 의 지운 줄을 읽어 회귀를 찾는다. 접근 가능한 이름이 없는 컨트롤, 포커스 표시 없음, 동작 줄이기 무시, 320px·200% 확대에서 잘림, 대비 미달 같은 즉시 차단 항목은 P1 이다. 고칠 방향은 지우기 → 플랫폼 기본 → 기존 토큰 재사용 → 값 교정 → 새로 추가 순으로 고른다.
+- `orch review` 는 Codex 를 부르기 전에 바뀐 파일에서 이모지·왼쪽 줄 강조·파랑·보라 그라디언트 의심 위치를, 태스크 diff 에서 지운 줄로 줄어든 접근성 신호(`aria-label`, 포커스, `prefers-reduced-motion`, `keep-all` 등)와 추가한 줄의 확대 막기·포커스 표시 제거를 찾아 리뷰 프롬프트에 경고로 넣는다(자동 불합격은 아니다).
 - config.toml 에 `[roles.director]` 가 있으면 `orch plan check` 가 director 태스크 정확히 1개와, 모든 designer 태스크의 director 의존(직접 또는 간접)을 요구한다. `--append` 는 새로 더하는 designer 만 본다. owns 가 모두 `assets/` 아래인 에셋 전용 designer 태스크는 이 규칙에서 빠진다.
 - 0.3.0 으로 만든 프로젝트는 config.toml 에 `[roles.director]` 가 없어 지금 흐름 그대로 돈다(리뷰 프롬프트의 디자인 기준과 orch 자동 검사도 `[roles.director]` 를 넣은 뒤에만 붙는다). 새 흐름을 쓰려면 다음을 한다.
   1. `.orchestration/config.toml` 에 `orca-team/templates/config.toml` 의 `[roles.director]` 블록을 복사해 넣는다.
   2. `orca-team/templates/roles/director.md` 를 `.orchestration/roles/director.md` 로, `orca-team/templates/design-rules.md` 를 `.orchestration/design-rules.md` 로 복사한다.
   3. `.orchestration/roles/planner.md`, `designer.md`, `developer.md` 와 `.orchestration/coordinator.md` 를 `orca-team/templates/` 의 같은 파일로 바꾸고, `CLAUDE.md` 의 `<!-- orca-team -->` 절을 `orca-team/templates/CLAUDE.section.md` 로 바꾼다. 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
   4. 새 흐름은 경로가 바뀐다: 화면 디자인 `docs/design/<화면>/` → `docs/design/screens/<화면>/`, `docs/design/system.md` → `docs/design/system/`(director 가 만든다). 기존 파일은 그대로 두고 새 태스크부터 새 경로를 쓴다.
+- 0.5.1 이하로 만든 프로젝트도 플러그인을 업데이트하면 새 리뷰 방식과 자동 검사가 바로 붙는다(리포트의 이전 소절 이름 `### 금지 목록 점검` 도 받는다). 워커가 새 규칙으로 작업하게 하려면 `orca-team/templates/design-rules.md` 를 `.orchestration/design-rules.md` 로, `orca-team/templates/roles/director.md`·`designer.md`·`developer.md` 를 `.orchestration/roles/` 로 복사한다(프로젝트에서 직무 문서를 고쳤다면 비교해 합친다). 코디네이터 터미널을 닫고 `/orca-team:up` 으로 다시 띄운다.
+- 설계: `docs/superpowers/specs/2026-11-06-orca-team-design-rules-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-06-orca-team-design-rules.md`.
 
 ## 문구 규칙
 

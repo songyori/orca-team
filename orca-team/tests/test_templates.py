@@ -422,5 +422,22 @@ class TemplateTest(unittest.TestCase):
                 self.assertIn("§2–§7", text)
 
 
+    def test_docs_describe_design_rules(self):
+        readme = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        for key in ("### 디자인 점검", "https://github.com/jakubkrehel/skills", "`(새로 생김)`", "`(회귀)`", "즉시 차단 항목",
+                    "0.5.1 이하로 만든 프로젝트", "docs/superpowers/specs/2026-11-06-orca-team-design-rules-design.md",
+                    "docs/superpowers/plans/2026-11-06-orca-team-design-rules.md"):
+            self.assertIn(key, readme)
+        self.assertLess(readme.index("## 디자인 디렉터"), readme.index("https://github.com/jakubkrehel/skills"))
+        self.assertLess(readme.index("https://github.com/jakubkrehel/skills"), readme.index("## 문구 규칙"))
+        spec = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
+        section = spec[spec.index("## 13."):]
+        for key in ("### 디자인 규칙 (2026-11-06, 0.5.2)", "design_diff_lint", "diff_lines", "lint.cap", "guarded"):
+            self.assertIn(key, section)
+        status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
+        for key in ("(2026-11-06, 0.5.2)", "| 0.5.2 |", "specs/2026-11-06-orca-team-design-rules-design.md"):
+            self.assertIn(key, status)
+
+
 if __name__ == "__main__":
     unittest.main()
