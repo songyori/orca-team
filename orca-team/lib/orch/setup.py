@@ -13,7 +13,7 @@ from pathlib import Path
 from . import orca
 from .ask import open_questions
 from .comm import unread
-from .config import Config
+from .config import Config, Launch
 from .paths import PLUGIN_ROOT, TEMPLATES, OrchError, Project, codex_bin, codex_runner, git_toplevel
 from .tasks import all_states, launch_in_progress, next_action
 from .util import load_run, now, pid_alive, record_plugin_root, require_coordinator, update_run, write_json
@@ -35,6 +35,8 @@ SCAFFOLD_FILES = [
 ]
 APPEND_FILES = [("CLAUDE.section.md", "CLAUDE.md"), ("AGENTS.md", "AGENTS.md")]
 LAUNCH_GRACE_SECONDS = 180
+STARTING_MESSAGE = (f"코디네이터가 아직 시작 중이다({LAUNCH_GRACE_SECONDS}초 안에 다시 띄우지 않는다). "
+                    "`orch status` 로 확인한다.")
 GITIGNORE_LINE = ".orchestration/state/"
 
 
@@ -176,37 +178,9 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
         update_run(p, lambda r: r.pop("launched_at", None))
         result = {"status": "running", "handle": handle}
     elif starting(load_run(p)):
-        result = {"status": "starting", "handle": load_run(p).get("coordinator_handle"),
-                  "message": f"코디네이터가 아직 시작 중이다({LAUNCH_GRACE_SECONDS}초 안에 다시 띄우지 않는다). "
-                             "`orch status` 로 확인한다."}
+        result = {"status": "starting", "handle": load_run(p).get("coordinator_handle"), "message": STARTING_MESSAGE}
     else:
-        launch = cfg.coordinator()
-        p.ensure_state()
-        receipt_path = p.state / "coordinator-launch.json"
-        launched_at = now()
-        update_run(p, lambda r: (r.pop("coordinator_handle", None), r.update(launched_at=launched_at)))
-        try:
-            code, receipt = orca.call(["agent", "launch", "--agent", "claude", "--surface", "terminal",
-                                       "--worktree", f"path:{p.root}", "--model", launch.model,
-                                       "--effort", launch.effort, "--prompt", COORDINATOR_PROMPT], check=False)
-        except OrchError as exc:
-            if exc.code != 12:
-                write_json(receipt_path, {"ok": False, "parse_error": str(exc), "launched_at": launched_at})
-            raise
-        write_json(receipt_path, receipt)
-        handle = launch_handle(receipt)
-        if code != 0 or not receipt.get("ok"):
-            update_run(p, lambda r: r.pop("launched_at", None))
-            raise OrchError(f"코디네이터 실행 실패. 영수증: {receipt_path}")
-        own = os.environ.get("ORCA_TERMINAL_HANDLE")
-        if handle and handle == own:
-            # 영수증 깊은 곳의 호출자(메인) 핸들을 코디네이터로 기록하면 메인이 코디네이터 권한을 얻는다.
-            raise OrchError(f"코디네이터 실행 결과가 불확실하다(영수증에서 찾은 핸들 {handle} 이 메인 자신의 터미널이다). "
-                            f"다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
-        if not handle:
-            raise OrchError(f"코디네이터 실행 결과가 불확실하다(핸들 없음). 다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
-        update_run(p, lambda r: r.update(coordinator_handle=handle))
-        result = {"status": "launched", "handle": handle}
+        result = launch_coordinator(p, cfg.coordinator())
     deadline = time.monotonic() + wait_run
     while not load_run(p).get("run_id") and time.monotonic() < deadline:
         time.sleep(1)
@@ -216,6 +190,48 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
                          + (f"코디네이터 터미널({result['handle']})을 확인한다" if result["handle"]
                             else "`orch status` 로 코디네이터를 확인한다"))
     return result
+
+
+def launch_coordinator(p: Project, launch: Launch) -> dict:
+    """run.json 잠금 안에서 기동을 선점한 뒤 코디네이터를 띄운다. 선점은 시작 유예를 잠금 안에서 다시 확인해
+    동시에 돈 `orch up` 이 코디네이터를 둘 띄우지 않게 한다. 선점에 지면 띄우지 않고 starting 을 돌려준다."""
+    p.ensure_state()
+    receipt_path = p.state / "coordinator-launch.json"
+    launched_at = now()
+    claimed = []
+
+    def claim(r: dict) -> None:
+        if starting(r):
+            return
+        r.pop("coordinator_handle", None)
+        r.update(launched_at=launched_at)
+        claimed.append(True)
+
+    run = update_run(p, claim)
+    if not claimed:
+        return {"status": "starting", "handle": run.get("coordinator_handle"), "message": STARTING_MESSAGE}
+    try:
+        code, receipt = orca.call(["agent", "launch", "--agent", "claude", "--surface", "terminal",
+                                   "--worktree", f"path:{p.root}", "--model", launch.model,
+                                   "--effort", launch.effort, "--prompt", COORDINATOR_PROMPT], check=False)
+    except OrchError as exc:
+        if exc.code != 12:
+            write_json(receipt_path, {"ok": False, "parse_error": str(exc), "launched_at": launched_at})
+        raise
+    write_json(receipt_path, receipt)
+    handle = launch_handle(receipt)
+    if code != 0 or not receipt.get("ok"):
+        update_run(p, lambda r: r.pop("launched_at", None))
+        raise OrchError(f"코디네이터 실행 실패. 영수증: {receipt_path}")
+    own = os.environ.get("ORCA_TERMINAL_HANDLE")
+    if handle and handle == own:
+        # 영수증 깊은 곳의 호출자(메인) 핸들을 코디네이터로 기록하면 메인이 코디네이터 권한을 얻는다.
+        raise OrchError(f"코디네이터 실행 결과가 불확실하다(영수증에서 찾은 핸들 {handle} 이 메인 자신의 터미널이다). "
+                        f"다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
+    if not handle:
+        raise OrchError(f"코디네이터 실행 결과가 불확실하다(핸들 없음). 다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
+    update_run(p, lambda r: r.update(coordinator_handle=handle))
+    return {"status": "launched", "handle": handle}
 
 
 def project_objective(p: Project) -> str:

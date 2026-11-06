@@ -1,9 +1,10 @@
 import json
+import os
 import unittest
 from unittest import mock
 from datetime import datetime
 
-from helpers import ProjectCase
+from helpers import FAKES, ProjectCase
 from orch import orca, setup, util
 from orch.config import Config
 from orch.paths import Project
@@ -199,6 +200,34 @@ class CoordinatorTest(ProjectCase):
         self.assertEqual((out["status"], out["run_id"]), ("running", "run_bound"))
         self.assertEqual(self.run_state()["run_id"], "run_bound")
         self.assertNotIn("launched_at", self.run_state())
+
+    def test_up_loses_launch_claim_to_concurrent_up(self):
+        """시작 유예 확인과 기동 선점 사이에 다른 orch up 이 먼저 선점하면 띄우지 않고 starting 을 돌려준다.
+        첫 starting 확인(잠금 밖) 직후 다른 프로세스가 run.json 에 launched_at 을 쓴 것처럼 흉내 낸다."""
+        self.set_run(run_id="run_x", coordinator_handle="term_old")
+        self.respond("terminal show", STALE, code=1)
+        claimed_at = util.now()
+        real_starting, checks = setup.starting, []
+
+        def precheck_then_concurrent_claim(run):
+            checks.append(run)
+            if len(checks) > 1:
+                return real_starting(run)
+            other = self.run_state()
+            other.pop("coordinator_handle", None)
+            other["launched_at"] = claimed_at
+            self.set_run(**other)
+            return False
+
+        p = Project(self.root)
+        fake = {"ORCA_TEAM_ORCA": str(FAKES / "orca"), "FAKE_DIR": str(self.fake_dir)}
+        with mock.patch.dict(os.environ, fake), \
+                mock.patch.object(setup, "starting", side_effect=precheck_then_concurrent_claim):
+            out = setup.up(p, Config.load(p.config_path))
+        self.assertEqual((out["status"], out["handle"], out["run_id"]), ("starting", None, "run_x"))
+        self.assertIn("아직 시작 중", out["message"])
+        self.assertEqual(self.calls_for("agent launch"), [])
+        self.assertEqual(self.run_state()["launched_at"], claimed_at)
 
     def test_bind_only_from_coordinator_then_rebinds(self):
         self.set_run(coordinator_handle="term_coord")

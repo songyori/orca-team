@@ -582,7 +582,7 @@ class AutoUpHookTest(HookCase):
         self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
         out = self.hook("role-mark", {"session_id": "m", "prompt": "할 일 앱 만들어 줘"})
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
-        self.assertIn("자동으로 다시 띄웠다", self.context(out))
+        self.assertIn("자동으로 다시 띄우는 중", self.context(out))
         self.wait_spawned()
         self.assertEqual(self.run_state()["coordinator_handle"], "term_new")
 
@@ -597,7 +597,7 @@ class AutoUpHookTest(HookCase):
         self.respond("terminal show", STALE, code=1)
         self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
         context = self.context(self.hook("session-start", {"session_id": "fresh", "source": "startup"}))
-        self.assertIn("자동으로 다시 띄웠다", context)
+        self.assertIn("자동으로 다시 띄우는 중", context)
         self.wait_spawned()
 
     def test_coordinator_and_worker_sessions_skip(self):
