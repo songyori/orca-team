@@ -89,6 +89,12 @@ class DesignDiffTest(ProjectCase):
             'src/DarkBad.tsx:1: 포커스 표시 제거(outline-none">x</button>, 파일에 focus-visible 없음)',
         ])
 
+    def test_tailwind_v4_outline_hidden_is_focus_removal(self):
+        sha = self.commit("src/Hidden.tsx", '<button className="focus:outline-hidden">x</button>\n')
+        self.assertEqual(self.lint(["src/Hidden.tsx"], sha), [
+            'src/Hidden.tsx:1: 포커스 표시 제거(outline-hidden">x</button>, 파일에 focus-visible 없음)',
+        ])
+
     def test_removed_focus_visible_is_not_named_focus(self):
         self.commit("src/a.css", ".a:focus-visible { outline: 2px solid red; }\n", "chore: base")
         sha = self.commit("src/a.css", ".a { }\n")
@@ -120,7 +126,6 @@ class DesignDiffTest(ProjectCase):
         self.git("commit", "-q", "-m", "[T-001] chore: remove")
         sha = self.git("rev-parse", "HEAD").strip()
         self.assertEqual(self.lint(["src/Icon.tsx"], sha), [f"src/Icon.tsx: {LOST.format(name='aria-label', n=1)}"])
-
 
     def test_moved_file_is_not_reported(self):
         body = ('<button aria-label="닫기"><img alt="x" /></button>\n<h1 className="break-keep">제목</h1>\n'

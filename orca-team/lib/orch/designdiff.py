@@ -53,10 +53,10 @@ ZOOM_RE = re.compile(r"user-scalable\s*=\s*[\"']?(?:no|0)(?![\w.])|maximum-scale
                      r"|\buserScalable\s*:\s*false\b|\bmaximumScale\s*:\s*1(?:\.0*)?(?![\d.])", re.I)
 FOCUS_OFF_RE = re.compile(r"\boutline(?:-style)?\s*:\s*[\"']?(?:none|0(?:px)?)(?![\w.%-])"
                           r"|(?<![\w-])outline-(?:none|hidden)(?![\w-])")
-# 대체 포커스 표시: focus-visible(CSS·Tailwind), 또는 focus:outline-none·ring-0·shadow-none·ring-transparent 가 아닌
+# 대체 포커스 표시: focus-visible(CSS·Tailwind), 또는 focus:outline-none·outline-hidden·ring-0·shadow-none·ring-transparent 가 아닌
 # Tailwind focus: 클래스(focus:ring-2, 겹친 변형 dark:focus:ring-2, 중요 표시 focus:!ring-2).
 # :focus 셀렉터는 대체로 보지 않는다(:focus { outline: none } 이 바로 찾을 대상이다).
-FOCUS_ALT_RE = re.compile(r"focus-visible|(?<![\w-])focus:(?!(?:outline-none|ring-0|shadow-none|ring-transparent)(?![\w-]))[\w\[!]")
+FOCUS_ALT_RE = re.compile(r"focus-visible|(?<![\w-])focus:(?!(?:outline-none|outline-hidden|ring-0|shadow-none|ring-transparent)(?![\w-]))[\w\[!]")
 
 
 def is_target(rel: str) -> bool:
