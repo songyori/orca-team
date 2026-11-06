@@ -5,8 +5,8 @@ from pathlib import Path
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
 from helpers import ProjectCase
-from orch.textlint import (MAX_BYTES, MAX_FINDINGS, added_lines, ending_styles, load_glossary, read_target, scan_text,
-                           text_lint, text_targets)
+from orch.textlint import (MAX_BYTES, MAX_FINDINGS, added_lines, diff_lines, ending_styles, load_glossary, read_target,
+                           scan_text, text_lint, text_targets)
 
 VOICE = """# 문구 기준
 
@@ -232,6 +232,19 @@ class TextLintGitTest(ProjectCase):
         self.commit("src/app.tsx", 'const a = "완료됬어요";\n', "[T-001] feat")
         self.assertIsNone(added_lines(self.root, ["0" * 40], "src/app.tsx"))
         self.assertEqual(text_lint(self.root, ["src/app.tsx"], ["0" * 40]), [])
+
+    def test_diff_lines_counts_added_and_removed(self):
+        self.commit("src/app.css", "a\nb\nb\n", "chore: base")
+        sha = self.commit("src/app.css", "a\nc\nc\n", "[T-001] feat: css")
+        self.assertEqual(diff_lines(self.root, [sha], "src/app.css"), (["c", "c"], ["b", "b"]))
+
+    def test_diff_lines_sums_commits_and_skips_file_headers(self):
+        sha1 = self.commit("src/app.css", "--x\n", "[T-001] feat: one")
+        sha2 = self.commit("src/app.css", "++y\n", "[T-001] feat: two")
+        self.assertEqual(diff_lines(self.root, [sha1, sha2], "src/app.css"), (["--x", "++y"], ["--x"]))
+
+    def test_diff_lines_git_error_is_none(self):
+        self.assertIsNone(diff_lines(self.root, ["0" * 40], "src/app.css"))
 
     def test_literal_pathspec(self):
         sha = self.commit("src/app/i/page.tsx", 'const a = "완료됬어요";\n', "[T-001] feat")

@@ -173,9 +173,11 @@ def scan_text(rel: str, text: str, added: set[str] | None = None,
     return [item for _, _, item in sorted(found, key=lambda f: (f[0], f[1]))]
 
 
-def added_lines(root: Path, shas: list[str], rel: str) -> set[str] | None:
-    """shas 커밋들이 rel 에 추가한 줄 내용. 파일 머리(--- / +++)는 hunk(@@) 밖이라 빠진다. git 오류면 None."""
-    added: set[str] = set()
+def diff_lines(root: Path, shas: list[str], rel: str) -> tuple[list[str], list[str]] | None:
+    """shas 커밋들이 rel 에 추가한 줄과 지운 줄 내용(같은 줄이 여러 번이면 그 수만큼). 파일 머리(--- / +++)는
+    hunk(@@) 밖이라 빠진다. git 오류면 None."""
+    added: list[str] = []
+    removed: list[str] = []
     for sha in shas:
         try:
             out = git(root, "show", "--format=", "--no-color", "--no-ext-diff", "--no-renames", "-U0", sha, "--", f":(literal){rel}")
@@ -188,8 +190,16 @@ def added_lines(root: Path, shas: list[str], rel: str) -> set[str] | None:
             elif line.startswith("@@"):
                 in_hunk = True
             elif in_hunk and line.startswith("+"):
-                added.add(line[1:])
-    return added
+                added.append(line[1:])
+            elif in_hunk and line.startswith("-"):
+                removed.append(line[1:])
+    return added, removed
+
+
+def added_lines(root: Path, shas: list[str], rel: str) -> set[str] | None:
+    """shas 커밋들이 rel 에 추가한 줄 내용. git 오류면 None."""
+    lines = diff_lines(root, shas, rel)
+    return None if lines is None else set(lines[0])
 
 
 def text_lint(root: Path, files: list[str], shas: list[str]) -> list[str]:
