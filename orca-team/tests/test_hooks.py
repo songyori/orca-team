@@ -2,17 +2,21 @@ import json
 import os
 import subprocess
 import sys
+import time
 import unittest
 
-from helpers import PLUGIN, ProjectCase
+from helpers import FAKES, PLUGIN, ProjectCase
 
 HOOK = PLUGIN / "hooks" / "orca_team_hook.py"
+LIVE = {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}}
+STALE = {"ok": False, "error": {"code": "terminal_handle_stale"}}
 
 
 class HookCase(ProjectCase):
     def setUp(self):
         super().setUp()
         self.scaffold()
+        self.respond("terminal show", LIVE)
 
     def hook(self, event, payload, cwd=None, env=None):
         body = json.dumps({"cwd": str(cwd or self.root), **payload})
@@ -187,6 +191,7 @@ class StopAndSessionStartTest(HookCase):
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
         env = {k: v for k, v in os.environ.items() if k != "ORCA_TERMINAL_HANDLE"}
+        env.update({"ORCA_TEAM_ORCA": str(FAKES / "orca"), "FAKE_DIR": str(self.fake_dir)})
         with mock.patch.dict(os.environ, env, clear=True), \
                 mock.patch.object(ask, "open_questions", side_effect=RuntimeError("boom")):
             out = module.session_start(Project(self.root), {"session_id": "fresh"})
@@ -548,6 +553,79 @@ class MainContextGuardTest(HookCase):
         (self.root / ".orchestration/state/tasks/T-001.json").write_text("[1]", encoding="utf-8")
         self.assertIsNone(self.ask_user(entry["render"]["question"]))
         self.assertEqual(self.denied_ids(), [])
+
+
+class AutoUpHookTest(HookCase):
+    """메인 세션 훅이 죽은 코디네이터를 다시 띄운다. 세팅이 끝난 프로젝트, 가짜 orca."""
+
+    def setUp(self):
+        super().setUp()
+        self.orch("setup-done")
+
+    def context(self, out):
+        return out["hookSpecificOutput"]["additionalContext"] if out else None
+
+    def wait_spawned(self):
+        from orch.util import process_alive
+
+        pid = int((self.root / ".orchestration/state/auto-up.pid").read_text(encoding="utf-8").split()[0])
+        deadline = time.monotonic() + 20
+        while process_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self.assertFalse(process_alive(pid))
+
+    def run_state(self):
+        return json.loads((self.root / ".orchestration/state/run.json").read_text(encoding="utf-8"))
+
+    def test_prompt_revives_dead_coordinator(self):
+        self.respond("terminal show", STALE, code=1)
+        self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
+        out = self.hook("role-mark", {"session_id": "m", "prompt": "할 일 앱 만들어 줘"})
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
+        self.assertIn("자동으로 다시 띄웠다", self.context(out))
+        self.wait_spawned()
+        self.assertEqual(self.run_state()["coordinator_handle"], "term_new")
+
+    def test_prompt_within_interval_skips(self):
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "hi"}))
+        self.respond("terminal show", STALE, code=1)
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "again"}))
+        self.assertEqual(len(self.calls_for("terminal show")), 1)
+
+    def test_session_start_checks_regardless_of_interval(self):
+        self.hook("role-mark", {"session_id": "m", "prompt": "hi"})
+        self.respond("terminal show", STALE, code=1)
+        self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
+        context = self.context(self.hook("session-start", {"session_id": "fresh", "source": "startup"}))
+        self.assertIn("자동으로 다시 띄웠다", context)
+        self.wait_spawned()
+
+    def test_coordinator_and_worker_sessions_skip(self):
+        self.respond("terminal show", STALE, code=1)
+        self.assertIsNone(self.hook("role-mark", {"session_id": "c", "prompt": "[orca-team:coordinator] 시작"}))
+        self.assertIsNone(self.hook("role-mark", {"session_id": "w", "prompt": "Your task ID is: t"}))
+        self.assertEqual(self.calls_for("terminal show"), [])
+        self.assertEqual(self.calls_for("agent launch"), [])
+
+    def test_disabled_reports_without_launch(self):
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(path.read_text(encoding="utf-8").replace("auto_up = true", "auto_up = false"), encoding="utf-8")
+        self.respond("terminal show", STALE, code=1)
+        self.assertIn("auto_up = false", self.context(self.hook("role-mark", {"session_id": "m", "prompt": "hi"})))
+        self.assertEqual(self.calls_for("agent launch"), [])
+
+    def test_setup_mode_skips(self):
+        (self.root / ".orchestration/state/setup-mode").write_text("", encoding="utf-8")
+        self.respond("terminal show", STALE, code=1)
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "hi"}))
+        self.assertEqual(self.calls_for("terminal show"), [])
+
+    def test_auto_up_error_does_not_block(self):
+        (self.root / ".orchestration/state/auto-up.json").mkdir()
+        self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "hi"}))
+        context = self.context(self.hook("session-start", {"session_id": "fresh", "source": "startup"}))
+        self.assertIn("/orca-team:up", context)
+        self.assertIn("auto-up", (self.root / ".orchestration/state/hook-errors.log").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

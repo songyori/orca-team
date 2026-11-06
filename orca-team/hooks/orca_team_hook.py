@@ -42,6 +42,10 @@ MARKDOWN_NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 # 정규화한 render.context 의 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다. 확정 질문 context 는 제목·첫 항목만으로도
 # 80자를 넘어 다른 질문과 겹치지 않고, 표·제목을 다시 그린 것은 맞지만 요약하면 맞지 않는다.
 CONTEXT_FINGERPRINT = 80
+# 세션 시작 안내의 코디네이터 줄(자동 부활 문구가 없을 때). /orca-team:up 은 수동 복구로 남긴다.
+DEFAULT_UP_LINE = ("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다. 메시지 watcher 가 꺼져 있으면 Bash "
+                   "`run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. 코디네이터 상태가 의심되면 "
+                   "`/orca-team:up` 을 실행한다.")
 
 
 def find_project(payload: dict) -> Project | None:
@@ -76,21 +80,49 @@ def role_of(p: Project, session_id: str | None) -> str:
     return "main"
 
 
+def log_hook_error(p: Project, label: str) -> None:
+    """훅 예외를 state/hook-errors.log 에 남긴다. 기록도 실패하면 조용히 넘어간다."""
+    try:
+        p.ensure_state()
+        with (p.state / "hook-errors.log").open("a", encoding="utf-8") as fh:
+            fh.write(f"{now()} {label}\n{traceback.format_exc()}\n")
+    except OSError:
+        pass
+
+
+def auto_up_context(p: Project, force: bool) -> str | None:
+    """코디네이터 자동 부활(orch.autoup.check). 실패해도 세션을 막지 않고 hook-errors.log 에 남긴다.
+    import 는 여기서 한다. guard 훅은 매 도구 호출마다 돌아 무거운 모듈을 미리 불러오지 않는다."""
+    try:
+        from orch import autoup
+
+        return autoup.check(p, force=force)
+    except Exception:  # noqa: BLE001  훅은 세션을 막지 않는다
+        log_hook_error(p, "auto-up")
+        return None
+
+
 def role_mark(p: Project, payload: dict):
     session_id = payload.get("session_id")
-    if not valid_session_id(session_id) or (p.sessions / session_id).exists():
+    if not valid_session_id(session_id):
         return None
-    prompt = payload.get("prompt") or ""
-    if prompt.lstrip().startswith(COORDINATOR_MARK) or env_coordinator(p):
-        role = "coordinator"
-    elif any(mark in prompt for mark in WORKER_MARKS):
-        found = ASK_WORKER_RE.search(prompt)
-        role = f"worker:{found.group(1)}" if found else "worker"
-    else:
-        role = "main"
-    p.ensure_state()
-    (p.sessions / session_id).write_text(role + "\n", encoding="utf-8")
-    return None
+    if not (p.sessions / session_id).exists():
+        prompt = payload.get("prompt") or ""
+        if prompt.lstrip().startswith(COORDINATOR_MARK) or env_coordinator(p):
+            role = "coordinator"
+        elif any(mark in prompt for mark in WORKER_MARKS):
+            found = ASK_WORKER_RE.search(prompt)
+            role = f"worker:{found.group(1)}" if found else "worker"
+        else:
+            role = "main"
+        p.ensure_state()
+        (p.sessions / session_id).write_text(role + "\n", encoding="utf-8")
+    if role_of(p, session_id) != "main":
+        return None
+    context = auto_up_context(p, force=False)
+    if not context:
+        return None
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": context}}
 
 
 def project_rel(p: Project, raw: str) -> str | None:
@@ -276,8 +308,9 @@ def session_start(p: Project, payload: dict):
         return None
     lines = ["orca-team 프로젝트다. 이 안내는 사용자와 대화하는 메인 세션에만 해당한다. 첫 지시가 `[orca-team:coordinator]` 로 "
              "시작하거나 Orca 워커 작업 지시라면 이 안내를 무시한다.",
-             '- 메인은 사용자와 대화만 한다. 산출물 작업은 `.orchestration/bin/orch tell "<요청>"` 으로 코디네이터에게 넘긴다.',
-             "- 먼저 `/orca-team:up` 으로 코디네이터와 메시지 watcher 를 확인한다."]
+             '- 메인은 사용자와 대화만 한다. 산출물 작업은 `.orchestration/bin/orch tell "<요청>"` 으로 코디네이터에게 넘긴다.']
+    context = auto_up_context(p, force=True)
+    lines.append(f"- {context}" if context else DEFAULT_UP_LINE)
     pending = len(unread(p))
     if pending:
         lines.append(f"- 아직 전하지 않은 코디네이터 메시지가 {pending}건 있다. watcher 를 띄우면 바로 받는다.")
@@ -325,12 +358,7 @@ def main() -> int:
     try:
         out = HANDLERS[sys.argv[1]](p, payload)
     except Exception:  # noqa: BLE001  훅은 세션을 막지 않는다
-        try:
-            p.ensure_state()
-            with (p.state / "hook-errors.log").open("a", encoding="utf-8") as fh:
-                fh.write(f"{now()} {sys.argv[1]}\n{traceback.format_exc()}\n")
-        except OSError:
-            pass
+        log_hook_error(p, sys.argv[1])
         return 0
     if out:
         print(json.dumps(out, ensure_ascii=False))
