@@ -23,11 +23,17 @@
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.
   2. `/orca-team:init <프로젝트 설명>` 을 실행한다. 기획·디렉터 질문에는 사용자가 직접 답한다.
   3. 끝나면 사용자 승인을 받아 정리한다. 시험 프로젝트의 Orca 터미널을 닫고, 폴더와 `~/.cache/orca-team/refs/<프로젝트>/` 를 휴지통으로 옮긴다. Orca 사이드바의 프로젝트 항목은 CLI 로 지울 수 없어 Orca 화면에서 지운다.
+- 리뷰만 확인하는 방법(Orca 없이, 0.5.2 에서 썼다):
+  1. 빈 git 저장소에서 이 저장소의 `orca-team/bin/orch scaffold --description-file <파일>` 로 규칙을 설치하고, 기본 앱을 커밋한 뒤 태스크 spec 을 `[T-001] spec: …` 으로 커밋한다.
+  2. 워커 대신 `[T-001] …` 작업 커밋과 `docs/tasks/T-001/report.md` 를 직접 만든다(확인할 회귀를 일부러 넣는다).
+  3. `.orchestration/state/tasks/T-001.json` 을 `status: working`, `base: <spec 커밋>`, `dispatch_id: null` 로 쓰고, `.orchestration/state/run.json` 에 `coordinator_handle` 을 아무 값으로 둔다.
+  4. `ORCA_TERMINAL_HANDLE=<그 값> .orchestration/bin/orch review T-001` 을 실행하면 실제 Codex 리뷰가 돈다. 결과는 `docs/reviews/T-001/r1.md`, 프롬프트는 `~/.cache/orca-team/runs/<프로젝트>/` 에 있다. 끝나면 승인을 받아 두 폴더를 휴지통으로 옮긴다.
 
 ## 실환경에서 확인하지 않은 흐름
 
 - 톤 시안 피드백 분기: 세부 수정이면 수정안 1개, 방향 전환이면 새 3안. 확인 때 추천안을 골라 실행되지 않았다(단위 테스트는 있다).
 - 기본 권한 모드의 무인 실행. 모든 확인이 bypass permissions 세션이었다.
+- 0.5.1 코디네이터 자동 부활을 Orca 재시작 뒤에 하는 경우. 코디네이터 터미널을 닫은 경우만 확인했다.
 - 0.5.2 디자인 규칙의 워커 쪽: 실제 워커가 쓰는 `### 디자인 점검`·§7 상태 확인, director 의 §3·§4 반영. Codex 리뷰 판정과 diff 자동 검사는 실환경에서 확인했다(설계 §13.1).
 
 ## 알려진 사소한 문제 (고치지 않음)
@@ -47,9 +53,18 @@
 
 - 공개 저장소다. 개인 컴퓨터 경로(홈 디렉터리 절대 경로, 작업 폴더 경로, 임시 폴더 경로), 개인 전역 설정, 외부 조직의 내부 저장소·플러그인 이름을 넣지 않는다. 커밋 전에 확인한다: `git grep -n -I -P '/Users/|/private/tmp|~/Workspace'`.
 - macOS 의 `git grep -E` 는 `\b` 를 지원하지 않는다. 단어 경계 검사는 `-P` 로 한다.
+- `git grep` 은 추적 중인 파일만 본다. 새 파일은 `git add` 한 뒤, 커밋하기 전에 확인한다.
 - Markdown 에서 범위를 `~` 로 쓰지 않는다(`6~9개`). GitHub 에서 두 개가 짝을 이뤄 취소선이 된다. `6–9개` 로 쓰거나 코드 표기 안에 둔다.
 - `.superpowers/`(에이전트 작업 기록)는 커밋하지 않는다(`.gitignore`).
 - 버전은 `orca-team/lib/orch/paths.py`, `orca-team/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` 세 곳을 함께 올린다. `tests/test_cli.py` 가 셋이 같은지 검사한다.
+
+## 다음 작업 후보
+
+- 0.5.2 디자인 규칙의 워커 쪽 실환경 확인: 기획→디렉터→디자인→구현 한 바퀴에서 워커가 `### 디자인 점검`·§7 상태 확인을 쓰는지, director 가 §3·§4(램프·역할 토큰·크기 단계·한글 줄바꿈)를 시스템에 넣는지 본다. 파일 이동과 `aria-label` 제거 수정 라운드를 함께 넣는다.
+- 0.5.1 Orca 재시작 뒤 코디네이터 자동 부활 확인.
+- 디자인 diff 검사 정밀도: `const role = 'admin'` 같은 문자열 할당을 신호에서 빼기, 리뷰 한 번에 `git show` 결과 공유(문구·디자인 검사).
+- 템플릿에 남은 물결표 범위(`orca-team/templates/roles/director.md`, `roles/planner.md`, `coordinator.md` 의 `6~9`, `2~4` 등)를 en dash 로 정리하기.
+- jakubkrehel/skills 의 better-writing 중 문구 규칙에 보탤 것("확인 창보다 되돌리기", "설정은 켜진 상태로 설명", "입력란 안내는 예시로")은 0.5.2 범위 밖으로 남겼다.
 
 ## 개발 흐름
 
