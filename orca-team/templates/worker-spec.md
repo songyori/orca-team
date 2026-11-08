@@ -13,7 +13,7 @@
 리포트 경로 `docs/tasks/{task_id}/report.md` 는 항상 허용된다.
 소유 경로 밖을 고쳐야 하면 멈추고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
 
-{fix_block}## 작업 규칙
+{fix_block}{test_block}## 작업 규칙
 1. 같은 체크아웃에서 다른 워커가 동시에 일한다. 남의 변경을 되돌리거나 `git stash`·`git reset`·`git checkout -- <파일>` 하지 않는다.
 2. 커밋은 경로를 지정해서 한다: `git add -- <소유 경로의 파일들> docs/tasks/{task_id}/report.md && git commit -m "[{task_id}] <요약>" -- <같은 경로들>`. 인덱스를 다른 워커와 같이 쓰므로 `--` 뒤 경로를 빼면 남이 스테이징한 파일까지 커밋된다. `git add -A`·`git add .`·경로 없는 `git commit` 은 쓰지 않는다.
 3. 커밋 제목은 `[{task_id}] ` 로 시작한다. 예: `[{task_id}] feat: 로그인 폼 검증`.

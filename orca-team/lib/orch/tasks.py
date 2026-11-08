@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import orca
+from . import orca, testgate
 from .comm import notify
 from .config import DEFAULT_APPROVAL_ROLES, Config
 from .globs import any_overlap
@@ -35,6 +35,19 @@ FIX_BLOCK = """## 수정 라운드
 REVIEW_LINE = ("`{review}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, orch 사전 검사 사유)을 모두 고친다. "
                "고치지 않는 항목은 리포트에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다"
                "(코디네이터가 따로 태스크로 만든다).\n")
+TEST_BLOCK = """## 테스트
+- worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0). 이 태스크가 바꾼 파일과 관련된 테스트만 돈다. 실패하면 고치고 다시 돌린다.
+- 전체 테스트는 돌리지 않는다. 묶음 테스트 태스크와 orch 가 돌린다.
+- 리포트의 검증 출력에 orch test 출력의 `status`·`seconds` 를 붙인다. 실패를 고쳤으면 그 `tail` 도 붙인다.
+
+"""
+TESTER_TEST_BLOCK = """## 테스트
+- 이 태스크는 묶음 테스트다. 선행 태스크(묶음 개발 태스크)의 기능을 잇는 통합 테스트를 소유 경로에 쓰고 커밋한다.
+- 커밋한 뒤 `.orchestration/bin/orch test {task_id} --full` 로 전체 테스트를 한 번 돌린다. 다시 돌리지 않는다.
+- 실패는 QA 리포트에서 둘로 나눈다. 테스트 코드의 잘못은 고치고 `.orchestration/bin/orch test {task_id}` 로 확인한다. 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 코드는 고치지 않는다.
+- worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0).
+
+"""
 
 
 @dataclass
@@ -259,6 +272,18 @@ def check_lock(p: Project, task_id: str, owns: list[str]) -> None:
         raise OrchError("소유 경로가 진행 중 태스크와 겹친다. 앞 태스크를 accept 한 뒤 시작한다: " + "; ".join(conflicts), 1)
 
 
+def gate_block(p: Project, doc: TaskDoc) -> str:
+    """[test] 가 있고 developer·tester 직무면 워커 spec 의 테스트 절. [test] 형식 오류는 리뷰 관문이 알리므로 빈 문자열."""
+    try:
+        cfg = testgate.load_config(p)
+    except OrchError:
+        return ""
+    if cfg is None or doc.role not in testgate.GATED_ROLES:
+        return ""
+    block = TESTER_TEST_BLOCK if doc.role == testgate.TESTER_ROLE else TEST_BLOCK
+    return render(block, {"task_id": doc.id})
+
+
 def compose_spec(p: Project, cfg: Config, doc: TaskDoc, stage: str, rnd: int, owns: list[str], note: str | None) -> str:
     role_file = p.orch / "roles" / f"{doc.role}.md"
     role_doc = role_file.read_text(encoding="utf-8").strip() if role_file.is_file() else f"(직무 정의 없음: {role_file})"
@@ -270,7 +295,8 @@ def compose_spec(p: Project, cfg: Config, doc: TaskDoc, stage: str, rnd: int, ow
     return render((TEMPLATES / "worker-spec.md").read_text(encoding="utf-8"), {
         "role": doc.role, "role_title": cfg.title(doc.role), "role_doc": role_doc, "task_id": doc.id,
         "round": rnd, "task_body": doc.body, "depends_on": ", ".join(deps_of(doc)) or "없음",
-        "owns": ", ".join(owns), "fix_block": fix_block})
+        "owns": ", ".join(owns), "fix_block": fix_block,
+        "test_block": gate_block(p, doc)})
 
 
 def launch(p: Project, cfg: Config, doc: TaskDoc, st: dict, stage: str, rnd: int, owns: list[str],

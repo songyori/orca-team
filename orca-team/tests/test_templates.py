@@ -104,7 +104,7 @@ class TemplateTest(unittest.TestCase):
         for key in ("{id}", "{role}", "{title}", "## Target", "## Change", "## Constraints", "## Acceptance"):
             self.assertIn(key, task)
         spec = (T / "worker-spec.md").read_text(encoding="utf-8")
-        for key in ("{role_doc}", "{task_body}", "{owns}", "{fix_block}", "[{task_id}]", "worker_done"):
+        for key in ("{role_doc}", "{task_body}", "{owns}", "{fix_block}", "{test_block}", "[{task_id}]", "worker_done"):
             self.assertIn(key, spec)
         prompt = (T / "review-prompt.md").read_text(encoding="utf-8")
         for key in ("REVIEW_FILE: {review_path}", "<execution_policy>", "{commits}", "{files}", "VERDICT: APPROVE",

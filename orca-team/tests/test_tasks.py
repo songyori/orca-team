@@ -6,7 +6,7 @@ import unittest
 from datetime import datetime, timedelta
 from unittest import mock
 
-from helpers import ProjectCase
+from helpers import ProjectCase, fake_test_commands, write_test_config
 from orch import orca, tasks
 from orch.config import Config
 from orch.paths import Project
@@ -185,6 +185,49 @@ def dead_pid() -> int:
     proc = subprocess.Popen([sys.executable, "-c", "pass"])
     proc.wait()
     return proc.pid
+
+
+class TestBlockTest(TaskCase):
+    def setUp(self):
+        super().setUp()
+        self.quick, self.full = fake_test_commands(self)
+        write_test_config(self.root, self.quick, self.full)
+
+    def spec_for(self, task_id, role, extra=""):
+        self.write_spec(task_id, role=role, extra=extra)
+        self.orch("start", task_id)
+        return self.arg(self.last_start(), "--spec")
+
+    def test_developer_gets_quick_rules(self):
+        spec = self.spec_for("T-001", "developer")
+        self.assertIn("묻는다.\n\n## 테스트\n", spec)
+        self.assertIn("`.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
+        self.assertIn("전체 테스트는 돌리지 않는다", spec)
+        self.assertLess(spec.index("## 테스트"), spec.index("## 작업 규칙"))
+        self.assertNotIn("\n\n\n", spec)
+        self.assertNotIn("{test_block}", spec)
+
+    def test_tester_gets_full_once(self):
+        spec = self.spec_for("T-001", "tester", "owns: tests/grp/**, docs/qa/grp.md\n")
+        self.assertIn("`.orchestration/bin/orch test T-001 --full`", spec)
+        self.assertIn("제품 코드는 고치지 않는다", spec)
+
+    def test_other_roles_and_no_config_have_no_block(self):
+        self.assertNotIn("## 테스트", self.spec_for("T-001", "designer"))
+        (self.root / "docs/planning/tasks.toml").unlink()
+        self.assertNotIn("## 테스트", self.spec_for("T-002", "developer", "owns: src/other/**\n"))
+
+    def test_broken_test_table_has_no_block(self):
+        write_test_config(self.root, "npx vitest", self.full)
+        self.assertNotIn("## 테스트", self.spec_for("T-001", "developer"))
+
+    def test_fix_stage_keeps_spacing(self):
+        self.spec_for("T-001", "developer")
+        self.set_state("T-001", status="changes")
+        self.orch("fix", "T-001", "--note", "P1 반영")
+        spec = self.arg(self.last_start(), "--spec")
+        self.assertIn("코디네이터 지시: P1 반영\n\n## 테스트\n", spec)
+        self.assertNotIn("\n\n\n", spec)
 
 
 class LaunchCrashWindowTest(TaskCase):
