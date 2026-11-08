@@ -10,6 +10,8 @@
 
 **설계:** `docs/superpowers/specs/2026-11-08-orca-team-batch-verify-design.md`
 
+> 구현 뒤 메모(2026-11-08): 이 계획은 구현 전 기록이다. 최종 리뷰에서 바뀐 점(tester 관문은 full 만, `[test]` 는 커밋된 HEAD 에서 읽기, 커밋 전 quick 거부, 비대칭 판정 맞추기 등)은 설계 문서 §2 의 9·10번과 §2.1 에 있다.
+
 ## Global Constraints
 
 - 표준 라이브러리만 쓴다. Python 3.11 이상.
