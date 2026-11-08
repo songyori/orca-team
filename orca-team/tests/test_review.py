@@ -644,5 +644,111 @@ class ReviewGroupTest(GateReviewCase):
         self.assertNotIn(["--all"], read_test_args(self))
 
 
+def review_body(findings: str, verdict: str, rnd: int = 1) -> str:
+    return (f"# T-001 r{rnd} 리뷰\n## 판정 근거\n근거\n## 이전 지적 확인\n- 해당 없음\n## 지적 사항\n{findings}\n"
+            "## 후속\n- 없음\n## 기획 누락\n- 없음\n## 회귀\n- 해당 없음\n## 직접 확인한 것\n- 읽음\n\n"
+            f"VERDICT: {verdict}\n")
+
+
+class ReviewRoundTest(ReviewCase):
+    def prompt(self):
+        return sorted((self.tmp / "cache/orca-team/runs").rglob("prompt.txt"))[-1].read_text(encoding="utf-8")
+
+    def round_part(self, prompt):
+        start = prompt.index("## 라운드 2 확인 범위")
+        end = prompt.index("\n## ", start + 1)
+        return prompt[start:end]
+
+    def body(self, text):
+        (self.fake_dir / "review_body.md").write_text(text, encoding="utf-8")
+
+    def test_round_one_has_no_round_section_and_new_format(self):
+        self.commit_work()
+        self.review()
+        prompt = self.prompt()
+        self.assertNotIn("## 라운드", prompt)
+        self.assertNotIn("{round_section}", prompt)
+        for text in ("## 등급과 판정", "P1(막는다)", "## 후속", "## 기획 누락", "## 회귀", "## 이전 지적 확인",
+                     "r1-F1 [P1]", "orch 는 `## 지적 사항` 의 `[P1]` 줄 수로 판정을 맞춘다"):
+            self.assertIn(text, prompt)
+        self.assertNotIn("P1 이 하나라도 있으면", prompt)
+        self.assertNotIn("\n\n\n", prompt)
+
+    def test_round_two_lists_only_new_commits_and_records_head(self):
+        self.commit_work()
+        first = self.git("rev-parse", "HEAD").strip()
+        self.modes("changes", "approve")
+        self.review()
+        self.assertEqual(self.state("T-001")["history"][-1]["head"], first)
+        self.orch("fix", "T-001")
+        self.commit_work("src/b.ts", "[T-001] fix: 리뷰 반영")
+        self.review()
+        part = self.round_part(self.prompt())
+        self.assertIn("[T-001] fix: 리뷰 반영", part)
+        self.assertNotIn("[T-001] feat: 로그인", part)
+        self.assertIn(f"`{first[:10]}`", part)
+        self.assertIn("`r1-F1: 해결`", part)
+        self.assertIn("docs/reviews/T-001/r1.md", part)
+
+    def test_orch_only_prior_round_gets_full_review(self):
+        self.review()  # 작업 커밋 없음 → orch 사전 검사
+        self.orch("fix", "T-001")
+        self.commit_work()
+        self.review()
+        self.assertNotIn("## 라운드", self.prompt())
+
+    def test_missing_head_in_old_history_lists_all(self):
+        self.commit_work()
+        self.modes("changes", "approve")
+        self.review()
+        history = self.state("T-001")["history"]
+        for entry in history:
+            entry.pop("head", None)
+        self.set_state("T-001", history=history)
+        self.orch("fix", "T-001")
+        self.commit_work("src/b.ts", "[T-001] fix: 리뷰 반영")
+        self.review()
+        self.assertIn("커밋 기록이 없다", self.round_part(self.prompt()))
+
+    def test_request_changes_without_p1_becomes_approve(self):
+        self.commit_work()
+        self.body(review_body("- 없음", "REQUEST_CHANGES"))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual((out["verdict"], out["verdict_adjusted"]), ("APPROVE", "REQUEST_CHANGES→APPROVE"))
+        self.assertEqual(self.state("T-001")["status"], "approved")
+        self.assertEqual(self.state("T-001")["history"][-1]["verdict_adjusted"], "REQUEST_CHANGES→APPROVE")
+        text = (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        self.assertTrue(text.rstrip().endswith("VERDICT: APPROVE"))
+        self.assertIn("orch 판정 맞추기", text)
+        self.assertEqual(self.git("log", "-1", "--format=%s").strip(), "[T-001] review r1: APPROVE")
+        self.assertIn("판정 맞추기: REQUEST_CHANGES→APPROVE", self.git("log", "-1", "--format=%B"))
+
+    def test_approve_with_p1_becomes_request_changes(self):
+        self.commit_work()
+        self.body(review_body("- r1-F1 [P1] src/login.ts:1 — 입력 검증이 없다. 검증한다.", "APPROVE"))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual((out["verdict"], out["verdict_adjusted"]), ("REQUEST_CHANGES", "APPROVE→REQUEST_CHANGES"))
+        self.assertEqual(self.state("T-001")["status"], "changes")
+
+    def test_old_format_is_not_adjusted(self):
+        self.commit_work()
+        self.body("# 리뷰\n지적 없음\n\nVERDICT: REQUEST_CHANGES\n")
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+        self.assertNotIn("verdict_adjusted", out)
+
+    def test_fix_spec_tells_worker_to_fix_only_blocking(self):
+        self.commit_work()
+        self.modes("changes")
+        self.review()
+        self.orch("fix", "T-001")
+        spec = self.arg(self.last_start(), "--spec")
+        self.assertIn("막는 지적(`## 지적 사항` 의 P1, orch 사전 검사 사유)을 모두 고친다", spec)
+        self.assertIn("`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다", spec)
+
+
 if __name__ == "__main__":
     unittest.main()

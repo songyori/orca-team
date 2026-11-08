@@ -20,6 +20,7 @@ from .textlint import RULES_FILE, text_lint, text_targets
 from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$", re.M)
+FINDINGS_RE = re.compile(r"^## 지적 사항[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
 BASE_EXCLUDE = [".orchestration/**", "docs/reviews/**"]
 
 
@@ -221,8 +222,60 @@ def text_section(p: Project, files: list[str], shas: list[str]) -> str:
     return render((TEMPLATES / "review-text.md").read_text(encoding="utf-8"), {"text_lint": bullets(found)}) + "\n"
 
 
+def last_codex_review(history) -> dict | None:
+    """가장 최근의 Codex 리뷰 기록. orch 사전 검사 기록은 건너뛴다."""
+    for entry in reversed(list(history)):
+        if entry.get("stage") == "review" and entry.get("source") == "codex":
+            return entry
+    return None
+
+
+def round_section(doc: TaskDoc, rnd: int, commits: list[tuple[str, str]], history) -> str:
+    """라운드 2부터 좁혀 보는 범위(templates/review-round.md). 앞 라운드에 Codex 리뷰가 없으면 빈 문자열(전체를 본다)."""
+    prev = last_codex_review(history)
+    if rnd <= 1 or prev is None:
+        return ""
+    shas = [sha for sha, _ in commits]
+    prev_head = prev.get("head")
+    if prev_head in shas:
+        new = commits[shas.index(prev_head) + 1:]
+        new_commits = "\n".join(f"- {sha[:10]} {subject}" for sha, subject in new) or "- 없음(새 커밋이 없다)"
+        head_text = f"`{prev_head[:10]}`"
+    else:
+        new_commits = "- 지난 리뷰의 커밋 기록이 없다. 위 리뷰 대상 커밋 전체를 본다"
+        head_text = "기록 없음"
+    prev_rnd = prev.get("round")
+    return render((TEMPLATES / "review-round.md").read_text(encoding="utf-8"), {
+        "round": rnd, "prev": prev_rnd, "prev_review": f"docs/reviews/{doc.id}/r{prev_rnd}.md",
+        "prev_head": head_text, "new_commits": new_commits}) + "\n"
+
+
+def p1_count(text: str) -> int | None:
+    """`## 지적 사항` 절의 `[P1]` 항목 수. 절이 없으면(이전 형식) None."""
+    match = FINDINGS_RE.search(text)
+    if not match:
+        return None
+    return sum(1 for line in match.group(1).splitlines() if line.lstrip().startswith("- ") and "[P1]" in line)
+
+
+def align_verdict(path: Path, verdict: str) -> str | None:
+    """P1 이 있으면 REQUEST_CHANGES, 없으면 APPROVE 로 판정을 맞춘다. 바꿨으면 "원래→바꾼 것", 아니면 None."""
+    text = path.read_text(encoding="utf-8")
+    count = p1_count(text)
+    if count is None:
+        return None
+    want = "REQUEST_CHANGES" if count else "APPROVE"
+    if want == verdict:
+        return None
+    last = list(VERDICT_RE.finditer(text))[-1]
+    note = f"> orch 판정 맞추기: `## 지적 사항` 의 P1 {count}개라 {want} 로 바꿨다(원래 {verdict}).\n\n"
+    path.write_text(text[:last.start()] + note + f"VERDICT: {want}" + text[last.end():], encoding="utf-8")
+    return f"{verdict}→{want}"
+
+
 def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
-                   commits: list[tuple[str, str]], files: list[str], gate: dict | None = None) -> str:
+                   commits: list[tuple[str, str]], files: list[str], gate: dict | None = None,
+                   history=()) -> str:
     prior = [f"docs/reviews/{doc.id}/r{n}.md" for n in range(1, rnd)
              if (p.root / f"docs/reviews/{doc.id}/r{n}.md").is_file()]
     shas = [sha for sha, _ in commits]
@@ -233,6 +286,7 @@ def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: 
         "files": "\n".join(f"- {f}" for f in files),
         "verify_rule": VERIFY_GATED if gate else VERIFY_DEFAULT,
         "test_section": test_section(gate),
+        "round_section": round_section(doc, rnd, commits, history),
         "group_section": group_section(p, doc, gate),
         "design_section": design_section(p, cfg, doc.role, files, shas),
         "text_section": text_section(p, files, shas)})
@@ -355,6 +409,8 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
     save_state(p, st)
     untracked: list[str] = []
     gate = None
+    commits: list[tuple[str, str]] = []
+    adjusted = None
     try:
         commits = task_commits(p.root, task_id, st["base"])
         files = changed_files(p.root, [sha for sha, _ in commits])
@@ -381,9 +437,14 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
                 if gate and gate["quick"]["status"] not in testgate.PASSED:
                     verdict, source = auto_review(p, review_rel, task_id, rnd, gate_failure(task_id, gate["quick"])), "orch"
                 else:
-                    prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files, gate)
+                    prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files, gate, st["history"])
                     (verdict, untracked), source = codex_review(p, cfg, doc, rnd, review_rel, prompt), "codex"
+                    adjusted = align_verdict(p.root / review_rel, verdict)
+                    if adjusted:
+                        verdict = adjusted.split("→")[1]
         message = f"[{task_id}] review r{rnd}: {verdict}"
+        if adjusted:
+            message += f"\n\n판정 맞추기: {adjusted}(`## 지적 사항` 의 P1 수 기준)"
         if untracked:
             message += ("\n\n리뷰 중 새로 생긴 추적 안 된 파일(판정에는 영향 없음):\n"
                         + "\n".join(f"- {f}" for f in untracked))
@@ -396,10 +457,13 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
         raise
     st.setdefault("verdicts", {})[str(rnd)] = verdict
     st["status"] = "approved" if verdict == "APPROVE" else "changes"
-    entry = {"stage": "review", "round": rnd, "at": now(), "verdict": verdict, "source": source}
+    entry = {"stage": "review", "round": rnd, "at": now(), "verdict": verdict, "source": source,
+             "head": commits[-1][0] if commits else None}
     result = {"id": task_id, "round": rnd, "verdict": verdict, "source": source, "review": review_rel}
     if gate:
         entry["tests"] = result["tests"] = {kind: rec["status"] for kind, rec in gate.items()}
+    if adjusted:
+        entry["verdict_adjusted"] = result["verdict_adjusted"] = adjusted
     if untracked:
         entry["untracked"] = result["untracked"] = untracked
     st["history"].append(entry)

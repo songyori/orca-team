@@ -3,7 +3,8 @@
 
 argv 를 $FAKE_DIR/codex-run.log 에 남기고 $FAKE_DIR/codex_run_modes.txt 의 첫 단어(없으면 approve)대로 행동한다.
 모드: approve | changes | noverdict | fail | modify | touch_other | commit | other_commit | rewrite | evil_merge
-      | pycache | edit_tracked | start_other | mv_staged | rename_commit
+      | pycache | edit_tracked | start_other | mv_staged | rename_commit | body
+body: $FAKE_DIR/review_body.md 를 리뷰 파일로 그대로 쓴다(판정 줄 포함).
 리뷰 파일 경로는 프롬프트의 `REVIEW_FILE: <경로>` 줄에서 읽는다.
 """
 import json
@@ -44,6 +45,8 @@ else:
                "rename_commit": "APPROVE"}.get(mode)
     review.parent.mkdir(parents=True, exist_ok=True)
     review.write_text("# 리뷰\n\n없음\n" + (f"\nVERDICT: {verdict}\n" if verdict else ""), encoding="utf-8")
+    if mode == "body":
+        review.write_text((fake / "review_body.md").read_text(encoding="utf-8"), encoding="utf-8")
     if mode == "modify":
         (cwd / "src").mkdir(exist_ok=True)
         (cwd / "src" / "codex-touched.txt").write_text("x\n", encoding="utf-8")
