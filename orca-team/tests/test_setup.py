@@ -219,6 +219,66 @@ class ShimPluginRootTest(ProjectCase):
         self.assertEqual(self.run_shim(self.bare).returncode, 12)
 
 
+class UpgradeTest(ProjectCase):
+    def setUp(self):
+        super().setUp()
+        self.scaffold()
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "chore: setup")
+
+    def upgrade(self):
+        return json.loads(self.orch("upgrade").stdout)
+
+    def template(self, rel):
+        return (PLUGIN / "templates" / rel).read_text(encoding="utf-8")
+
+    def commit_text(self, rel, text):
+        (self.root / rel).write_text(text, encoding="utf-8")
+        self.git("add", "--", rel)
+        self.git("commit", "-q", "-m", f"chore: {rel}")
+
+    def test_same_files_change_nothing(self):
+        out = self.upgrade()
+        self.assertEqual((out["updated"], out["created"], out["skipped"], out["diff_stat"]), ([], [], [], ""))
+        self.assertIn("/orca-team:up", out["next"])
+
+    def test_overwrites_committed_old_copy_without_commit(self):
+        self.commit_text(".orchestration/coordinator.md", "옛 지침\n")
+        head = self.git("rev-parse", "HEAD").strip()
+        out = self.upgrade()
+        self.assertEqual(out["updated"], [".orchestration/coordinator.md"])
+        self.assertEqual((self.root / ".orchestration/coordinator.md").read_text(encoding="utf-8"),
+                         self.template("coordinator.md"))
+        self.assertIn(".orchestration/coordinator.md", out["diff_stat"])
+        self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
+
+    def test_skips_uncommitted_change(self):
+        (self.root / ".orchestration/roles/tester.md").write_text("작업 중\n", encoding="utf-8")
+        out = self.upgrade()
+        self.assertEqual(out["skipped"], [{"path": ".orchestration/roles/tester.md",
+                                           "reason": "커밋 안 된 변경이 있다. 커밋하거나 되돌린 뒤 다시 한다"}])
+        self.assertEqual((self.root / ".orchestration/roles/tester.md").read_text(encoding="utf-8"), "작업 중\n")
+
+    def test_keeps_config_toml(self):
+        self.commit_text(".orchestration/config.toml", self.template("config.toml") + "# 사용자 설정\n")
+        out = self.upgrade()
+        self.assertTrue((self.root / ".orchestration/config.toml").read_text(encoding="utf-8").endswith("# 사용자 설정\n"))
+        self.assertNotIn(".orchestration/config.toml", json.dumps(out, ensure_ascii=False))
+
+    def test_creates_missing_file(self):
+        self.git("rm", "-q", "--", ".orchestration/roles/director.md")
+        self.git("commit", "-q", "-m", "chore: director 없음")
+        out = self.upgrade()
+        self.assertEqual(out["created"], [".orchestration/roles/director.md"])
+
+    def test_untracked_file_skipped(self):
+        self.git("rm", "-q", "--cached", "--", ".orchestration/text-rules.md")
+        self.git("commit", "-q", "-m", "chore: 추적 해제")
+        out = self.upgrade()
+        self.assertEqual(out["skipped"][0]["path"], ".orchestration/text-rules.md")
+        self.assertIn("추적되지 않는다", out["skipped"][0]["reason"])
+
+
 class DoctorTest(ProjectCase):
     def ready(self):
         self.respond("status", {"ok": True, "result": {"runtime": {"state": "ready"}}})

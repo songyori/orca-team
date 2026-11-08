@@ -16,7 +16,7 @@ from .comm import unread
 from .config import Config, Launch
 from .paths import PLUGIN_ROOT, TEMPLATES, OrchError, Project, codex_bin, codex_runner, git_toplevel
 from .tasks import all_states, launch_in_progress, next_action
-from .util import load_run, now, pid_alive, record_plugin_root, require_coordinator, update_run, write_json
+from .util import git, git_ok, load_run, now, pid_alive, record_plugin_root, require_coordinator, update_run, write_json
 
 MARK = "<!-- orca-team -->"
 COORDINATOR_PROMPT = ("[orca-team:coordinator] 너는 이 프로젝트의 orca-team 코디네이터다. "
@@ -140,6 +140,38 @@ def scaffold(root: Path, description: str) -> dict:
     p.setup_mode.touch()
     record_plugin_root(p.state, PLUGIN_ROOT)  # Claude Code 가 ${CLAUDE_PLUGIN_ROOT} 로 실제 실행한 코드를 shim 이 따라가게 한다
     return {"root": str(root), "created": created, "skipped": skipped}
+
+
+UPGRADE_KEEP = (".orchestration/config.toml",)  # 사용자 설정이라 덮어쓰지 않는다
+UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .orchestration) 커밋한다. 코디네이터는 시작할 때만 지침을 읽으므로 "
+                "커밋한 뒤 코디네이터 터미널을 닫고 메인에서 /orca-team:up 으로 다시 띄운다. 테스트 관문을 쓰려면 "
+                "docs/planning/tasks.toml 에 [test] 를 넣는다(README \"묶음 검증\").")
+
+
+def upgrade(p: Project) -> dict:
+    """프로젝트에 복사된 규칙 파일(config.toml 제외)을 이 플러그인의 템플릿으로 바꾼다.
+    git 에 커밋돼 있고 커밋 안 된 변경이 없는 파일만 덮어쓰고, 없는 파일은 만든다. 커밋하지 않는다."""
+    updated, created, skipped = [], [], []
+    targets = [(src, dst) for src, dst in SCAFFOLD_FILES if dst not in UPGRADE_KEEP]
+    for src, dst in targets:
+        target = p.root / dst
+        new = (TEMPLATES / src).read_bytes()
+        if not target.exists():
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(new)
+            created.append(dst)
+        elif not git_ok(p.root, "ls-files", "--error-unmatch", "--", dst):
+            skipped.append({"path": dst, "reason": "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"})
+        elif git(p.root, "status", "--porcelain", "--", dst).strip():
+            skipped.append({"path": dst, "reason": "커밋 안 된 변경이 있다. 커밋하거나 되돌린 뒤 다시 한다"})
+        elif target.read_bytes() != new:
+            target.write_bytes(new)
+            updated.append(dst)
+    shim = p.root / ".orchestration/bin/orch"
+    if shim.exists():
+        shim.chmod(0o755)
+    stat = git(p.root, "diff", "--stat", "--", *(dst for _, dst in targets), check=False)
+    return {"updated": updated, "created": created, "skipped": skipped, "diff_stat": stat.strip(), "next": UPGRADE_NEXT}
 
 
 def setup_done(p: Project) -> dict:

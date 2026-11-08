@@ -21,6 +21,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("scaffold", help="프로젝트에 orca-team 파일 생성")
     s.add_argument("--description-file", required=True)
     sub.add_parser("setup-done", help="세팅 모드 해제")
+    sub.add_parser("upgrade", help="복사된 규칙 파일을 이 플러그인 버전 템플릿으로 바꾼다(config.toml 제외, 커밋 안 함)")
     s = sub.add_parser("up", help="코디네이터 확인·기동(메인)")
     s.add_argument("--wait-run", type=int, default=0, metavar="SECONDS")
     sub.add_parser("bind", help="Run 생성·재연결(코디네이터)")
@@ -157,11 +158,12 @@ def run(args) -> int:
     p, cfg = project(args.cmd in CONFIG_COMMANDS)
     if args.cmd in GRAPH_COMMANDS:
         return run_graph(p, cfg, args)
-    if args.cmd in ("setup-done", "up", "bind", "status"):
+    if args.cmd in ("setup-done", "up", "bind", "status", "upgrade"):
         from . import setup
 
         handlers = {"setup-done": lambda: setup.setup_done(p), "up": lambda: setup.up(p, cfg, args.wait_run),
-                    "bind": lambda: setup.bind(p), "status": lambda: setup.status(p, *soft_config(p))}
+                    "bind": lambda: setup.bind(p), "status": lambda: setup.status(p, *soft_config(p)),
+                    "upgrade": lambda: setup.upgrade(p)}
         emit(handlers[args.cmd]())
     elif args.cmd in ("tell", "watch", "notify", "wait"):
         from . import comm
