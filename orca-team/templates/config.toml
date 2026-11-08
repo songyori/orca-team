@@ -54,7 +54,7 @@ owns = ["docs/design/**", "assets/**"]
 title = "개발"
 claude_model = "opus"
 claude_effort = "xhigh"
-codex_model = "gpt-6-astra"
+codex_model = "gpt-6.1-sol"
 codex_effort = "xhigh"
 owns = ["src/**", "README.md", "docs/user/**", "docs/policy/**"]
 

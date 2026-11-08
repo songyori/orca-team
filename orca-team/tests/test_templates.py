@@ -25,7 +25,7 @@ class TemplateTest(unittest.TestCase):
             "planner": ("opus", "xhigh", "gpt-6.1-sol", "high"),
             "director": ("opus", "xhigh", "gpt-6.1-sol", "high"),
             "designer": ("sonnet", "xhigh", "gpt-6.1-sol", "medium"),
-            "developer": ("opus", "xhigh", "gpt-6-astra", "xhigh"),
+            "developer": ("opus", "xhigh", "gpt-6.1-sol", "xhigh"),
             "tester": ("sonnet", "xhigh", "gpt-6.1-sol", "high"),
         })
         self.assertEqual((cfg["roles"]["director"]["title"], cfg["roles"]["director"]["owns"]),

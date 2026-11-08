@@ -49,7 +49,7 @@ class ReviewTest(ReviewCase):
         self.assertIn("VERDICT: APPROVE", (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8"))
         call = self.runner_calls()[-1]
         self.assertIn("--bypass-hook-trust", call)
-        self.assertEqual(call[call.index("--model") + 1], "gpt-6-astra")
+        self.assertEqual(call[call.index("--model") + 1], "gpt-6.1-sol")
         self.assertEqual(call[call.index("--effort") + 1], "xhigh")
         self.assertEqual(call[call.index("--cwd") + 1], str(self.root))
         self.assertEqual(call[call.index("--profile") + 1], "run")
