@@ -356,6 +356,91 @@ class PlanReviewTest(PlanCase):
         self.assertEqual((out["verdict"], out["source"]), ("APPROVE", "codex"))
 
 
+TEST_TABLE = '\n[test]\nquick = "npx vitest related --run --passWithNoTests {files}"\nfull = "npx vitest run"\n'
+GROUPED = [("store", "developer", ["src/store/**"], []),
+           ("ui", "developer", ["src/ui/**"], ["store"]),
+           ("guide", "developer", ["docs/user/**"], []),
+           ("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], ["store", "ui"])]
+
+
+class GroupRuleTest(PlanCase):
+    """[test] 가 있으면 developer 태스크는 tester 태스크(묶음) 하나에 들어야 한다."""
+
+    def write(self, rows, test=True, table=TEST_TABLE):
+        write_plan(self.root, "\n".join(toml_task(*row) for row in rows) + (table if test else ""))
+
+    def check(self):
+        return self.orch("plan", "check", check=False)
+
+    def test_valid_groups_pass_and_report_test(self):
+        self.write(GROUPED)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIs(json.loads(proc.stdout)["test"], True)
+
+    def test_without_test_table_no_group_rules(self):
+        self.write([*GROUPED, ("extra", "developer", ["src/extra/**"], [])], test=False)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIs(json.loads(proc.stdout)["test"], False)
+
+    def test_ungrouped_developer_rejected(self):
+        self.write([*GROUPED, ("extra", "developer", ["src/extra/**"], [])])
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("extra: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크", proc.stderr)
+        self.assertIn("지금: 없음", proc.stderr)
+
+    def test_developer_in_two_groups_rejected(self):
+        self.write([*GROUPED, ("grp2", "tester", ["tests/grp2/**", "docs/qa/grp2.md"], ["store"])])
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("store: 문서 전용이 아닌", proc.stderr)
+        self.assertIn("지금: grp, grp2", proc.stderr)
+
+    def test_tester_owns_must_match_key(self):
+        rows = [*GROUPED[:3], ("grp", "tester", ["tests/**"], ["store", "ui"])]
+        self.write(rows)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn('grp: tester 태스크 owns 는 정확히 ["tests/grp/**", "docs/qa/grp.md"]', proc.stderr)
+
+    def test_tester_depends_only_on_developers(self):
+        rows = [("login-design", "designer", ["docs/design/login/**"], []), *GROUPED[:3],
+                ("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], ["store", "ui", "login-design"])]
+        self.write(rows)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("grp: tester 태스크의 depends_on 에는 developer 태스크만 둔다(login-design)", proc.stderr)
+
+    def test_developer_must_not_depend_on_tester(self):
+        rows = [*GROUPED, ("next", "developer", ["src/next/**"], ["grp"]),
+                ("grp2", "tester", ["tests/grp2/**", "docs/qa/grp2.md"], ["next"])]
+        self.write(rows)
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("next: developer 태스크는 tester 태스크에 의존하지 않는다(grp)", proc.stderr)
+
+    def test_test_table_format_errors_reported(self):
+        self.write(GROUPED, table='\n[test]\nquick = "npx vitest"\nfull = "npx vitest run"\n')
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("[test]: quick 은 {files} 를 정확히 한 번 담는다", proc.stderr)
+
+    def test_append_checks_only_new_tasks(self):
+        self.write([("old", "developer", ["src/old/**"], [])], test=False)
+        self.orch("plan", "apply")
+        self.write([("old", "developer", ["src/old/**"], []), ("new", "developer", ["src/new/**"], []),
+                    ("grp", "tester", ["tests/grp/**", "docs/qa/grp.md"], ["new"])])
+        proc = self.check()
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.write([("old", "developer", ["src/old/**"], []), ("new2", "developer", ["src/new2/**"], [])])
+        proc = self.check()
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("new2:", proc.stderr)
+        self.assertNotIn("old:", proc.stderr)
+
+
 class StartReadyTest(PlanCase):
     """T-001 login-design, T-002 auth-api 는 독립, T-003 login-ui 는 둘에, T-004 login-test 는 T-003 에 의존한다."""
 

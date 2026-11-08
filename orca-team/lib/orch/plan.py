@@ -8,7 +8,7 @@ import re
 import tomllib
 from dataclasses import asdict, dataclass
 
-from . import comm
+from . import comm, testgate
 from .ask import build_render
 from .config import Config
 from .globs import any_overlap
@@ -209,15 +209,58 @@ def director_problems(tasks: list[PlanTask], cfg: Config, new_keys: set[str] | N
             f'depends_on 에 "{director}" 를 넣는다' for t in designers if director not in above[t.key]]
 
 
-def read_plan(p: Project, cfg: Config, rel: str = PLAN_FILE) -> list[PlanTask]:
+def docs_only(t: PlanTask) -> bool:
+    """owns 가 모두 README.md 이거나 docs/ 아래인 태스크(정책·사용자 문서). 묶음에 넣지 않아도 된다."""
+    return all(o == "README.md" or o.startswith("docs/") for o in t.owns)
+
+
+def group_problems(tasks: list[PlanTask], new_keys: set[str] | None = None) -> list[str]:
+    """[test] 가 있을 때의 묶음 규칙. 묶음은 tester 태스크 하나와 그 depends_on 의 developer 태스크들이다.
+    new_keys 가 있으면(--append) 그 안의 태스크만 본다. graph_problems 가 빈 목록일 때만 부른다."""
+    by_key = {t.key: t for t in tasks}
+    testers = [t for t in tasks if t.role == testgate.TESTER_ROLE]
+
+    def fresh(t: PlanTask) -> bool:
+        return new_keys is None or t.key in new_keys
+
+    problems = []
+    for t in testers:
+        if not fresh(t):
+            continue
+        want = [f"tests/{t.key}/**", f"docs/qa/{t.key}.md"]
+        if sorted(t.owns) != sorted(want):
+            problems.append(f'{t.key}: tester 태스크 owns 는 정확히 ["{want[0]}", "{want[1]}"] 다')
+        others = [d for d in t.depends_on if by_key[d].role != testgate.DEVELOPER_ROLE]
+        if others:
+            problems.append(f"{t.key}: tester 태스크의 depends_on 에는 developer 태스크만 둔다({', '.join(others)})")
+    for t in tasks:
+        if t.role != testgate.DEVELOPER_ROLE or not fresh(t):
+            continue
+        on_tester = [d for d in t.depends_on if by_key[d].role == testgate.TESTER_ROLE]
+        if on_tester:
+            problems.append(f"{t.key}: developer 태스크는 tester 태스크에 의존하지 않는다({', '.join(on_tester)}). "
+                            "다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다")
+        if docs_only(t):
+            continue
+        holders = [s.key for s in testers if t.key in s.depends_on]
+        if len(holders) != 1:
+            problems.append(f"{t.key}: 문서 전용이 아닌 developer 태스크는 정확히 한 tester 태스크(묶음)의 depends_on 에 "
+                            f"든다(지금: {', '.join(holders) or '없음'})")
+    return problems
+
+
+def read_plan_data(p: Project, rel: str = PLAN_FILE) -> dict:
     path = p.root / rel
     try:
-        data = tomllib.loads(path.read_text(encoding="utf-8"))
+        return tomllib.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError as exc:
         raise OrchError(f"{rel} 이 없다. 기획 태스크가 만들어 커밋해야 한다", 2) from exc
     except (OSError, ValueError) as exc:  # TOMLDecodeError·UnicodeDecodeError 는 ValueError 하위
         raise OrchError(f"{rel} 읽기 실패: {exc}", 2) from exc
-    return parse_plan(data, cfg, rel)
+
+
+def read_plan(p: Project, cfg: Config, rel: str = PLAN_FILE) -> list[PlanTask]:
+    return parse_plan(read_plan_data(p, rel), cfg, rel)
 
 
 def load_plan_state(p: Project) -> dict:
@@ -237,7 +280,8 @@ def check(p: Project, cfg: Config, append: bool, rel: str = PLAN_FILE) -> tuple[
         raise OrchError("계획을 이미 적용했다(state/plan.json). 새 태스크만 더하려면 orch plan apply --append", 2)
     if append and not applied:
         raise OrchError("아직 적용한 계획이 없다. 처음에는 --append 없이 orch plan apply", 2)
-    tasks = read_plan(p, cfg, rel)
+    data = read_plan_data(p, rel)
+    tasks = parse_plan(data, cfg, rel)
     keys = {t.key for t in tasks}
     problems = []
     removed = [key for key in applied if key not in keys]
@@ -246,6 +290,9 @@ def check(p: Project, cfg: Config, append: bool, rel: str = PLAN_FILE) -> tuple[
     changed = [t.key for t in tasks if t.key in applied and digests.get(t.key) != t.digest()]
     if changed:
         problems.append(f"적용한 key 를 바꿨다: {', '.join(changed)}. 기존 태스크는 그대로 두고 새 key 만 더한다")
+
+    if "test" in data:
+        problems += testgate.config_problems(data["test"])
 
     def settled(a: PlanTask, b: PlanTask) -> bool:
         """--append: 둘 다 기존 태스크이거나, 기존 쪽이 이미 끝났으면(done·dropped) 겹쳐도 된다."""
@@ -257,7 +304,10 @@ def check(p: Project, cfg: Config, append: bool, rel: str = PLAN_FILE) -> tuple[
     graph = graph_problems(tasks, settled)
     problems += graph
     if not graph:
-        problems += director_problems(tasks, cfg, {t.key for t in tasks if t.key not in applied})
+        new_keys = {t.key for t in tasks if t.key not in applied}
+        problems += director_problems(tasks, cfg, new_keys)
+        if "test" in data:
+            problems += group_problems(tasks, new_keys)
     if problems:
         raise OrchError(f"{rel} 검증 실패: " + "; ".join(problems), 2)
     return tasks, [t for t in tasks if t.key not in applied]
@@ -289,7 +339,7 @@ def check_only(p: Project, cfg: Config, rel: str | None = None) -> dict:
     for t in tasks:
         roles[t.role] = roles.get(t.role, 0) + 1
     return {"ok": True, "file": rel or PLAN_FILE, "tasks": len(tasks), "new": len(new), "roles": roles,
-            "groups": parallel_groups(tasks)}
+            "groups": parallel_groups(tasks), "test": "test" in read_plan_data(p, rel or PLAN_FILE)}
 
 
 def spec_text(t: PlanTask, task_id: str, dep_ids: list[str]) -> str:
