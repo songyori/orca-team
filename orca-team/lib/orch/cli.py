@@ -69,6 +69,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("id")
     s.add_argument("--reason", required=True)
     s.add_argument("--force", action="store_true", help="워커가 살아 있어도 중단한다")
+    s = sub.add_parser("test", help="[test] 명령으로 태스크 관련 테스트(quick)나 전체 테스트(--full)를 돌린다")
+    s.add_argument("id", nargs="?", help="태스크 ID. 없으면 --full 로 전체 테스트만 돌린다(마지막 확인)")
+    s.add_argument("--full", action="store_true", help="전체 테스트(full)")
     sub.add_parser("which").add_argument("ref")
     add_graph_commands(sub)
     return parser
@@ -196,6 +199,14 @@ def run(args) -> int:
             emit(out)
             if out.get("status") == "waiting":
                 return ask.WAITING_EXIT
+    elif args.cmd == "test":
+        from . import testgate
+
+        if args.id is None and not args.full:
+            raise OrchError("태스크 ID 또는 --full 이 필요하다", 2)
+        out = testgate.run_task(p, args.id, "full" if args.full else "quick") if args.id else testgate.run_final(p)
+        emit(out)
+        return testgate.exit_code(out)
     elif args.cmd == "review":
         from . import review
 

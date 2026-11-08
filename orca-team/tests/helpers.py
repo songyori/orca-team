@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -100,3 +101,49 @@ class ProjectCase(unittest.TestCase):
         if trimmed == text:
             raise AssertionError(f"config.toml 에 [roles.{role}] 가 없다")
         path.write_text(trimmed, encoding="utf-8")
+
+
+FAKE_TEST = """import json, sys
+from pathlib import Path
+here = Path(__file__).resolve().parent
+with (here / "test-args.jsonl").open("a", encoding="utf-8") as fh:
+    fh.write(json.dumps(sys.argv[1:], ensure_ascii=False) + "\\n")
+modes_file = here / "test_modes.txt"
+modes = modes_file.read_text(encoding="utf-8").split() if modes_file.exists() else []
+mode = modes.pop(0) if modes else "pass"
+modes_file.write_text("".join(m + "\\n" for m in modes), encoding="utf-8")
+print("fake test", mode)
+print()
+print("done")
+if mode == "fail":
+    print("FAIL tests/a.test.ts > 더하기")
+    sys.exit(1)
+sys.exit({"five": 5, "missing": 127}.get(mode, 0))
+"""
+
+
+def fake_test_commands(case) -> tuple[str, str]:
+    """가짜 테스트 명령 (quick, full). 인자는 $FAKE_DIR/test-args.jsonl 에 한 줄씩 남고,
+    행동은 $FAKE_DIR/test_modes.txt 의 첫 단어(pass|fail|five|missing, 없으면 pass)다."""
+    script = case.fake_dir / "fake_test.py"
+    script.write_text(FAKE_TEST, encoding="utf-8")
+    run = f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    return f"{run} {{files}}", f"{run} --all"
+
+
+def write_test_config(root, quick: str, full: str, extra: str = "") -> None:
+    """docs/planning/tasks.toml 을 [test] 표 하나로 덮어쓴다. extra 는 [test] 안에 더할 줄(끝 줄바꿈 포함)."""
+    path = Path(root) / "docs/planning/tasks.toml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"[test]\nquick = {json.dumps(quick)}\nfull = {json.dumps(full)}\n{extra}", encoding="utf-8")
+
+
+def set_test_modes(case, *modes: str) -> None:
+    (case.fake_dir / "test_modes.txt").write_text("".join(m + "\n" for m in modes), encoding="utf-8")
+
+
+def read_test_args(case) -> list[list[str]]:
+    log = case.fake_dir / "test-args.jsonl"
+    if not log.exists():
+        return []
+    return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()]
