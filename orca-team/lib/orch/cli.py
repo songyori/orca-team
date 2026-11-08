@@ -72,6 +72,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("test", help="[test] 명령으로 태스크 관련 테스트(quick)나 전체 테스트(--full)를 돌린다")
     s.add_argument("id", nargs="?", help="태스크 ID. 없으면 --full 로 전체 테스트만 돌린다(마지막 확인)")
     s.add_argument("--full", action="store_true", help="전체 테스트(full)")
+    s = sub.add_parser("followups", help="묶음(또는 묶음 밖) 리뷰의 회귀·후속·기획 누락을 모은다(코디네이터, 읽기 전용)")
+    s.add_argument("id", nargs="?", help="tester 태스크 ID(그 묶음) 또는 태스크 ID")
+    s.add_argument("--rest", action="store_true", help="어떤 묶음에도 들지 않은 done developer 태스크")
     sub.add_parser("which").add_argument("ref")
     add_graph_commands(sub)
     return parser
@@ -207,6 +210,12 @@ def run(args) -> int:
         out = testgate.run_task(p, args.id, "full" if args.full else "quick") if args.id else testgate.run_final(p)
         emit(out)
         return testgate.exit_code(out)
+    elif args.cmd == "followups":
+        from . import followups
+
+        if bool(args.id) == bool(args.rest):
+            raise OrchError("태스크 ID 와 --rest 중 하나만 준다", 2)
+        emit(followups.followups(p, args.id, args.rest))
     elif args.cmd == "review":
         from . import review
 
