@@ -96,7 +96,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 ### 4.3 결과 기록
 
 - 태스크 결과는 `.orchestration/state/tests/T-xxx.json` 에 `quick`·`full` 종류별로 마지막 것 하나씩 남긴다: `round`, `head`, `status`, `exit`, `seconds`, `log`, `tail`, `dirty`, `at`.
-- `head` 는 태스크의 마지막 `[T-xxx]` 작업 커밋이다. 태스크 없는 실행은 `HEAD` 를 적고 `.orchestration/state/tests/final.json` 에 남긴다.
+- `head` 는 리포트(`docs/tasks/T-xxx/`)만 바꾼 커밋을 뺀 태스크의 마지막 `[T-xxx]` 작업 커밋이다. 워커는 테스트를 돌린 뒤 리포트를 커밋하므로, 리포트 커밋이 결과 재사용을 막지 않게 한다. 태스크 없는 실행은 `HEAD` 를 적고 `.orchestration/state/tests/final.json` 에 남긴다.
 - `dirty` 는 실행 시점에 이 태스크 소유 경로 밖에서 커밋되지 않은 변경 파일 목록이다. 다른 워커의 작업 중 파일 탓인 실패를 리뷰어가 구분하는 데 쓴다.
 - 전체 로그는 `~/.cache/orca-team/runs/<프로젝트>/T-xxx-r<round>-<kind>-<시각>.log` 다(`XDG_CACHE_HOME` 을 따른다. 리뷰 run-dir 과 같은 규칙).
 
@@ -139,6 +139,8 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 - P2·P3(막지 않음): 고치면 좋은 것, 유지보수, 스타일, 문서. 판정은 APPROVE 이고 `## 후속` 에 적는다.
 - 기획 누락(막지 않음): spec·`contracts.md`·Acceptance 에 없는 요구. `## 기획 누락` 에 무엇이 없고 왜 필요한지 적는다. 고치라고 돌려보내지 않는다.
 - 판정: P1 이 있으면 REQUEST_CHANGES, 없으면 APPROVE.
+
+수정 라운드 워커 spec(`lib/orch/tasks.py` `REVIEW_LINE`)은 리뷰의 막는 지적(`## 지적 사항` 의 P1, orch 사전 검사 사유)만 고치게 한다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다. 수정 워커가 P2 까지 고치면 새 diff 가 생겨 다음 라운드가 다시 넓어진다.
 
 ### 5.2 라운드 1
 
@@ -199,7 +201,7 @@ VERDICT: APPROVE
 | `orch followups --rest` | 어떤 묶음에도 들지 않은 done developer 태스크 전부(마지막 정리용) |
 
 - 태스크마다 마지막 라운드 리뷰 파일에서 `## 후속`·`## 기획 누락`·`## 회귀` 의 항목 줄을 모은다. "없음"·"해당 없음" 은 뺀다.
-- 후속 처리로 만든 태스크(spec Change 첫 줄이 `출처: T-xxx followups`)는 `## 후속` 을 모으지 않는다. `## 회귀`·`## 기획 누락` 만 모은다. 정리 태스크가 다시 정리 태스크를 낳아 끝나지 않는 것을 막는다.
+- 후속 처리로 만든 태스크(spec Change 첫 줄이 `출처: T-xxx followups`, `출처: rest followups`, `출처: final followups` 중 하나)는 `## 후속` 을 모으지 않는다. `## 회귀`·`## 기획 누락` 만 모은다. 정리 태스크가 다시 정리 태스크를 낳아 끝나지 않는 것을 막는다.
 - planner·director·designer 태스크는 모으지 않는다. 디자인은 사용자 일괄 승인에서 사람이 본다.
 - 출력 JSON: `regressions`, `followups`, `planning_gaps`. 항목마다 `task`, `round`, `id`(rN-Fk), `text`.
 - 읽기만 한다. 같은 묶음을 다시 실행하면 같은 결과가 나온다.
@@ -213,8 +215,8 @@ VERDICT: APPROVE
   - `planning_gaps`: 문서(`docs/planning/`)로 답할 수 있으면 정리 태스크에 넣는다. 제품 결정이 필요하면 항목들을 질문 하나로 묶어 `orch notify --type question --json -` 로 올린다. 답에 따라 증분 기획 태스크를 만들거나 버린다.
 - 다시 시작한 코디네이터는 `.orchestration/tasks/` 의 `출처: T-xxx followups` 줄로 이미 처리한 묶음을 확인하고 다시 만들지 않는다.
 - 모든 태스크가 done 또는 dropped 면:
-  1. `orch followups --rest` 로 묶음 밖 태스크의 후속을 같은 기준으로 처리한다.
-  2. `[test]` 가 있으면 `orch test --full` 을 백그라운드로 돌린다. 실패하면 `final.json` 의 tail 로 원인 태스크를 찾아 회귀 수정 태스크를 만들고, 그 태스크가 끝나면 다시 돌린다.
+  1. `orch followups --rest` 로 묶음 밖 태스크의 후속을 같은 기준으로 처리한다. 만든 태스크의 Change 첫 줄은 `출처: rest followups` 다. 이 단계는 한 번만 한다. `.orchestration/tasks/` 에 `출처: rest followups` 태스크가 이미 있으면 건너뛴다(같은 항목을 다시 만들지 않는다).
+  2. `[test]` 가 있으면 `orch test --full` 을 백그라운드로 돌린다. 실패하면 `final.json` 의 tail 로 원인 태스크를 찾아 회귀 수정 태스크를 만들고(Change 첫 줄 `출처: final followups`), 그 태스크가 끝나면 다시 돌린다.
   3. 통과하면 `orch notify --type done` (결과 요약에 태스크별 라운드 수와 마지막 full 결과를 넣는다).
 - 최대 라운드 초과 처리, 디자인 일괄 승인, 시스템 추가 제안 흐름은 바꾸지 않는다.
 
@@ -241,6 +243,7 @@ VERDICT: APPROVE
 |---|---|
 | `templates/review-prompt.md` | §5 등급·판정, `{verify_rule}`(관문이 있으면 "orch 테스트 결과를 믿는다. 전체 테스트를 돌리지 않는다. 의심 가는 테스트만 하나씩 돌린다", 없으면 지금 문장), `{test_section}`, `{round_section}`, `{group_section}`, §5.5 형식 |
 | `templates/worker-spec.md` | `{test_block}` |
+| `lib/orch/tasks.py` | `REVIEW_LINE`: 수정 워커는 막는 지적만 고친다(§5) |
 | `templates/roles/planner.md` | §3.1 묶음 규칙, §4.1 `[test]` 쓰는 법, tasks.toml 예시에 tester 묶음 태스크와 `[test]` 추가 |
 | `templates/roles/tester.md` | 묶음 통합 테스트, `orch test --full` 한 번, 실패 분류, `tests/<key>/**`·`docs/qa/<key>.md` |
 | `templates/roles/developer.md` | 전체 테스트를 돌리지 않는다(`[test]` 가 있으면), orch test 요약을 리포트에 붙인다 |
