@@ -2,6 +2,7 @@ import json
 import unittest
 
 from test_tasks import TaskCase
+from orch import followups
 
 REVIEW = """# T-001 r2 리뷰
 ## 판정 근거
@@ -55,6 +56,14 @@ src/
 ## Acceptance
 - orch test 통과
 """
+
+
+class SectionItemsTest(unittest.TestCase):
+    def test_none_with_reason_is_empty(self):
+        text = ("## 회귀\n- 해당 없음(묶음 리뷰 아님)\n- 해당 없음 — 묶음 리뷰가 아니다\n- (없음)\n- 없음.\n- 없음\n"
+                "- 해당 없음\n- 없음표 정리 — T-002. 근거.\n- r1-F4 tests/a.test.ts — T-002. 근거.\n\nVERDICT: APPROVE\n")
+        self.assertEqual(followups.section_items(text, "회귀"),
+                         ["없음표 정리 — T-002. 근거.", "r1-F4 tests/a.test.ts — T-002. 근거."])
 
 
 class FollowupsTest(TaskCase):
@@ -115,6 +124,13 @@ class FollowupsTest(TaskCase):
         self.assertEqual(out["tasks"], ["T-004"])
         self.assertEqual(out["followups"], [])
         self.assertEqual(len(out["planning_gaps"]), 1)
+
+    def test_unreadable_spec_is_not_derived(self):
+        self.put_state("T-004", "developer")
+        self.put_review("T-004", 1, REVIEW.replace("r2-", "r1-"))
+        (self.root / ".orchestration/tasks/T-004.md").write_text("front matter 없음\n", encoding="utf-8")
+        out = self.followups("--rest")
+        self.assertEqual([f["id"] for f in out["followups"]], ["r1-F2", "r1-F3"])
 
     def test_old_format_review_gives_nothing(self):
         self.put_state("T-001", "developer")

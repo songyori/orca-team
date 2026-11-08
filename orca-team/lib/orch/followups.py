@@ -10,13 +10,14 @@ from .tasks import TASK_ID_RE, all_states, load_state, must_state, parse_task, t
 from .testgate import DEVELOPER_ROLE, TESTER_ROLE
 
 SECTIONS = (("regressions", "회귀"), ("followups", "후속"), ("planning_gaps", "기획 누락"))
-EMPTY = {"없음", "해당 없음", "(없음)", "(해당 없음)"}
+# 없음·해당 없음으로 시작하고 뒤가 끝·공백·괄호·구두점인 항목은 빈 항목이다(예: `해당 없음(묶음 리뷰 아님)`).
+EMPTY_RE = re.compile(r"^\(?(?:해당 없음|없음)\)?(?:$|[\s(（).,;:!?·—–-])")
 ITEM_ID_RE = re.compile(r"^(r\d+-F\d+)\b")
 SOURCE_RE = re.compile(r"^출처: (T-\d{3,}|rest|final) followups\s*$")
 
 
 def section_items(text: str, title: str) -> list[str]:
-    """`## {title}` 절의 `- ` 항목. 들여 쓴 다음 줄은 앞 항목에 잇는다. 없음·해당 없음은 뺀다."""
+    """`## {title}` 절의 `- ` 항목. 들여 쓴 다음 줄은 앞 항목에 잇는다. 없음·해당 없음(뒤에 사유가 붙어도)은 뺀다."""
     match = re.search(rf"^## {re.escape(title)}[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", text, re.M | re.S)
     if not match:
         return []
@@ -26,7 +27,7 @@ def section_items(text: str, title: str) -> list[str]:
             items.append(line[2:].strip())
         elif items and line[:1] in (" ", "\t") and line.strip():
             items[-1] += " " + line.strip()
-    return [item for item in items if item and item.rstrip(".") not in EMPTY]
+    return [item for item in items if item and not EMPTY_RE.match(item)]
 
 
 def latest_review(p: Project, task_id: str) -> tuple[int, Path] | None:
@@ -41,11 +42,16 @@ def latest_review(p: Project, task_id: str) -> tuple[int, Path] | None:
 
 
 def from_followups(p: Project, task_id: str) -> bool:
-    """후속 처리로 만든 태스크인가(spec `## Change` 첫 줄이 `출처: … followups`)."""
+    """후속 처리로 만든 태스크인가(spec `## Change` 첫 줄이 `출처: … followups`). spec 을 읽지 못하면 아니라고 본다
+    (spec 하나가 깨져도 orch followups 전체가 멈추지 않게)."""
     path = task_path(p, task_id)
     if not path.is_file():
         return False
-    lines = [line.strip() for line in parse_task(path).sections.get("Change", "").splitlines() if line.strip()]
+    try:
+        doc = parse_task(path)
+    except (OrchError, OSError, UnicodeDecodeError):
+        return False
+    lines = [line.strip() for line in doc.sections.get("Change", "").splitlines() if line.strip()]
     return bool(lines) and bool(SOURCE_RE.match(lines[0]))
 
 

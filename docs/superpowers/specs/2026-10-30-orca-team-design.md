@@ -511,9 +511,9 @@ E2E 반영 (Orca 1.4.240)
 ### 묶음 검증 (2026-11-08, 0.6.0)
 
 - 설계: `2026-11-08-orca-team-batch-verify-design.md`. 기능 하나에 몇 시간이 걸리고 대부분 3라운드 이상 가던 문제를 줄인다.
-- `docs/planning/tasks.toml` `[test]`(quick·full)를 orch 가 직접 돌린다(`orch test`, `lib/orch/testgate.py`). `orch review` 는 Codex 전에 quick 관문을 세우고, 묶음 테스트(tester) 리뷰에 full 결과와 묶음 절을 넣는다.
+- `docs/planning/tasks.toml` `[test]`(quick·full)를 orch 가 직접 돌린다(`orch test`, `lib/orch/testgate.py`). `[test]` 는 커밋된 HEAD 에서 읽는다. `orch review` 는 developer 태스크의 Codex 리뷰 전에 quick 관문을 세운다. 묶음 테스트(tester) 리뷰는 quick 없이 full 결과와 묶음 절을 넣고, 테스트 결과로 자동 반려하지 않는다.
 - 묶음은 tester 태스크 하나와 그 `depends_on` 의 developer 태스크들이다. `[test]` 가 있으면 `orch plan check` 가 묶음 규칙을 검사한다.
-- 리뷰는 P1 만 막는다. 라운드 2부터는 이전 지적과 새 커밋만 본다(history 의 `head`). orch 가 `## 지적 사항` 의 P1 수로 판정을 맞춘다(`verdict_adjusted`). 수정 워커는 P1 만 고친다.
+- 리뷰는 P1 만 막는다. 라운드 2부터는 이전 지적과 새 커밋만 본다(history 의 `head`). orch 가 `## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수로 판정을 맞춘다(`verdict_adjusted`). 수정 워커는 P1 만 고친다.
 - `orch followups` 가 리뷰 파일의 회귀·후속·기획 누락을 모으고, 코디네이터가 회귀 수정·묶음 정리 태스크를 만든다. 마지막에 `orch test --full` 을 한 번 더 돌린다.
 - `orch upgrade` 가 기존 프로젝트의 복사된 규칙 파일을 바꾼다(config.toml 제외, 커밋 안 함).
 - 한계: 설계 문서 §10.

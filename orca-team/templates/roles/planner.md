@@ -200,6 +200,7 @@ full = "npx vitest run"
 - developer 태스크는 tester 태스크에 의존하지 않는다. 다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다. tester 태스크의 `depends_on` 에는 developer 태스크만 둔다.
 - 단위 테스트는 developer 가 자기 소유 경로 안(예: `src/**/*.test.ts`)에 쓴다. tester 는 묶음 통합 테스트와 QA 리포트를 쓴다.
 - `[test]` 표에 테스트 명령 두 개를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트만 돌리고 `{files}` 를 정확히 한 번 담는다(예: `npx vitest related --run --passWithNoTests {files}`, `npx jest --findRelatedTests --passWithNoTests {files}`). `full` 은 전체 테스트다. 관련 테스트가 없을 때 성공으로 끝나야 한다. pytest 처럼 모은 테스트가 없을 때 5 로 끝나는 도구는 `ok_exit = [0, 5]` 를 넣는다. 테스트가 DB·포트를 같이 써서 동시에 돌면 깨지면 `exclusive = true` 를 넣는다. `timeout_min`(기본 30)으로 한 번 실행의 상한을 정한다.
+- orch 는 커밋된 HEAD 의 tasks.toml 에서 `[test]` 를 읽는다. `[test]` 는 커밋해야 적용된다.
 - 테스트 도구를 설치하는 첫 developer 태스크의 `acceptance` 에 "`[test]` 의 quick·full 명령이 실행된다"를 넣는다.
 - `[test]` 가 있으면 `orch plan check` 가 묶음 규칙과 `[test]` 형식을 검사한다.
 - 증분 기획: 기존 `[[task]]` 는 한 글자도 바꾸지 않고 새 `[[task]]` 만 덧붙인다(`orch plan apply --append` 가 기존 key 변경·삭제를 거부한다).

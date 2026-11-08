@@ -259,6 +259,15 @@ class UpgradeTest(ProjectCase):
                                            "reason": "커밋 안 된 변경이 있다. 커밋하거나 되돌린 뒤 다시 한다"}])
         self.assertEqual((self.root / ".orchestration/roles/tester.md").read_text(encoding="utf-8"), "작업 중\n")
 
+    def test_diff_stat_only_covers_changed_files(self):
+        (self.root / ".orchestration/roles/tester.md").write_text("작업 중\n", encoding="utf-8")
+        self.assertEqual(self.upgrade()["diff_stat"], "")
+        self.commit_text(".orchestration/coordinator.md", "옛 지침\n")
+        out = self.upgrade()
+        self.assertEqual(out["updated"], [".orchestration/coordinator.md"])
+        self.assertIn(".orchestration/coordinator.md", out["diff_stat"])
+        self.assertNotIn("tester.md", out["diff_stat"])
+
     def test_keeps_config_toml(self):
         self.commit_text(".orchestration/config.toml", self.template("config.toml") + "# 사용자 설정\n")
         out = self.upgrade()

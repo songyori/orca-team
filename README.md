@@ -91,10 +91,11 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 ## 묶음 검증
 
 - 0.6.0 부터 테스트와 리뷰를 기능마다 무겁게 반복하지 않고 묶음으로 나눈다.
-- planner 가 `docs/planning/tasks.toml` 에 `[test]` 를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트(`{files}` 자리에 파일 목록), `full` 은 전체 테스트다. 선택 키: `timeout_min`(기본 30), `ok_exit`(기본 `[0]`), `exclusive`(기본 false. 테스트가 DB·포트를 같이 쓰면 true).
+- planner 가 `docs/planning/tasks.toml` 에 `[test]` 를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트(`{files}` 자리에 파일 목록), `full` 은 전체 테스트다. 선택 키: `timeout_min`(기본 30), `ok_exit`(기본 `[0]`), `exclusive`(기본 false. 테스트가 DB·포트를 같이 쓰면 true). orch 는 커밋된 HEAD 의 tasks.toml 에서 `[test]` 를 읽으므로 `[test]` 는 커밋해야 적용된다.
 - 묶음: 함께 끝내는 developer 태스크 3–6개와 그것들에 의존하는 tester 태스크 하나. tester 태스크가 묶음 통합 테스트를 쓰고 `orch test T-xxx --full` 로 전체 테스트를 한 번 돌린다. 다음 묶음 구현은 앞 묶음 테스트를 기다리지 않는다.
-- developer·tester 워커는 worker_done 전에 `orch test T-xxx`(quick)를 통과시킨다. `orch review` 는 Codex 리뷰 전에 quick 을 확인하고(같은 코드면 워커 결과를 다시 쓴다), 실패하면 Codex 없이 REQUEST_CHANGES 를 낸다. 리뷰어는 전체 테스트를 다시 돌리지 않는다.
-- 리뷰 등급: P1(수용 기준 미충족, 동작 버그, 보안, 데이터 손실, 계약 위반, 테스트 실패)만 승인을 막는다. P2·P3 는 `## 후속`, spec 에 없는 요구는 `## 기획 누락` 에 적는다. 라운드 2부터는 이전 지적과 새 커밋만 본다. orch 는 `## 지적 사항` 의 P1 수로 판정을 맞춘다. 수정 워커는 P1 만 고친다.
+- developer 워커는 작업을 커밋한 뒤 `orch test T-xxx`(quick)를 돌리고 worker_done 전에 통과시킨다(커밋 전에 돌리면 orch 가 거부한다). `orch review` 는 developer 태스크의 Codex 리뷰 전에 quick 을 확인하고(같은 코드면 워커 결과를 다시 쓴다), 실패하면 Codex 없이 REQUEST_CHANGES 를 낸다.
+- tester 워커는 묶음 통합 테스트를 커밋한 뒤 `orch test T-xxx --full` 을 한 번 돌리고, 실패를 테스트 코드의 잘못(고친다)과 제품 회귀(QA 리포트에 적는다)로 나눈다. 테스트를 약하게 만들거나 제품 코드를 고치지 않는다. tester 리뷰는 그 full 결과를 묶음 리뷰에 넣고 테스트 결과로 자동 반려하지 않는다. 제품 회귀는 리뷰의 `## 회귀` 를 거쳐 회귀 수정 태스크가 된다. 리뷰어는 전체 테스트를 다시 돌리지 않는다.
+- 리뷰 등급: P1(수용 기준 미충족, 동작 버그, 보안, 데이터 손실, 계약 위반, 테스트 실패)만 승인을 막는다. P2·P3 는 `## 후속`, spec 에 없는 요구는 `## 기획 누락` 에 적는다. 라운드 2부터는 이전 지적과 새 커밋만 본다. orch 는 `## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수로 판정을 맞춘다. 수정 워커는 P1 만 고친다.
 - 코디네이터는 묶음 tester 태스크를 accept 하면 `orch followups T-xxx` 로 회귀·후속·기획 누락을 모아 회귀 수정 태스크, 묶음 정리 태스크, 사용자 질문을 만든다. 모든 태스크가 끝나면 `orch test --full` 을 한 번 더 돌린 뒤 완료를 알린다.
 - `[test]` 가 없는 프로젝트는 테스트 관문과 묶음 검사가 꺼진다. 리뷰 등급·라운드 규칙은 모든 프로젝트에 적용된다.
 - 0.5.x 로 만든 프로젝트에 적용하기:

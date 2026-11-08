@@ -1,6 +1,8 @@
 import fcntl
 import json
 import os
+import shlex
+import signal
 import time
 import unittest
 from unittest import mock
@@ -59,6 +61,35 @@ class NoConfigTest(TaskCase):
         proc = self.orch("test", check=False)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("태스크 ID 또는 --full", proc.stderr)
+
+    def test_uncommitted_test_table_does_not_enable_gate(self):
+        quick, full = fake_test_commands(self)
+        write_test_config(self.root, quick, full)
+        self.assertIsNone(testgate.load_config(Project(self.root)))
+        self.write_spec("T-001")
+        self.orch("start", "T-001")
+        proc = self.orch("test", "T-001", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("[test] 가 없다", proc.stderr)
+        self.assertEqual(read_test_args(self), [])
+
+    def test_repo_without_commits_has_no_gate(self):
+        fresh = self.tmp / "fresh"
+        fresh.mkdir()
+        self.git("-C", str(fresh), "init", "-q")
+        write_test_config(fresh, "t {files}", "t")
+        self.assertIsNone(testgate.load_config(Project(fresh)))
+
+    def test_committed_bad_toml_is_exit_2(self):
+        path = self.root / "docs/planning/tasks.toml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("[test\n", encoding="utf-8")
+        self.git("add", "--", "docs/planning/tasks.toml")
+        self.git("commit", "-q", "-m", "chore: 깨진 tasks.toml")
+        with self.assertRaises(OrchError) as ctx:
+            testgate.load_config(Project(self.root))
+        self.assertEqual(ctx.exception.code, 2)
+        self.assertIn("읽기 실패", str(ctx.exception))
 
 
 class GateCase(TaskCase):
@@ -143,6 +174,8 @@ class RunTaskTest(GateCase):
 
     def test_ok_exit(self):
         write_test_config(self.root, self.quick, self.full, "ok_exit = [0, 5]\n")
+        self.git("add", "--", "docs/planning/tasks.toml")
+        self.git("commit", "-q", "-m", "chore: ok_exit")
         self.commit("src/a.ts")
         set_test_modes(self, "five")
         out = json.loads(self.run_test("T-001").stdout)
@@ -160,9 +193,42 @@ class RunTaskTest(GateCase):
         self.commit("src/a.ts")
         with (self.root / ".orchestration/config.toml").open("a", encoding="utf-8") as fh:
             fh.write("# 작업 중\n")
-        (self.root / "src/a.ts").write_text("y\n", encoding="utf-8")
         out = json.loads(self.run_test("T-001").stdout)
         self.assertEqual(out["dirty"], [".orchestration/config.toml"])
+
+    def test_quick_before_first_task_commit_is_exit_2(self):
+        (self.root / "src").mkdir()
+        (self.root / "src/a.ts").write_text("x\n", encoding="utf-8")
+        proc = self.run_test("T-001")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("아직 `[T-001]` 작업 커밋이 없다", proc.stderr)
+        self.assertIn("quick 은 커밋된 변경만 본다", proc.stderr)
+        self.assertEqual(read_test_args(self), [])
+        self.assertFalse((self.root / ".orchestration/state/tests/T-001.json").exists())
+
+    def test_uncommitted_owned_files_are_exit_2(self):
+        self.commit("src/a.ts")
+        (self.root / "src/a.ts").write_text("y\n", encoding="utf-8")
+        (self.root / "src/new.ts").write_text("새 파일\n", encoding="utf-8")
+        proc = self.run_test("T-001")
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("소유 경로에 커밋하지 않은 변경이 있다: src/a.ts, src/new.ts", proc.stderr)
+        self.assertEqual(read_test_args(self), [])
+
+    def test_uncommitted_report_does_not_block_quick(self):
+        self.commit("src/a.ts")
+        report = self.root / "docs/tasks/T-001/report.md"
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text("# 리포트 초안\n", encoding="utf-8")
+        proc = self.run_test("T-001")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(read_test_args(self), [["src/a.ts"]])
+
+    def test_full_ignores_uncommitted_owned_files(self):
+        self.commit("src/a.ts")
+        (self.root / "src/a.ts").write_text("y\n", encoding="utf-8")
+        proc = self.run_test("T-001", "--full")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
 
     def test_full_for_task_and_final(self):
         self.commit("src/a.ts")
@@ -178,6 +244,16 @@ class RunTaskTest(GateCase):
         proc = self.run_test("../x")
         self.assertEqual(proc.returncode, 2)
 
+    def test_worktree_edit_of_committed_table_is_ignored(self):
+        self.commit("src/a.ts")
+        (self.root / "docs/planning/tasks.toml").write_text("[test\n", encoding="utf-8")
+        proc = self.run_test("T-001")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(json.loads(proc.stdout)["status"], "passed")
+        self.assertEqual(read_test_args(self), [["src/a.ts"]])
+        write_test_config(self.root, "true {files}", "true")
+        self.assertEqual(testgate.load_config(Project(self.root)).quick, self.quick)
+
 
 class ExecuteTest(GateCase):
     def setUp(self):
@@ -192,6 +268,27 @@ class ExecuteTest(GateCase):
         out = testgate.execute(self.root, "sleep 30 & sleep 30", self.tmp / "t.log", 0.5, (0,))
         self.assertEqual((out["status"], out["exit"]), ("timeout", None))
         self.assertLess(time.monotonic() - started, 10)
+
+    def test_timeout_kills_members_that_ignore_sigterm(self):
+        pid_file = self.tmp / "child.pid"
+        command = f"(trap '' TERM; exec sleep 30) & echo $! > {shlex.quote(str(pid_file))}; wait"
+
+        def alive(pid):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return False
+            return True
+
+        with mock.patch.object(testgate, "KILL_GRACE_SEC", 0.3, create=True):
+            out = testgate.execute(self.root, command, self.tmp / "t.log", 1.0, (0,))
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        self.addCleanup(lambda: alive(pid) and os.kill(pid, signal.SIGKILL))
+        self.assertEqual(out["status"], "timeout")
+        deadline = time.monotonic() + 3
+        while alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(alive(pid), "SIGTERM 을 무시한 그룹 프로세스가 남았다")
 
     def test_exclusive_lock_waits_then_fails(self):
         cfg = testgate.GateConfig("t {files}", "true", exclusive=True)

@@ -18,7 +18,7 @@ from pathlib import Path
 
 from .globs import matches_any
 from .paths import OrchError, Project
-from .util import git, now, read_json, write_json
+from .util import git, git_ok, now, read_json, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"  # plan.PLAN_FILE 과 같다(plan 이 이 모듈을 import 한다)
 KEYS = ("quick", "full", "timeout_min", "ok_exit", "exclusive")
@@ -30,6 +30,7 @@ PASSED = ("passed", "flaky", "skipped")
 TAIL_LINES = 60
 TAIL_WIDTH = 300
 TAIL_BYTES = 65536
+KILL_GRACE_SEC = 5.0  # 시간을 넘긴 명령에 SIGTERM 을 보낸 뒤 SIGKILL 까지 기다리는 초
 
 
 @dataclass(frozen=True)
@@ -82,12 +83,13 @@ def parse_config(raw) -> GateConfig:
 
 
 def load_config(p: Project) -> GateConfig | None:
-    """작업 트리 tasks.toml 의 [test]. 파일이나 표가 없으면 None(관문 꺼짐). 읽지 못하거나 형식이 틀리면 exit 2."""
-    try:
-        data = tomllib.loads((p.root / PLAN_FILE).read_text(encoding="utf-8"))
-    except FileNotFoundError:
+    """커밋된 HEAD 의 tasks.toml [test]. 작업 트리에서 고치는 중인 tasks.toml(증분 기획)이 관문을 바꾸지 않게 한다.
+    HEAD 에 파일이 없거나(커밋이 없을 때 포함) 표가 없으면 None(관문 꺼짐). 읽지 못하거나 형식이 틀리면 exit 2."""
+    if not git_ok(p.root, "cat-file", "-e", f"HEAD:{PLAN_FILE}"):
         return None
-    except (OSError, ValueError) as exc:  # TOMLDecodeError·UnicodeDecodeError 는 ValueError 하위
+    try:
+        data = tomllib.loads(git(p.root, "show", f"HEAD:{PLAN_FILE}"))
+    except (OrchError, ValueError) as exc:  # TOMLDecodeError 는 ValueError 하위
         raise OrchError(f"{PLAN_FILE} 읽기 실패: {exc}", 2) from exc
     if "test" not in data:
         return None
@@ -143,17 +145,26 @@ def read_tail(path: Path) -> str:
 
 
 def kill_group(proc: subprocess.Popen) -> None:
-    """시간을 넘긴 명령의 프로세스 그룹을 끝낸다(SIGTERM 5초 뒤 SIGKILL)."""
-    for sig in (signal.SIGTERM, signal.SIGKILL):
+    """시간을 넘긴 명령의 프로세스 그룹을 끝낸다. SIGTERM 을 보내고 그룹이 사라지기를 KILL_GRACE_SEC 초까지 기다린 뒤,
+    남았든 아니든 SIGKILL 을 보낸다. sh 가 먼저 끝나도 SIGTERM 을 무시한 그룹 프로세스(브라우저·e2e 도우미 등)가 남지 않게 한다."""
+    # macOS 는 좀비만 남은 그룹에 EPERM(PermissionError)을 돌려준다. 같은 사용자 프로세스 그룹이라 사라진 것으로 본다.
+    gone = (ProcessLookupError, PermissionError)
+    try:
+        os.killpg(proc.pid, signal.SIGTERM)
+    except gone:
+        pass
+    deadline = time.monotonic() + KILL_GRACE_SEC
+    while time.monotonic() < deadline:
+        proc.poll()  # 끝난 sh 를 거둬야 그룹이 비었는지 알 수 있다
         try:
-            os.killpg(proc.pid, sig)
-        except ProcessLookupError:
+            os.killpg(proc.pid, 0)
+        except gone:
             break
-        try:
-            proc.wait(timeout=5)
-            break
-        except subprocess.TimeoutExpired:
-            continue
+        time.sleep(0.05)
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except gone:
+        pass
     proc.wait()
 
 
@@ -281,6 +292,27 @@ def dirty_files(p: Project, allowed: list[str]) -> list[str]:
     return sorted(path for path in tracked if not matches_any(path, allowed))
 
 
+def unsaved_owned(p: Project, task_id: str, owns: list[str]) -> list[str]:
+    """소유 경로 안에서 커밋하지 않은 추적 파일 변경과 추적 안 된 새 파일. 리포트 경로(docs/tasks/T-xxx/)는 뺀다."""
+    from .review import worktree_status
+
+    tracked, new = worktree_status(p.root)
+    report = f"docs/tasks/{task_id}/"
+    return sorted(path for path in set(tracked) | new if matches_any(path, owns) and not path.startswith(report))
+
+
+def check_committed(p: Project, task_id: str, st: dict, commits: list[tuple[str, str]]) -> None:
+    """quick 은 커밋된 변경만 본다. 커밋 전에 돌린 quick 이 통과로 보이지 않게 막는다(exit 2)."""
+    if not commits:
+        raise OrchError(f"아직 `[{task_id}]` 작업 커밋이 없다. 작업을 먼저 커밋한 뒤 orch test 를 돌린다"
+                        "(quick 은 커밋된 변경만 본다)", 2)
+    pending = unsaved_owned(p, task_id, st.get("owns", []))
+    if pending:
+        raise OrchError(f"{task_id}: 소유 경로에 커밋하지 않은 변경이 있다: {', '.join(pending)}. quick 은 커밋된 변경만 "
+                        "본다. 워커는 커밋하거나 지운 뒤 orch test 를 다시 돌린다. 리뷰에서 나왔으면 "
+                        f"`orch fix {task_id} --note \"커밋 안 된 파일을 커밋하거나 지운다\"` 로 되돌려 보낸다", 2)
+
+
 def run_task(p: Project, task_id: str, kind: str) -> dict:
     """태스크 하나의 quick 또는 full. 결과를 state/tests/T-xxx.json 에 남긴다. 실행 불가면 기록 없이 exit 2."""
     cfg = require_config(p)
@@ -288,6 +320,7 @@ def run_task(p: Project, task_id: str, kind: str) -> dict:
     rnd = st.get("round", 1)
     name = f"{task_id}-r{rnd}"
     if kind == "quick":
+        check_committed(p, task_id, st, commits)
         result = run_quick(p, cfg, quick_files(p, task_id, commits), name)
     else:
         result = attempt(p, cfg, cfg.full, f"{name}-full")
@@ -315,20 +348,20 @@ def exit_code(result: dict) -> int:
 
 
 def gate_results(p: Project, task_id: str, role: str, rnd: int, head: str | None) -> dict | None:
-    """리뷰 관문 결과 {"quick": 기록, "full": 기록}. [test] 가 없거나 관문 직무가 아니면 None. 실행 불가면 exit 2.
+    """리뷰 관문 결과. [test] 가 없거나 관문 직무가 아니면 None. 실행 불가면 exit 2.
 
-    quick 은 같은 head(code_head)의 통과 기록을 다시 쓴다. full 은 tester 만, 같은 라운드 기록을 다시 쓴다.
-    quick 이 통과하지 못하면 full 은 돌리지 않는다(어차피 돌려보낸다)."""
+    developer 는 {"quick": 기록}. 같은 head(code_head)의 통과 기록을 다시 쓴다.
+    tester 는 {"full": 기록}. 같은 라운드 기록을 다시 쓰고, 없으면 한 번 돌린다. quick 은 돌리지 않는다. 묶음 통합 테스트는
+    제품 회귀를 잡는 것이 일이라 테스트 결과로 자동 반려하지 않고, 묶음 리뷰(Codex)가 실패를 테스트 잘못과 제품 회귀로 나눈다."""
     if role not in GATED_ROLES or load_config(p) is None:
         return None
     records = load_records(p, task_id)
-    quick = records.get("quick")
-    if not (isinstance(quick, dict) and quick.get("head") == head and quick.get("status") in PASSED):
-        quick = run_task(p, task_id, "quick")
-    out = {"quick": quick}
-    if role == TESTER_ROLE and quick["status"] in PASSED:
+    if role == TESTER_ROLE:
         full = records.get("full")
         if not (isinstance(full, dict) and full.get("round") == rnd):
             full = run_task(p, task_id, "full")
-        out["full"] = full
-    return out
+        return {"full": full}
+    quick = records.get("quick")
+    if not (isinstance(quick, dict) and quick.get("head") == head and quick.get("status") in PASSED):
+        quick = run_task(p, task_id, "quick")
+    return {"quick": quick}

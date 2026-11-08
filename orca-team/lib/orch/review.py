@@ -21,6 +21,7 @@ from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, re
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$", re.M)
 FINDINGS_RE = re.compile(r"^## 지적 사항[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
+PRIOR_RE = re.compile(r"^## 이전 지적 확인[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
 BASE_EXCLUDE = [".orchestration/**", "docs/reviews/**"]
 
 
@@ -159,8 +160,9 @@ def describe(entry: dict, kind: str) -> list[str]:
 
 
 def test_section(gate: dict | None) -> str:
-    """관문이 돌았으면 quick 결과 절(templates/review-tests.md). 다음 절과 사이의 빈 줄까지 붙인다."""
-    if not gate:
+    """quick 이 돌았으면(developer) 그 결과 절(templates/review-tests.md). 다음 절과 사이의 빈 줄까지 붙인다.
+    tester 는 quick 이 없고 묶음 절이 full 을 보여 주므로 빈 문자열."""
+    if not gate or "quick" not in gate:
         return ""
     return render((TEMPLATES / "review-tests.md").read_text(encoding="utf-8"),
                   {"test_lines": bullets(describe(gate["quick"], "quick"))}) + "\n"
@@ -197,7 +199,9 @@ def gate_failure(task_id: str, entry: dict) -> str:
     lines = ["orch 테스트 관문: quick 이 통과하지 못했다.", "", *(f"- {line}" for line in describe(entry, "quick"))]
     if entry.get("tail"):
         lines += ["", "출력 끝:", "```", entry["tail"], "```"]
-    lines += ["", f"고친 뒤 `.orchestration/bin/orch test {task_id}` 로 다시 확인한다."]
+    lines += ["", f"고친 뒤 `.orchestration/bin/orch test {task_id}` 로 다시 확인한다.",
+              "실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 다른 파일) 코드를 고치지 말고 근거를 리포트에 "
+              "적은 뒤 프리앰블의 ask 명령으로 코디네이터에게 묻는다."]
     return "\n".join(lines)
 
 
@@ -251,15 +255,21 @@ def round_section(doc: TaskDoc, rnd: int, commits: list[tuple[str, str]], histor
 
 
 def p1_count(text: str) -> int | None:
-    """`## 지적 사항` 절의 `[P1]` 항목 수. 절이 없으면(이전 형식) None."""
+    """막는 지적 수: `## 지적 사항` 절에서 `[P1]` 이 든 줄(`- `·`* `·`1.`·`###` 등 줄 모양과 상관없다)과
+    `## 이전 지적 확인` 절에서 `미해결` 이 든 줄. RC→APPROVE 로 잘못 바꾸는 쪽이 위험해서 넓게 센다.
+    `## 지적 사항` 절이 없으면(이전 형식) None."""
     match = FINDINGS_RE.search(text)
     if not match:
         return None
-    return sum(1 for line in match.group(1).splitlines() if line.lstrip().startswith("- ") and "[P1]" in line)
+    count = sum(1 for line in match.group(1).splitlines() if "[P1]" in line)
+    prior = PRIOR_RE.search(text)
+    if prior:
+        count += sum(1 for line in prior.group(1).splitlines() if "미해결" in line)
+    return count
 
 
 def align_verdict(path: Path, verdict: str) -> str | None:
-    """P1 이 있으면 REQUEST_CHANGES, 없으면 APPROVE 로 판정을 맞춘다. 바꿨으면 "원래→바꾼 것", 아니면 None."""
+    """막는 지적(p1_count)이 있으면 REQUEST_CHANGES, 없으면 APPROVE 로 판정을 맞춘다. 바꿨으면 "원래→바꾼 것", 아니면 None."""
     text = path.read_text(encoding="utf-8")
     count = p1_count(text)
     if count is None:
@@ -268,7 +278,8 @@ def align_verdict(path: Path, verdict: str) -> str | None:
     if want == verdict:
         return None
     last = list(VERDICT_RE.finditer(text))[-1]
-    note = f"> orch 판정 맞추기: `## 지적 사항` 의 P1 {count}개라 {want} 로 바꿨다(원래 {verdict}).\n\n"
+    note = (f"> orch 판정 맞추기: 막는 지적(`## 지적 사항` 의 P1 줄, `## 이전 지적 확인` 의 미해결 줄) {count}개라 "
+            f"{want} 로 바꿨다(원래 {verdict}).\n\n")
     path.write_text(text[:last.start()] + note + f"VERDICT: {want}" + text[last.end():], encoding="utf-8")
     return f"{verdict}→{want}"
 
@@ -434,7 +445,7 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
                 verdict, source = auto_review(p, review_rel, task_id, rnd, reason), "orch"
             else:
                 gate = testgate.gate_results(p, task_id, doc.role, rnd, testgate.code_head(p, task_id, commits))
-                if gate and gate["quick"]["status"] not in testgate.PASSED:
+                if gate and "quick" in gate and gate["quick"]["status"] not in testgate.PASSED:  # developer 만
                     verdict, source = auto_review(p, review_rel, task_id, rnd, gate_failure(task_id, gate["quick"])), "orch"
                 else:
                     prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files, gate, st["history"])
@@ -444,7 +455,7 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
                         verdict = adjusted.split("→")[1]
         message = f"[{task_id}] review r{rnd}: {verdict}"
         if adjusted:
-            message += f"\n\n판정 맞추기: {adjusted}(`## 지적 사항` 의 P1 수 기준)"
+            message += f"\n\n판정 맞추기: {adjusted}(`## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수 기준)"
         if untracked:
             message += ("\n\n리뷰 중 새로 생긴 추적 안 된 파일(판정에는 영향 없음):\n"
                         + "\n".join(f"- {f}" for f in untracked))

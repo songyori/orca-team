@@ -252,14 +252,20 @@ class TemplateTest(unittest.TestCase):
         coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
         for key in ("## 묶음 후속", "## 마무리", "orch followups T-xxx", "orch followups --rest", "orch test --full",
                     "출처: T-xxx followups", "출처: rest followups", "출처: final followups",
-                    "`[test]` 명령을 실행할 수 없다", "묶음 테스트(tester) 태스크였으면"):
+                    "`[test]` 명령을 실행할 수 없다", "묶음 테스트(tester) 태스크였으면",
+                    "같은 테스트 실패로 orch 사전 검사(source orch) 반려가 두 라운드 이어지면 `orch fix` 하지 않고",
+                    "`[test]` 검증 실패", "`docs/planning/tasks.toml` 읽기 실패", "테스트 잠금(exclusive)",
+                    "고친 뒤 `orch test --full` 을 다시 돌린다"):
             self.assertIn(key, coordinator)
+        self.assertNotIn("exit 2 면 위 exit≠0 처리를 따른다", coordinator)
         planner = (T / "roles/planner.md").read_text(encoding="utf-8")
         for key in ('`["tests/<key>/**", "docs/qa/<key>.md"]`', "{files}", "ok_exit = [0, 5]", "exclusive = true",
+                    "`[test]` 는 커밋해야 적용된다",
                     "3–6개", "developer 태스크는 tester 태스크에 의존하지 않는다"):
             self.assertIn(key, planner)
         tester = (T / "roles/tester.md").read_text(encoding="utf-8")
-        for key in ("orch test T-xxx --full", "제품 회귀", "`tests/<key>/`", "`docs/qa/<key>.md`"):
+        for key in ("orch test T-xxx --full", "제품 회귀", "`tests/<key>/`", "`docs/qa/<key>.md`",
+                    "테스트를 약하게 만들거나 건너뛰거나 지우지 않는다", "자동 반려하지 않는다"):
             self.assertIn(key, tester)
         developer = (T / "roles/developer.md").read_text(encoding="utf-8")
         self.assertIn("워커 spec 의 `## 테스트` 절", developer)
@@ -477,7 +483,12 @@ class TemplateTest(unittest.TestCase):
         for key in ("### 디자인 규칙 (2026-11-06, 0.5.2)", "design_diff_lint", "diff_lines", "lint.cap", "guarded"):
             self.assertIn(key, section)
         status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
-        for key in ("(2026-11-06, 0.5.2)", "| 0.5.2 |", "specs/2026-11-06-orca-team-design-rules-design.md"):
+        for key in ("| 0.5.2 |", "specs/2026-11-06-orca-team-design-rules-design.md"):
+            self.assertIn(key, status)
+
+    def test_status_doc_describes_batch_verify(self):
+        status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
+        for key in ("(2026-11-08, 0.6.0)", "| 0.6.0 |", "specs/2026-11-08-orca-team-batch-verify-design.md"):
             self.assertIn(key, status)
 
 

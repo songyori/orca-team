@@ -36,16 +36,17 @@ REVIEW_LINE = ("`{review}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의
                "고치지 않는 항목은 리포트에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다"
                "(코디네이터가 따로 태스크로 만든다).\n")
 TEST_BLOCK = """## 테스트
-- worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0). 이 태스크가 바꾼 파일과 관련된 테스트만 돈다. 실패하면 고치고 다시 돌린다.
+- 순서: 작업을 `[{task_id}]` 커밋으로 먼저 커밋한다 → `.orchestration/bin/orch test {task_id}` 를 돌린다 → 리포트를 따로 커밋한다. quick 은 커밋된 변경만 보므로 커밋하기 전에 돌리면 orch 가 거부한다(exit 2).
+- worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0). 이 태스크가 바꾼 파일과 관련된 테스트만 돈다. 실패하면 고쳐서 커밋하고 다시 돌린다.
 - 전체 테스트는 돌리지 않는다. 묶음 테스트 태스크와 orch 가 돌린다.
 - 리포트의 검증 출력에 orch test 출력의 `status`·`seconds` 를 붙인다. 실패를 고쳤으면 그 `tail` 도 붙인다.
 
 """
 TESTER_TEST_BLOCK = """## 테스트
-- 이 태스크는 묶음 테스트다. 선행 태스크(묶음 개발 태스크)의 기능을 잇는 통합 테스트를 소유 경로에 쓰고 커밋한다.
-- 커밋한 뒤 `.orchestration/bin/orch test {task_id} --full` 로 전체 테스트를 한 번 돌린다. 다시 돌리지 않는다.
-- 실패는 QA 리포트에서 둘로 나눈다. 테스트 코드의 잘못은 고치고 `.orchestration/bin/orch test {task_id}` 로 확인한다. 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 코드는 고치지 않는다.
-- worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0).
+- 이 태스크는 묶음 테스트다. 선행 태스크(묶음 개발 태스크)의 기능을 잇는 묶음 통합 테스트를 소유 경로에 쓰고 커밋한다.
+- 커밋한 뒤 `.orchestration/bin/orch test {task_id} --full` 로 전체 테스트를 한 번 돌린다. 다시 돌리지 않는다. 리뷰는 같은 라운드의 이 결과를 다시 쓴다.
+- 실패는 QA 리포트에서 둘로 나눈다. 테스트 코드의 잘못은 고친다(고친 테스트를 커밋한 뒤 `.orchestration/bin/orch test {task_id}` 로 확인할 수 있다). 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 회귀는 리뷰가 `## 회귀` 로 넘기고 코디네이터가 회귀 수정 태스크로 만든다.
+- 테스트를 통과시키려고 테스트를 약하게 만들거나 건너뛰거나 지우지 않는다. 제품 코드는 고치지 않는다.
 
 """
 

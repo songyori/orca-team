@@ -170,7 +170,9 @@ def upgrade(p: Project) -> dict:
     shim = p.root / ".orchestration/bin/orch"
     if shim.exists():
         shim.chmod(0o755)
-    stat = git(p.root, "diff", "--stat", "--", *(dst for _, dst in targets), check=False)
+    # 건너뛴 파일의 사용자 변경이 섞이지 않게 바꾸거나 만든 파일만 본다.
+    changed = [*updated, *created]
+    stat = git(p.root, "diff", "--stat", "--", *changed, check=False) if changed else ""
     return {"updated": updated, "created": created, "skipped": skipped, "diff_stat": stat.strip(), "next": UPGRADE_NEXT}
 
 

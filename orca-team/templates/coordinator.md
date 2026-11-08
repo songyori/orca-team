@@ -40,8 +40,9 @@
   - 출력 `status` 가 `done` 이고 기획(planner) 태스크였으면 아래 "요청 처리" 4단계(`orch plan apply`)로 간다. 묶음 테스트(tester) 태스크였으면 아래 "묶음 후속"을 한 뒤 `orch start-ready`. 그 밖에는 `orch start-ready`.
   - 출력 `status` 가 `awaiting_user` 면(사용자 승인 대상 직무, 기본 designer) 워커는 해제됐고 소유 경로 잠금은 남는다. `orch start-ready` 를 한 뒤 아래 "시스템 추가 제안"을 확인하고 `orch design-review` 를 해 본다. exit 2 면 아직 리뷰 중인 승인 대상 태스크가 있다는 뜻이다(오류 문구가 무엇을 기다리는지 알려 준다).
 - REQUEST_CHANGES → `orch fix T-xxx`(리뷰 파일을 읽고 필요하면 `--note`) 다음 `orch start-ready`. fix 는 이전 워커를 스스로 해제하고 새 워커를 띄우므로(터미널 재사용 없음, `--model`·`--effort` 적용) `worker-release` 를 손으로 하지 않는다. 최대 라운드 초과로 거부되면 "사용자에게 묻기"대로 `orch notify --type question --json -` 한다(리뷰 요약과 선택지). 사용자가 중단을 고르면 `orch drop`(아래 "중단").
+  - 같은 테스트 실패로 orch 사전 검사(source orch) 반려가 두 라운드 이어지면 `orch fix` 하지 않고 "사용자에게 묻기"대로 `orch notify --type question --json -` 한다. 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일(`docs/reviews/T-xxx/r<N>.md`)의 quick 출력 끝으로 같은 실패인지 본다.
 - exit≠0 → 출력의 지시를 따른다. 해결하지 못하면 `orch notify --type question --json -`.
-  - `orch review` 가 exit 2 로 "`[test]` 명령을 실행할 수 없다"고 하면 라운드는 쓰이지 않았다. `docs/planning/tasks.toml` 의 `[test]` 를 고치는 기획 태스크를 만든다(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -` 로 알린다). 고친 뒤 같은 태스크를 다시 `orch review` 한다(Bash `run_in_background: true`).
+  - `orch review` 가 exit 2 로 `[test]` 문제를 알리면 라운드는 쓰이지 않았다. 오류가 "`[test]` 명령을 실행할 수 없다", "`[test]` 검증 실패", "`docs/planning/tasks.toml` 읽기 실패" 중 하나면 커밋된 `docs/planning/tasks.toml` 의 `[test]` 를 고치는 기획 태스크를 만든다(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -` 로 알린다). 고친 뒤 같은 태스크를 다시 `orch review` 한다(Bash `run_in_background: true`). "테스트 잠금(exclusive)을 … 얻지 못했다"면 고칠 것은 없다. 다른 테스트 실행이 끝난 뒤 같은 태스크를 다시 `orch review` 한다.
 - 출력에 `untracked`(리뷰 중 새로 생긴 추적 안 된 파일)가 있고 그중 이 태스크 소유 경로 안 파일이 있으면 다음 `orch fix T-xxx --note` 에 그 목록을 넣는다(커밋하거나 지우게 한다).
 - `orch accept`·`orch drop` 출력이 `released: false` 거나 `release_error` 가 있으면 `orch notify --type progress` 로 메인에 워커 해제 실패를 알린다.
 
@@ -67,7 +68,7 @@
 ## 마무리
 모든 태스크가 done 또는 dropped 면 다음을 차례로 한다.
 1. `orch followups --rest` 로 묶음 밖 developer 태스크의 후속을 "묶음 후속"과 같은 기준으로 처리한다. 만드는 태스크의 `## Change` 첫 줄은 `출처: rest followups` 다. 이 단계는 한 번만 한다. `.orchestration/tasks/` 에 `출처: rest followups` 태스크가 이미 있으면 건너뛴다. 만든 태스크가 있으면 그것들이 끝난 뒤 이 절을 다시 시작한다.
-2. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 `orch test --full` 을 Bash `run_in_background: true` 로 돌린다. exit 1 이면 출력의 `tail` 과 `log` 로 원인 태스크를 찾아 "묶음 후속"의 회귀 수정 태스크처럼 만든다(`## Change` 첫 줄 `출처: final followups`). 그 태스크들이 done 이 되면 다시 `orch test --full`. exit 2 면 위 exit≠0 처리를 따른다.
+2. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 `orch test --full` 을 Bash `run_in_background: true` 로 돌린다. exit 1 이면 출력의 `tail` 과 `log` 로 원인 태스크를 찾아 "묶음 후속"의 회귀 수정 태스크처럼 만든다(`## Change` 첫 줄 `출처: final followups`). 그 태스크들이 done 이 되면 다시 `orch test --full`. exit 2 면 `[test]` 를 고치는 기획 태스크를 만들고(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -`), 고친 뒤 `orch test --full` 을 다시 돌린다. 테스트 잠금 대기 초과면 잠시 뒤 다시 돌린다.
 3. 통과하면(또는 `[test]` 가 없으면) `orch notify --type done "<결과 요약, 바뀐 주요 파일, 태스크별 리뷰 판정과 라운드 수, 마지막 full 결과>"`.
 
 ## 디자인 일괄 승인

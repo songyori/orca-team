@@ -192,6 +192,12 @@ class TestBlockTest(TaskCase):
         super().setUp()
         self.quick, self.full = fake_test_commands(self)
         write_test_config(self.root, self.quick, self.full)
+        self.commit_plan("chore: test 설정")
+
+    def commit_plan(self, message):
+        """[test] 는 커밋된 HEAD 에서 읽으므로 tasks.toml 을 바꾸면 커밋한다(지웠으면 지움을 커밋한다)."""
+        self.git("add", "-A", "--", "docs/planning/tasks.toml")
+        self.git("commit", "-q", "-m", message)
 
     def spec_for(self, task_id, role, extra=""):
         self.write_spec(task_id, role=role, extra=extra)
@@ -203,23 +209,40 @@ class TestBlockTest(TaskCase):
         self.assertIn("묻는다.\n\n## 테스트\n", spec)
         self.assertIn("`.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
         self.assertIn("전체 테스트는 돌리지 않는다", spec)
+        order = ("작업을 `[T-001]` 커밋으로 먼저 커밋한다", "`.orchestration/bin/orch test T-001` 를 돌린다",
+                 "리포트를 따로 커밋한다")
+        self.assertEqual([spec.index(text) for text in order], sorted(spec.index(text) for text in order))
         self.assertLess(spec.index("## 테스트"), spec.index("## 작업 규칙"))
         self.assertNotIn("\n\n\n", spec)
         self.assertNotIn("{test_block}", spec)
 
     def test_tester_gets_full_once(self):
         spec = self.spec_for("T-001", "tester", "owns: tests/grp/**, docs/qa/grp.md\n")
-        self.assertIn("`.orchestration/bin/orch test T-001 --full`", spec)
-        self.assertIn("제품 코드는 고치지 않는다", spec)
+        for text in ("`.orchestration/bin/orch test T-001 --full`", "제품 코드는 고치지 않는다", "약하게",
+                     "다시 돌리지 않는다"):
+            self.assertIn(text, spec)
+        self.assertNotIn("worker_done 전에 `.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
 
     def test_other_roles_and_no_config_have_no_block(self):
         self.assertNotIn("## 테스트", self.spec_for("T-001", "designer"))
         (self.root / "docs/planning/tasks.toml").unlink()
+        self.commit_plan("chore: test 설정 지움")
         self.assertNotIn("\n## 테스트\n", self.spec_for("T-002", "developer", "owns: src/other/**\n"))
 
     def test_broken_test_table_has_no_block(self):
         write_test_config(self.root, "npx vitest", self.full)
+        self.commit_plan("chore: 틀린 test 설정")
         self.assertNotIn("\n## 테스트\n", self.spec_for("T-001", "developer"))
+
+    def test_uncommitted_test_table_has_no_block(self):
+        (self.root / "docs/planning/tasks.toml").unlink()
+        self.commit_plan("chore: test 설정 지움")
+        write_test_config(self.root, self.quick, self.full)
+        self.assertNotIn("\n## 테스트\n", self.spec_for("T-001", "developer"))
+
+    def test_committed_table_survives_worktree_edit(self):
+        (self.root / "docs/planning/tasks.toml").write_text("[test\n", encoding="utf-8")
+        self.assertIn("\n## 테스트\n", self.spec_for("T-001", "developer"))
 
     def test_fix_stage_keeps_spacing(self):
         self.spec_for("T-001", "developer")

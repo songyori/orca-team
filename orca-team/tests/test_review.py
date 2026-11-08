@@ -547,8 +547,11 @@ class ReviewGateTest(GateReviewCase):
         self.assertEqual((out["verdict"], out["source"], out["tests"]), ("REQUEST_CHANGES", "orch", {"quick": "failed"}))
         self.assertEqual(self.runner_calls(), [])
         review = (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
-        for text in ("quick: 실패", "FAIL tests/a.test.ts", "`.orchestration/bin/orch test T-001`"):
+        for text in ("quick: 실패", "FAIL tests/a.test.ts", "`.orchestration/bin/orch test T-001`",
+                     "실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 다른 파일) 코드를 고치지 말고",
+                     "프리앰블의 ask 명령으로 코디네이터에게 묻는다"):
             self.assertIn(text, review)
+        self.assertTrue(review.rstrip().endswith("VERDICT: REQUEST_CHANGES"))
         self.assertEqual(read_test_args(self), [["src/login.ts"], ["src/login.ts"]])
         self.assertEqual(self.state("T-001")["status"], "changes")
 
@@ -596,6 +599,17 @@ class ReviewGateTest(GateReviewCase):
         self.assertNotIn("[T-001] review", self.git("log", "--format=%s"))
         self.assertEqual(self.runner_calls(), [])
 
+    def test_untracked_owned_file_stops_review_without_round(self):
+        self.commit_work()
+        (self.root / "src/extra.ts").write_text("// 커밋 안 함\n", encoding="utf-8")
+        proc = self.review(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("소유 경로에 커밋하지 않은 변경이 있다: src/extra.ts", proc.stderr)
+        self.assertIn("orch fix T-001", proc.stderr)
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 1))
+        self.assertEqual((read_test_args(self), self.runner_calls()), ([], []))
+
     def test_non_gated_role_has_no_gate(self):
         self.assertIsNone(testgate.gate_results(Project(self.root), "T-001", "designer", 1, None))
 
@@ -617,35 +631,43 @@ class ReviewGroupTest(GateReviewCase):
     def review_group(self, check=True):
         return self.orch("review", "T-002", check=check)
 
-    def test_tester_review_runs_full_and_adds_group_section(self):
-        set_test_modes(self, "pass", "fail")
+    def test_tester_review_runs_full_only_and_adds_group_section(self):
+        set_test_modes(self, "fail")
         out = json.loads(self.review_group().stdout)
         self.assertEqual((out["verdict"], out["source"]), ("APPROVE", "codex"))
-        self.assertEqual(out["tests"], {"quick": "passed", "full": "failed"})
-        self.assertEqual(read_test_args(self)[-2:], [["tests/grp/a.test.ts"], ["--all"]])
+        self.assertEqual(out["tests"], {"full": "failed"})
+        self.assertEqual(read_test_args(self), [["--all"]])
         prompt = self.prompt()
         for text in ("## 묶음 리뷰", "T-001 [developer] 로그인 — 작업 커밋 1개, 바꾼 파일: src/login.ts",
-                     "- full: 실패", "출력 끝:", "FAIL tests/a.test.ts", "제품 회귀"):
+                     "- full: 실패", "출력 끝:", "FAIL tests/a.test.ts", "제품 회귀", "전체 테스트를 돌리지 않고",
+                     "다른 지적처럼 번호를 이어 붙이고"):
             self.assertIn(text, prompt)
+        for text in ("## orch 테스트 결과", "- quick:"):
+            self.assertNotIn(text, prompt)
         self.assertNotIn("\n\n\n", prompt)
 
     def test_full_record_of_same_round_is_reused(self):
         self.orch("test", "T-002", "--full")
         out = json.loads(self.review_group().stdout)
-        self.assertEqual(out["tests"], {"quick": "passed", "full": "passed"})
-        self.assertEqual(read_test_args(self)[-2:], [["--all"], ["tests/grp/a.test.ts"]])
+        self.assertEqual(out["tests"], {"full": "passed"})
+        self.assertEqual(read_test_args(self), [["--all"]])
         self.assertIn("- full: 통과", self.prompt())
         self.assertNotIn("출력 끝:", self.prompt())
 
-    def test_quick_failure_skips_full(self):
-        set_test_modes(self, "fail", "fail")
+    def test_full_failure_never_auto_rejects(self):
+        set_test_modes(self, "fail")
+        self.modes("changes")
         out = json.loads(self.review_group().stdout)
-        self.assertEqual((out["verdict"], out["source"], out["tests"]), ("REQUEST_CHANGES", "orch", {"quick": "failed"}))
-        self.assertNotIn(["--all"], read_test_args(self))
+        self.assertEqual((out["verdict"], out["source"], out["tests"]),
+                         ("REQUEST_CHANGES", "codex", {"full": "failed"}))
+        self.assertEqual(len(self.runner_calls()), 1)
+        review = (self.root / "docs/reviews/T-002/r1.md").read_text(encoding="utf-8")
+        self.assertNotIn("orch 사전 검사", review)
+        self.assertEqual(read_test_args(self), [["--all"]])
 
 
-def review_body(findings: str, verdict: str, rnd: int = 1) -> str:
-    return (f"# T-001 r{rnd} 리뷰\n## 판정 근거\n근거\n## 이전 지적 확인\n- 해당 없음\n## 지적 사항\n{findings}\n"
+def review_body(findings: str, verdict: str, rnd: int = 1, prior: str = "- 해당 없음") -> str:
+    return (f"# T-001 r{rnd} 리뷰\n## 판정 근거\n근거\n## 이전 지적 확인\n{prior}\n## 지적 사항\n{findings}\n"
             "## 후속\n- 없음\n## 기획 누락\n- 없음\n## 회귀\n- 해당 없음\n## 직접 확인한 것\n- 읽음\n\n"
             f"VERDICT: {verdict}\n")
 
@@ -669,7 +691,8 @@ class ReviewRoundTest(ReviewCase):
         self.assertNotIn("## 라운드", prompt)
         self.assertNotIn("{round_section}", prompt)
         for text in ("## 등급과 판정", "P1(막는다)", "## 후속", "## 기획 누락", "## 회귀", "## 이전 지적 확인",
-                     "r1-F1 [P1]", "orch 는 `## 지적 사항` 의 `[P1]` 줄 수로 판정을 맞춘다"):
+                     "r1-F1 [P1]", "- r1-F4 실패한 테스트 — 원인으로 보이는 태스크 ID. 근거.",
+                     "orch 는 `## 지적 사항` 의 `[P1]` 이 든 줄과 `## 이전 지적 확인` 의 `미해결` 줄 수로 판정을 맞춘다"):
             self.assertIn(text, prompt)
         self.assertNotIn("P1 이 하나라도 있으면", prompt)
         self.assertNotIn("\n\n\n", prompt)
@@ -731,6 +754,31 @@ class ReviewRoundTest(ReviewCase):
         out = json.loads(self.review().stdout)
         self.assertEqual((out["verdict"], out["verdict_adjusted"]), ("REQUEST_CHANGES", "APPROVE→REQUEST_CHANGES"))
         self.assertEqual(self.state("T-001")["status"], "changes")
+
+    def test_unresolved_prior_finding_keeps_request_changes(self):
+        self.commit_work()
+        self.body(review_body("- 없음", "REQUEST_CHANGES", rnd=2, prior="- r1-F1: 미해결 — 입력 검증이 아직 없다"))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+        self.assertNotIn("verdict_adjusted", out)
+
+    def test_star_bullet_p1_keeps_request_changes(self):
+        self.commit_work()
+        self.body(review_body("* r1-F1 [P1] src/login.ts:1 — 입력 검증이 없다. 검증한다.", "REQUEST_CHANGES"))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+        self.assertNotIn("verdict_adjusted", out)
+
+    def test_p1_count_ignores_line_shape_and_counts_unresolved(self):
+        for line in ("- r1-F1 [P1] a", "* r1-F1 [P1] a", "1. r1-F1 [P1] a", "### r1-F1 [P1] a", "  - r1-F1 [P1] a"):
+            with self.subTest(line=line):
+                self.assertEqual(review.p1_count(review_body(line, "APPROVE")), 1)
+        self.assertEqual(review.p1_count(review_body("- r1-F2 [P2] a\n* r1-F3 [P3] b", "REQUEST_CHANGES")), 0)
+        self.assertEqual(review.p1_count(review_body("- 없음", "APPROVE", prior="- r1-F1: 해결\n- r1-F2: 미해결 — 근거")), 1)
+        self.assertEqual(review.p1_count(review_body("- r2-F1 [P1] a", "APPROVE", prior="- r1-F1: 미해결 — 근거")), 2)
+        self.assertIsNone(review.p1_count("# 리뷰\n## 이전 지적 확인\n- r1-F1: 미해결\n\nVERDICT: APPROVE\n"))
 
     def test_old_format_is_not_adjusted(self):
         self.commit_work()

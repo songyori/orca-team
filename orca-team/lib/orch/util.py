@@ -15,7 +15,7 @@ from pathlib import Path
 from .paths import OrchError, Project
 
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
-READ_ONLY_GIT = frozenset({"status", "diff", "log", "rev-parse", "diff-tree", "merge-base"})
+READ_ONLY_GIT = frozenset({"status", "diff", "log", "rev-parse", "diff-tree", "merge-base", "show", "cat-file"})
 COMMIT_LOCK_BUDGET = 30.0  # 다른 워커의 index.lock 을 기다리는 최대 초
 
 
