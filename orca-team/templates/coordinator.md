@@ -37,10 +37,11 @@
 
 리뷰 완료 알림이 오면 출력의 verdict 로 정한다.
 - APPROVE → `orch accept T-xxx`.
-  - 출력 `status` 가 `done` 이고 기획(planner) 태스크였으면 아래 "요청 처리" 4단계(`orch plan apply`)로 간다. 그 밖에는 `orch start-ready`.
+  - 출력 `status` 가 `done` 이고 기획(planner) 태스크였으면 아래 "요청 처리" 4단계(`orch plan apply`)로 간다. 묶음 테스트(tester) 태스크였으면 아래 "묶음 후속"을 한 뒤 `orch start-ready`. 그 밖에는 `orch start-ready`.
   - 출력 `status` 가 `awaiting_user` 면(사용자 승인 대상 직무, 기본 designer) 워커는 해제됐고 소유 경로 잠금은 남는다. `orch start-ready` 를 한 뒤 아래 "시스템 추가 제안"을 확인하고 `orch design-review` 를 해 본다. exit 2 면 아직 리뷰 중인 승인 대상 태스크가 있다는 뜻이다(오류 문구가 무엇을 기다리는지 알려 준다).
 - REQUEST_CHANGES → `orch fix T-xxx`(리뷰 파일을 읽고 필요하면 `--note`) 다음 `orch start-ready`. fix 는 이전 워커를 스스로 해제하고 새 워커를 띄우므로(터미널 재사용 없음, `--model`·`--effort` 적용) `worker-release` 를 손으로 하지 않는다. 최대 라운드 초과로 거부되면 "사용자에게 묻기"대로 `orch notify --type question --json -` 한다(리뷰 요약과 선택지). 사용자가 중단을 고르면 `orch drop`(아래 "중단").
 - exit≠0 → 출력의 지시를 따른다. 해결하지 못하면 `orch notify --type question --json -`.
+  - `orch review` 가 exit 2 로 "`[test]` 명령을 실행할 수 없다"고 하면 라운드는 쓰이지 않았다. `docs/planning/tasks.toml` 의 `[test]` 를 고치는 기획 태스크를 만든다(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -` 로 알린다). 고친 뒤 같은 태스크를 다시 `orch review` 한다(Bash `run_in_background: true`).
 - 출력에 `untracked`(리뷰 중 새로 생긴 추적 안 된 파일)가 있고 그중 이 태스크 소유 경로 안 파일이 있으면 다음 `orch fix T-xxx --note` 에 그 목록을 넣는다(커밋하거나 지우게 한다).
 - `orch accept`·`orch drop` 출력이 `released: false` 거나 `release_error` 가 있으면 `orch notify --type progress` 로 메인에 워커 해제 실패를 알린다.
 
@@ -51,9 +52,23 @@
 4. 기획 태스크를 accept 하면 `orch plan apply`(증분 기획이면 `orch plan apply --append`)로 tasks.toml 을 태스크 spec 과 `pending` 상태로 만든다. orch 가 spec 을 만들고 `[plan] apply` 커밋까지 하므로 `orch task new` 를 따로 하지 않는다. 이어서 `orch start-ready`.
 5. `orch notify --type progress "<태스크 목록: id, 직무, 제목, 선행 태스크>"`.
 6. `orch start-ready` 는 `pending` 태스크 중 선행 태스크가 모두 done 이고(선행·후속이 모두 승인 대상 직무면 선행이 awaiting_user 여도 된다. 이어진 디자인을 한 번에 승인받는다) 잠금이 겹치지 않는 것을 tasks.toml 순서로 `max_parallel`(config.toml, 기본 4)까지 띄운다. `waiting` 의 reason 은 deps(선행 대기), lock(소유 경로 잠금), limit(동시 상한), spec(spec 오류. 고쳐 커밋한다)이다. `started` 에 `launch_failed` 가 있으면(exit 1) `orch status` 의 `next` 대로 복구한다. `max_parallel` 은 `orch start-ready` 만 지키는 상한이다. `orch fix`(수정 라운드)와 단건 `orch start` 는 상한을 세지 않고 바로 띄우므로 working 이 잠시 상한을 넘을 수 있고, 그동안 start-ready 는 새 태스크를 띄우지 않는다. accept·fix·drop 을 하거나 디자인 승인 답을 처리할 때마다 `orch start-ready` 를 한다.
-7. 모든 태스크가 done 또는 dropped 면 `orch notify --type done "<결과 요약, 바뀐 주요 파일, 태스크별 리뷰 판정>"`.
+7. 모든 태스크가 done 또는 dropped 면 아래 "마무리"를 한다.
 8. 진행 중 범위를 더하면 spec 파일에 "추가 범위"로 적고 커밋한다: `git add -- .orchestration/tasks/T-xxx.md && git commit -m "[T-xxx] spec: 추가 범위" -- .orchestration/tasks/T-xxx.md`. 그다음 `orca orchestration send --to dispatch:<dispatchId> --subject "추가 범위" --body "<내용>"` 으로 워커에게 알린다.
 9. tasks.toml 오류는 사용자에게 묻지 않는다. 리뷰 사전 검사가 plan apply 와 같은 규칙으로 잡아 REQUEST_CHANGES 로 돌려보내므로 리뷰 파일을 읽고 `orch fix <기획 태스크> --note "<orch 오류>"`. accept 뒤 `orch plan apply` 가 exit 2 로 실패하면 오류 원문을 Change 에 적은 새 기획 태스크로 tasks.toml 을 고치게 한다.
+
+## 묶음 후속
+묶음 테스트(tester) 태스크를 accept 하면 `orch followups T-xxx` 를 실행한다(읽기 전용). 출력의 세 목록을 처리한다.
+- `regressions`(제품 회귀): 원인 태스크마다 회귀 수정 태스크를 만든다: `orch task new developer "회귀 수정: <요약>"`. front matter 에 원인 태스크와 같은 `owns:` 줄을 넣는다. `## Change` 첫 줄은 `출처: T-xxx followups`(T-xxx 는 tester 태스크)이고 다음 줄부터 항목 원문이다. `## Acceptance` 는 "실패한 테스트 <이름>이 `orch test T-yyy` 에서 통과한다"이다. "요청 처리" 2번처럼 spec 을 경로 지정 커밋하고 `orch start T-yyy`. 원인 태스크를 알 수 없으면 "사용자에게 묻기"대로 묻는다.
+- `followups`(P2·P3): 묶음 정리 태스크 하나로 모은다: `orch task new developer "묶음 정리: <묶음 key>"`. `owns:` 는 항목이 가리키는 파일을 소유한 태스크들의 owns 를 합친 것이다. `## Change` 첫 줄은 `출처: T-xxx followups`, 다음 줄부터 항목 id 와 원문이다. 커밋하고 `orch start`. 소유 경로가 진행 중 태스크와 겹쳐 거부되면 그 태스크가 끝난 뒤 다시 start 한다.
+- `planning_gaps`(기획 누락): `docs/planning/` 문서로 답할 수 있으면 묶음 정리 태스크 Change 에 함께 넣는다. 제품 결정이 필요한 항목은 모아서 질문 하나로 `orch notify --type question --json -` 한다. 답이 넣는 쪽이면 증분 기획 태스크("요청 처리" 1번의 추가 요청 방식)를 만들고, 빼는 쪽이면 아무것도 만들지 않는다.
+- 세 목록이 모두 비면 할 일이 없다.
+- 다시 시작한 코디네이터는 `.orchestration/tasks/` 의 `출처: T-xxx followups` 줄로 이미 처리한 묶음을 확인하고 다시 만들지 않는다.
+
+## 마무리
+모든 태스크가 done 또는 dropped 면 다음을 차례로 한다.
+1. `orch followups --rest` 로 묶음 밖 developer 태스크의 후속을 "묶음 후속"과 같은 기준으로 처리한다. 만드는 태스크의 `## Change` 첫 줄은 `출처: rest followups` 다. 이 단계는 한 번만 한다. `.orchestration/tasks/` 에 `출처: rest followups` 태스크가 이미 있으면 건너뛴다. 만든 태스크가 있으면 그것들이 끝난 뒤 이 절을 다시 시작한다.
+2. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 `orch test --full` 을 Bash `run_in_background: true` 로 돌린다. exit 1 이면 출력의 `tail` 과 `log` 로 원인 태스크를 찾아 "묶음 후속"의 회귀 수정 태스크처럼 만든다(`## Change` 첫 줄 `출처: final followups`). 그 태스크들이 done 이 되면 다시 `orch test --full`. exit 2 면 위 exit≠0 처리를 따른다.
+3. 통과하면(또는 `[test]` 가 없으면) `orch notify --type done "<결과 요약, 바뀐 주요 파일, 태스크별 리뷰 판정과 라운드 수, 마지막 full 결과>"`.
 
 ## 디자인 일괄 승인
 - config.toml 의 `user_approval_roles`(기본 designer) 태스크는 Codex APPROVE 뒤 `orch accept` 하면 `done` 이 아니라 `awaiting_user` 가 된다.
@@ -113,7 +128,7 @@ drop 한 태스크는 다시 시작하지 않는다. 다시 하려면 `orch task
 - director: 디자인 방향. 레퍼런스 보드, 톤 시안, 디자인 시스템(Claude Design)을 `orch ask-user` 로 사용자에게 직접 확인받는다. 기획 뒤 화면 디자인보다 먼저 돈다. 디자인 시스템 보강 태스크도 맡는다
 - designer: 앱·웹 화면 디자인(Claude Design, 프로젝트 디자인 시스템 적용), 래스터 에셋(/orca-team:image)
 - developer: 구현
-- tester: 테스트 작성·실행, QA 리포트
+- tester: 묶음 통합 테스트(묶음마다 하나), QA 리포트
 
 ## 디자인 산출물 규칙
 - 디자인 방향과 디자인 시스템은 director 가 Claude Design 으로 만든다(`docs/design/direction.md`, `docs/design/system/`). 화면 디자인과 UI 구현은 그 시스템만 쓴다.

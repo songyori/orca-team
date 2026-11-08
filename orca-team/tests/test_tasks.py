@@ -215,11 +215,11 @@ class TestBlockTest(TaskCase):
     def test_other_roles_and_no_config_have_no_block(self):
         self.assertNotIn("## 테스트", self.spec_for("T-001", "designer"))
         (self.root / "docs/planning/tasks.toml").unlink()
-        self.assertNotIn("## 테스트", self.spec_for("T-002", "developer", "owns: src/other/**\n"))
+        self.assertNotIn("\n## 테스트\n", self.spec_for("T-002", "developer", "owns: src/other/**\n"))
 
     def test_broken_test_table_has_no_block(self):
         write_test_config(self.root, "npx vitest", self.full)
-        self.assertNotIn("## 테스트", self.spec_for("T-001", "developer"))
+        self.assertNotIn("\n## 테스트\n", self.spec_for("T-001", "developer"))
 
     def test_fix_stage_keeps_spacing(self):
         self.spec_for("T-001", "developer")

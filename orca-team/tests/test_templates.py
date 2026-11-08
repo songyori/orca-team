@@ -4,7 +4,7 @@ import tomllib
 import unittest
 
 from helpers import PLUGIN
-from orch import ask, plan
+from orch import ask, plan, testgate
 from orch.config import Config
 
 T = PLUGIN / "templates"
@@ -243,6 +243,26 @@ class TemplateTest(unittest.TestCase):
         self.assertEqual(plan.director_problems(tasks, cfg), [])
         self.assertEqual([t.role for t in tasks].count("director"), 1)
         self.assertIn("| design-direction | director | - |", confirm["context"])
+        data = tomllib.loads(block)
+        self.assertEqual(testgate.config_problems(data["test"]), [])
+        self.assertEqual(plan.group_problems(tasks), [])
+        self.assertIn("| todo-test | tester | ui-foundation, todo-store, todo-ui |", confirm["context"])
+
+    def test_batch_verify_rules_in_templates(self):
+        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
+        for key in ("## 묶음 후속", "## 마무리", "orch followups T-xxx", "orch followups --rest", "orch test --full",
+                    "출처: T-xxx followups", "출처: rest followups", "출처: final followups",
+                    "`[test]` 명령을 실행할 수 없다", "묶음 테스트(tester) 태스크였으면"):
+            self.assertIn(key, coordinator)
+        planner = (T / "roles/planner.md").read_text(encoding="utf-8")
+        for key in ('`["tests/<key>/**", "docs/qa/<key>.md"]`', "{files}", "ok_exit = [0, 5]", "exclusive = true",
+                    "3–6개", "developer 태스크는 tester 태스크에 의존하지 않는다"):
+            self.assertIn(key, planner)
+        tester = (T / "roles/tester.md").read_text(encoding="utf-8")
+        for key in ("orch test T-xxx --full", "제품 회귀", "`tests/<key>/`", "`docs/qa/<key>.md`"):
+            self.assertIn(key, tester)
+        developer = (T / "roles/developer.md").read_text(encoding="utf-8")
+        self.assertIn("워커 spec 의 `## 테스트` 절", developer)
 
     def test_planner_graph_rules_for_director(self):
         text = (T / "roles/planner.md").read_text(encoding="utf-8")

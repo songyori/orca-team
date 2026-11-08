@@ -76,7 +76,7 @@ EOF
 .orchestration/bin/orch ask-user --task T-xxx --json - <<'EOF'
 {"question": "이 기획으로 확정할까요?",
  "example": "전체 문서는 docs/planning/ 에 있다",
- "context": "## 기획 핵심\n할 일을 추가·완료·삭제하는 정적 웹앱. 데이터는 브라우저에만 저장한다.\n\n## 자동 결정\n- 정적 HTML 한 장, 빌드 도구 없음\n- 저장은 localStorage\n\n## 태스크 그래프\n| key | 직무 | 선행 |\n|---|---|---|\n| design-direction | director | - |\n| todo-design | designer | design-direction |\n| ui-foundation | developer | design-direction |\n| todo-store | developer | - |\n| todo-ui | developer | todo-design, ui-foundation, todo-store |",
+ "context": "## 기획 핵심\n할 일을 추가·완료·삭제하는 정적 웹앱. 데이터는 브라우저에만 저장한다.\n\n## 자동 결정\n- 정적 HTML 한 장, 빌드 도구 없음\n- 저장은 localStorage\n\n## 태스크 그래프\n| key | 직무 | 선행 |\n|---|---|---|\n| design-direction | director | - |\n| todo-design | designer | design-direction |\n| ui-foundation | developer | design-direction |\n| todo-store | developer | - |\n| todo-ui | developer | todo-design, ui-foundation, todo-store |\n| todo-test | tester | ui-foundation, todo-store, todo-ui |",
  "options": [{"label": "확정", "description": "기획 문서를 커밋하고 디자인·개발을 시작한다"},
              {"label": "수정할 부분 있음", "description": "고칠 부분을 Other 로 적어 주세요"}],
  "recommended": 0,
@@ -168,6 +168,21 @@ target = "src/ui/todo/"
 change = "디자인대로 화면을 구현하고 저장 모듈을 쓴다"
 constraints = "contracts.md 1절 인터페이스만 쓰고, 색·크기·간격은 src/ui/base 의 토큰과 공통 컴포넌트만 쓴다"
 acceptance = ["index.html 에서 추가·완료·삭제가 된다"]
+
+[[task]]
+key = "todo-test"
+role = "tester"
+title = "할 일 묶음 테스트"
+owns = ["tests/todo-test/**", "docs/qa/todo-test.md"]
+depends_on = ["ui-foundation", "todo-store", "todo-ui"]
+target = "할 일 묶음(UI 기반, 저장 모듈, 할 일 화면)"
+change = "묶음 기능을 잇는 통합 테스트와 QA 리포트"
+constraints = "contracts.md 1절 인터페이스로 검증한다. src/ 는 고치지 않는다"
+acceptance = ["docs/qa/todo-test.md 에 전체 테스트 결과와 실패 분류가 있다"]
+
+[test]
+quick = "npx vitest related --run --passWithNoTests {files}"
+full = "npx vitest run"
 ```
 
 - 서로 의존하지 않는 태스크에는 `depends_on` 을 걸지 않는다. 병렬 실행이 기본이다. 순환은 orch 가 거부한다.
@@ -180,6 +195,13 @@ acceptance = ["index.html 에서 추가·완료·삭제가 된다"]
 - 정책·법률 문서(`docs/policy/**`)와 사용자용 문서(`README.md`, `docs/user/**`)는 developer 태스크로 만들고 owns 에 그 경로를 적는다. `constraints` 에 `docs/planning/voice.md` 와 `.orchestration/text-rules.md` 를 따른다고 적는다.
 - 화면 구현 developer 태스크는 그 화면의 designer 태스크와 UI 기반 태스크에 의존한다. 디자인에 기대지 않는 태스크(저장 모듈, API)는 director 를 기다리지 않는다.
 - config.toml 에 director 직무가 있으면 `orch plan check` 가 director 태스크 정확히 1개와, 에셋 전용이 아닌 모든 designer 태스크의 director 의존(직접 또는 간접)을 검사한다.
+- 묶음: 함께 끝내고 함께 검증할 developer 태스크 3–6개를 한 묶음으로 둔다. 묶음마다 tester 태스크 하나를 두고 `depends_on` 에 묶음의 developer 태스크를 모두 적는다. tester 태스크 `owns` 는 `["tests/<key>/**", "docs/qa/<key>.md"]`(`<key>` 는 그 tester 태스크 key)다.
+- 문서 전용 developer 태스크(`owns` 가 모두 `README.md` 이거나 `docs/` 아래)는 묶음에 넣지 않아도 된다. 나머지 developer 태스크는 정확히 한 묶음에 든다.
+- developer 태스크는 tester 태스크에 의존하지 않는다. 다음 묶음 구현이 앞 묶음 테스트를 기다리지 않게 한다. tester 태스크의 `depends_on` 에는 developer 태스크만 둔다.
+- 단위 테스트는 developer 가 자기 소유 경로 안(예: `src/**/*.test.ts`)에 쓴다. tester 는 묶음 통합 테스트와 QA 리포트를 쓴다.
+- `[test]` 표에 테스트 명령 두 개를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트만 돌리고 `{files}` 를 정확히 한 번 담는다(예: `npx vitest related --run --passWithNoTests {files}`, `npx jest --findRelatedTests --passWithNoTests {files}`). `full` 은 전체 테스트다. 관련 테스트가 없을 때 성공으로 끝나야 한다. pytest 처럼 모은 테스트가 없을 때 5 로 끝나는 도구는 `ok_exit = [0, 5]` 를 넣는다. 테스트가 DB·포트를 같이 써서 동시에 돌면 깨지면 `exclusive = true` 를 넣는다. `timeout_min`(기본 30)으로 한 번 실행의 상한을 정한다.
+- 테스트 도구를 설치하는 첫 developer 태스크의 `acceptance` 에 "`[test]` 의 quick·full 명령이 실행된다"를 넣는다.
+- `[test]` 가 있으면 `orch plan check` 가 묶음 규칙과 `[test]` 형식을 검사한다.
 - 증분 기획: 기존 `[[task]]` 는 한 글자도 바꾸지 않고 새 `[[task]]` 만 덧붙인다(`orch plan apply --append` 가 기존 key 변경·삭제를 거부한다).
 - tasks.toml 이 검증을 통과하지 못하면 리뷰가 REQUEST_CHANGES 로 돌려보낸다.
 
