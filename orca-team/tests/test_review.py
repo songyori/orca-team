@@ -661,6 +661,13 @@ class ReviewGroupTest(GateReviewCase):
         self.assertEqual(out["tests"], {"full": "passed"})
         self.assertEqual(read_test_args(self), [["--all"], ["--all"]])
 
+    def test_qa_report_commit_does_not_block_full_reuse(self):
+        self.orch("test", "T-002", "--full")
+        self.commit_work("docs/qa/grp.md", "[T-002] docs: QA 리포트")
+        out = json.loads(self.review_group().stdout)
+        self.assertEqual(out["tests"], {"full": "passed"})
+        self.assertEqual(read_test_args(self), [["--all"]])
+
     def test_full_failure_never_auto_rejects(self):
         set_test_modes(self, "fail")
         self.modes("changes")
@@ -809,6 +816,37 @@ class ReviewRoundTest(ReviewCase):
         for prior in ("- r1-F1: 해결\n- 미해결 지적 없음", "- r1-F1: 해결 (미해결이던 것을 고쳤다)"):
             self.assertEqual(strict(review_body("- 없음", "APPROVE", prior=prior)), 0, prior)
         self.assertIsNone(strict("# 리뷰\n## 이전 지적 확인\n- r1-F1: 미해결\n\nVERDICT: APPROVE\n"))
+
+    def test_strict_count_accepts_format_variants(self):
+        strict = review.strict_p1_count
+        for line in ("- **r2-F1** [P1] a", "- r2-F1 **[P1]** a", "- `r2-F1` [P1] a", "- [P1] r2-F1 a", "+ r2-F1 [P1] a",
+                     "1) r2-F1 [P1] a", "- r2-F1 [p1] a"):
+            self.assertEqual(strict(review_body(line, "APPROVE")), 1, line)
+        self.assertEqual(strict(review_body("- r2-F3 [P2] a r1-F1 [P1] 관련", "APPROVE")), 0)
+        for prior in ("- r1-F1 [P1]: 미해결 — a", "- **r1-F1**: 미해결", "- r1-F1: **미해결**"):
+            self.assertEqual(strict(review_body("- 없음", "APPROVE", prior=prior)), 1, prior)
+        self.assertEqual(strict(review_body("- 없음", "APPROVE", prior="- r1-F2 [P2]: 미해결")), 0)
+
+    def assert_approve_raised(self, findings, prior):
+        self.commit_work()
+        self.body(review_body(findings, "APPROVE", rnd=2, prior=prior))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+
+    def test_bold_id_p1_raises_approve(self):
+        self.assert_approve_raised("- **r2-F1** [P1] a", "- r1-F1: 해결")
+
+    def test_tag_before_id_p1_raises_approve(self):
+        self.assert_approve_raised("- [P1] r2-F1 a", "- r1-F1: 해결")
+
+    def test_prior_p1_tag_unresolved_raises_approve(self):
+        self.assert_approve_raised("- 없음", "- r1-F1 [P1]: 미해결")
+
+    def test_broad_count_sees_bare_p1_mentions(self):
+        for line in ("- r1-F1 **P1** a", "- r1-F1 (P1) a", "- r1-F1 [p1] a", "### P1\n- r1-F1 a"):
+            self.assertEqual(review.p1_count(review_body(line, "REQUEST_CHANGES")), 1, line)
+        self.assertEqual(review.p1_count(review_body("- r1-F1 [P12] a, API1 b, P1x", "REQUEST_CHANGES")), 0)
 
     def test_p1_count_ignores_line_shape_and_counts_unresolved(self):
         for line in ("- r1-F1 [P1] a", "* r1-F1 [P1] a", "1. r1-F1 [P1] a", "### r1-F1 [P1] a", "  - r1-F1 [P1] a"):

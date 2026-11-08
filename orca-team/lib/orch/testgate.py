@@ -263,25 +263,30 @@ def task_target(p: Project, task_id: str) -> tuple[dict, list[tuple[str, str]]]:
     return st, task_commits(p.root, task_id, st["base"])
 
 
+def report_prefixes(task_id: str) -> tuple[str, str]:
+    """테스트 대상이 아닌 문서 경로: 태스크 리포트와 tester 의 QA 리포트."""
+    return (f"docs/tasks/{task_id}/", "docs/qa/")
+
+
 def code_head(p: Project, task_id: str, commits: list[tuple[str, str]]) -> str | None:
-    """리포트(docs/tasks/T-xxx/)만 바꾼 커밋을 뺀 마지막 작업 커밋. 테스트 결과를 다시 쓸지 가르는 기준이다.
-    워커는 테스트를 돌린 뒤 리포트를 커밋하므로 리포트 커밋이 재사용을 막지 않게 한다."""
+    """리포트(docs/tasks/T-xxx/)와 QA 리포트(docs/qa/)만 바꾼 커밋을 뺀 마지막 작업 커밋. 테스트 결과를 다시 쓸지 가르는 기준이다.
+    워커는 테스트를 돌린 뒤 리포트를 커밋하고, tester 는 QA 리포트를 커밋하므로 이 커밋들이 재사용을 막지 않게 한다."""
     from .review import commit_paths
 
-    report = f"docs/tasks/{task_id}/"
+    reports = report_prefixes(task_id)
     for sha, _ in reversed(commits):
-        if any(not f.startswith(report) for f in commit_paths(p.root, sha)):
+        if any(not f.startswith(reports) for f in commit_paths(p.root, sha)):
             return sha
     return None
 
 
 def quick_files(p: Project, task_id: str, commits: list[tuple[str, str]]) -> list[str]:
-    """작업 커밋이 바꾼 파일 중 작업 트리에 있는 것. 리포트 경로는 뺀다."""
+    """작업 커밋이 바꾼 파일 중 작업 트리에 있는 것. 리포트·QA 리포트 경로는 뺀다."""
     from .review import changed_files
 
-    report = f"docs/tasks/{task_id}/"
+    reports = report_prefixes(task_id)
     return [f for f in changed_files(p.root, [sha for sha, _ in commits])
-            if not f.startswith(report) and (p.root / f).is_file()]
+            if not f.startswith(reports) and (p.root / f).is_file()]
 
 
 def dirty_files(p: Project, allowed: list[str]) -> list[str]:
@@ -293,12 +298,12 @@ def dirty_files(p: Project, allowed: list[str]) -> list[str]:
 
 
 def unsaved_owned(p: Project, task_id: str, owns: list[str]) -> list[str]:
-    """소유 경로 안에서 커밋하지 않은 추적 파일 변경과 추적 안 된 새 파일. 리포트 경로(docs/tasks/T-xxx/)는 뺀다."""
+    """소유 경로 안에서 커밋하지 않은 추적 파일 변경과 추적 안 된 새 파일. 리포트(docs/tasks/T-xxx/)·QA 리포트(docs/qa/) 경로는 뺀다."""
     from .review import worktree_status
 
     tracked, new = worktree_status(p.root)
-    report = f"docs/tasks/{task_id}/"
-    return sorted(path for path in set(tracked) | new if matches_any(path, owns) and not path.startswith(report))
+    reports = report_prefixes(task_id)
+    return sorted(path for path in set(tracked) | new if matches_any(path, owns) and not path.startswith(reports))
 
 
 def check_committed(p: Project, task_id: str, st: dict, commits: list[tuple[str, str]]) -> None:

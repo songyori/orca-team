@@ -254,17 +254,31 @@ def round_section(doc: TaskDoc, rnd: int, commits: list[tuple[str, str]], histor
         "prev_head": head_text, "new_commits": new_commits}) + "\n"
 
 
-STRICT_P1_RE = re.compile(r"^\s*(?:[-*]|\d+\.|#+)?\s*r\d+-F\d+\s*\[P1\]")
-STRICT_PRIOR_RE = re.compile(r"^\s*(?:[-*]|\d+\.)?\s*r\d+-F\d+\s*[:：]\s*미해결")
+STRICT_ID_RE = re.compile(r"r\d+-F\d+")
+STRICT_GRADE_RE = re.compile(r"\[(P[123])\]", re.I)
+STRICT_PRIOR_RE = re.compile(r"^\s*(?:[-+]|\d+[.)])?\s*r\d+-F\d+\s*(?:\[P1\]\s*)?[:：]\s*미해결", re.I)
+BROAD_P1_RE = re.compile(r"(?<![A-Za-z0-9])P1(?![A-Za-z0-9])", re.I)
+
+
+def clean_line(line: str) -> str:
+    """강조(`*`)와 코드 표기(백틱)를 뗀 줄. 엄격한 셈이 형식 차이에 흔들리지 않게 한다."""
+    return line.replace("*", "").replace("`", "")
+
+
+def strict_finding(line: str) -> bool:
+    """`r\d+-F\d+` id 가 있고 첫 등급 표시가 [P1] 인 줄. 순서와 글머리는 상관없다."""
+    line = clean_line(line)
+    grade = STRICT_GRADE_RE.search(line)
+    return bool(STRICT_ID_RE.search(line) and grade and grade.group(1).upper() == "P1")
 
 
 def p1_count(text: str) -> int | None:
-    """넓은 셈(RC→APPROVE 로 내리는 것을 막는 데만): `## 지적 사항` 절에서 `[P1]` 이 든 줄(줄 모양과 상관없다)과
+    """넓은 셈(RC→APPROVE 로 내리는 것을 막는 데만): `## 지적 사항` 절에서 `P1`(앞뒤에 영숫자가 없다, 대소문자 무시)이 든 줄과
     `## 이전 지적 확인` 절에서 `미해결` 이 든 줄. `## 지적 사항` 절이 없으면(이전 형식) None."""
     match = FINDINGS_RE.search(text)
     if not match:
         return None
-    count = sum(1 for line in match.group(1).splitlines() if "[P1]" in line)
+    count = sum(1 for line in match.group(1).splitlines() if BROAD_P1_RE.search(line))
     prior = PRIOR_RE.search(text)
     if prior:
         count += sum(1 for line in prior.group(1).splitlines() if "미해결" in line)
@@ -272,15 +286,15 @@ def p1_count(text: str) -> int | None:
 
 
 def strict_p1_count(text: str) -> int | None:
-    """엄격한 셈(APPROVE→RC 로 올리는 데만): `## 지적 사항` 에서 글머리를 뗀 줄이 `rN-Fk [P1]` 로 시작하는 줄과
-    `## 이전 지적 확인` 에서 `rN-Fk: 미해결` 모양의 줄. 문장 속 `[P1]`·`미해결` 은 세지 않는다. 절이 없으면 None."""
+    """엄격한 셈(APPROVE→RC 로 올리는 데만): `## 지적 사항` 에서 `*` 를 지운 줄에 `rN-Fk` id 가 있고 첫 등급 표시가 [P1] 인 줄과
+    `## 이전 지적 확인` 에서 `rN-Fk[ [P1]]: 미해결` 모양의 줄. 문장 속 `[P1]`·`미해결` 은 세지 않는다. 절이 없으면 None."""
     match = FINDINGS_RE.search(text)
     if not match:
         return None
-    count = sum(1 for line in match.group(1).splitlines() if STRICT_P1_RE.match(line))
+    count = sum(1 for line in match.group(1).splitlines() if strict_finding(line))
     prior = PRIOR_RE.search(text)
     if prior:
-        count += sum(1 for line in prior.group(1).splitlines() if STRICT_PRIOR_RE.match(line))
+        count += sum(1 for line in prior.group(1).splitlines() if STRICT_PRIOR_RE.match(clean_line(line)))
     return count
 
 

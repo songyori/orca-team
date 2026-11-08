@@ -225,6 +225,17 @@ class RunTaskTest(GateCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(read_test_args(self), [["src/a.ts"]])
 
+    def test_qa_report_commit_and_draft_do_not_block_quick(self):
+        self.commit("src/a.ts")
+        code_sha = self.git("rev-parse", "HEAD").strip()
+        self.commit("docs/qa/x.md", "# QA\n", "[T-001] docs: QA")
+        draft = self.root / "docs/qa/y.md"
+        draft.write_text("# 초안\n", encoding="utf-8")
+        proc = self.run_test("T-001")
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(read_test_args(self), [["src/a.ts"]])
+        self.assertEqual(self.record()["quick"]["head"], code_sha)
+
     def test_full_ignores_uncommitted_owned_files(self):
         self.commit("src/a.ts")
         (self.root / "src/a.ts").write_text("y\n", encoding="utf-8")

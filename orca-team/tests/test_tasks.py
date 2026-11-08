@@ -223,7 +223,7 @@ class TestBlockTest(TaskCase):
         for text in ("`.orchestration/bin/orch test T-001 --full`", "제품 코드는 고치지 않는다", "약하게",
                      "다시 돌리지 않는다"):
             self.assertIn(text, spec)
-        self.assertIn("고친 테스트(와 QA 리포트 초안)를 커밋한 뒤", spec)
+        self.assertIn("고친 테스트를 커밋한 뒤", spec)
         self.assertNotIn("worker_done 전에 `.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
 
     def test_other_roles_and_no_config_have_no_block(self):

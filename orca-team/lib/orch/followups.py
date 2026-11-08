@@ -13,12 +13,13 @@ SECTIONS = (("regressions", "회귀"), ("followups", "후속"), ("planning_gaps"
 # 없음·해당 없음으로 시작하고 뒤가 끝·공백·괄호·구두점인 항목은 빈 항목이다(예: `해당 없음(묶음 리뷰 아님)`).
 EMPTY_RE = re.compile(r"^\(?\*{0,2}(?:해당 ?없음|없음)\*{0,2}\)?(?:$|[\s(（).,;:!?·—–-])")
 ITEM_ID_RE = re.compile(r"^(r\d+-F\d+)\b")
+SOURCE_RE = re.compile(r"^출처: (T-\d{3,}|rest|final) followups\s*$")
 
 
 def is_empty(item: str) -> bool:
-    """`rN-Fk` id 가 붙은 항목은 빈 항목이 아니다. id 가 없을 때만 없음·해당 없음·해당없음·**없음** 을 빈 항목으로 본다."""
+    """없음·해당 없음·해당없음·**없음** 으로 시작하는 항목은 빈 항목이다.
+    id 검사는 동작을 바꾸지 않는다: EMPTY_RE 는 `^` 로 닫혀 있어 `rN-Fk` 로 시작하는 항목은 어차피 맞지 않는다(문서용으로 남긴다)."""
     return not ITEM_ID_RE.match(item) and bool(EMPTY_RE.match(item))
-SOURCE_RE = re.compile(r"^출처: (T-\d{3,}|rest|final) followups\s*$")
 
 
 def section_items(text: str, title: str) -> list[str]:
