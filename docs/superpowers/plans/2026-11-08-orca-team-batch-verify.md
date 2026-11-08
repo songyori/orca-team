@@ -2362,7 +2362,7 @@ full = "npx vitest run"
 - [ ] **Step 6: `roles/developer.md` 바꾸기** — "## 품질 기준" 첫 항목을 바꾼다.
 
 ```markdown
-- spec 의 Acceptance 를 실제로 실행해 확인하고 출력 원문을 리포트에 붙인다. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 테스트는 워커 spec 의 `## 테스트` 절대로 `orch test` 로 돌리고 전체 테스트는 돌리지 않는다.
+- spec 의 Acceptance 를 실제로 실행해 확인하고 출력 원문을 리포트에 붙인다. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 테스트는 워커 spec 의 `## 테스트` 절을 따라 `orch test` 로 돌리고 전체 테스트는 돌리지 않는다.
 ```
 
 - [ ] **Step 7: 통과 확인**

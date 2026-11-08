@@ -88,6 +88,23 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 - 플러그인을 업데이트한 뒤에는 `orca-team/templates/text-rules.md` 를 `.orchestration/text-rules.md` 로 다시 복사해야 새 규칙이 적용된다(scaffold 는 있는 파일을 덮어쓰지 않는다).
 - 설계: `docs/superpowers/specs/2026-11-05-orca-team-text-rules-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-05-orca-team-text-rules.md`.
 
+## 묶음 검증
+
+- 0.6.0 부터 테스트와 리뷰를 기능마다 무겁게 반복하지 않고 묶음으로 나눈다.
+- planner 가 `docs/planning/tasks.toml` 에 `[test]` 를 쓴다. `quick` 은 바뀐 파일과 관련된 테스트(`{files}` 자리에 파일 목록), `full` 은 전체 테스트다. 선택 키: `timeout_min`(기본 30), `ok_exit`(기본 `[0]`), `exclusive`(기본 false. 테스트가 DB·포트를 같이 쓰면 true).
+- 묶음: 함께 끝내는 developer 태스크 3–6개와 그것들에 의존하는 tester 태스크 하나. tester 태스크가 묶음 통합 테스트를 쓰고 `orch test T-xxx --full` 로 전체 테스트를 한 번 돌린다. 다음 묶음 구현은 앞 묶음 테스트를 기다리지 않는다.
+- developer·tester 워커는 worker_done 전에 `orch test T-xxx`(quick)를 통과시킨다. `orch review` 는 Codex 리뷰 전에 quick 을 확인하고(같은 코드면 워커 결과를 다시 쓴다), 실패하면 Codex 없이 REQUEST_CHANGES 를 낸다. 리뷰어는 전체 테스트를 다시 돌리지 않는다.
+- 리뷰 등급: P1(수용 기준 미충족, 동작 버그, 보안, 데이터 손실, 계약 위반, 테스트 실패)만 승인을 막는다. P2·P3 는 `## 후속`, spec 에 없는 요구는 `## 기획 누락` 에 적는다. 라운드 2부터는 이전 지적과 새 커밋만 본다. orch 는 `## 지적 사항` 의 P1 수로 판정을 맞춘다. 수정 워커는 P1 만 고친다.
+- 코디네이터는 묶음 tester 태스크를 accept 하면 `orch followups T-xxx` 로 회귀·후속·기획 누락을 모아 회귀 수정 태스크, 묶음 정리 태스크, 사용자 질문을 만든다. 모든 태스크가 끝나면 `orch test --full` 을 한 번 더 돌린 뒤 완료를 알린다.
+- `[test]` 가 없는 프로젝트는 테스트 관문과 묶음 검사가 꺼진다. 리뷰 등급·라운드 규칙은 모든 프로젝트에 적용된다.
+- 0.5.x 로 만든 프로젝트에 적용하기:
+  1. 플러그인을 0.6.0 으로 업데이트한다.
+  2. 프로젝트 루트에서 `.orchestration/bin/orch upgrade` 를 실행한다. 복사된 규칙 파일(`coordinator.md`, `roles/*.md`, `design-rules.md`, `text-rules.md`, `bin/orch`)을 새 템플릿으로 바꾸고 커밋하지 않는다. `config.toml` 은 건드리지 않고, 커밋 안 된 변경이 있는 파일은 건너뛴다.
+  3. `git diff -- .orchestration` 으로 확인하고 커밋한다.
+  4. `docs/planning/tasks.toml` 에 `[test]` 를 넣고 커밋한다. 직접 쓰거나 메인에 "테스트 명령을 정해 달라"고 증분 기획을 요청한다.
+  5. 코디네이터 터미널을 닫고 메인에서 `/orca-team:up` 으로 다시 띄운다.
+- 설계: `docs/superpowers/specs/2026-11-08-orca-team-batch-verify-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-08-orca-team-batch-verify.md`.
+
 ## 보안 주의
 
 Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박스·승인 없음, `--bypass-hook-trust`: 저장소 Codex 훅 자동 신뢰)로 돈다. `/orca-team:image` 도 같은 래퍼로 샌드박스·승인 없이 돈다(`--profile image`, 훅 신뢰 자동 없음). Codex 는 워커가 만든 코드를 읽고 그 테스트·빌드를 실행하며, 사용자의 자격 증명(셸 환경 변수, git·클라우드 인증, Codex 로그인)을 그대로 물려받는다. 신뢰할 수 있는 저장소에서만 쓴다.

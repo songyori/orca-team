@@ -5,7 +5,7 @@ import os
 import subprocess
 from pathlib import Path
 
-VERSION = "0.5.2"
+VERSION = "0.6.0"
 PLUGIN_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATES = PLUGIN_ROOT / "templates"
 
