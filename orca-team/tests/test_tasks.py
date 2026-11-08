@@ -212,6 +212,8 @@ class TestBlockTest(TaskCase):
         order = ("작업을 `[T-001]` 커밋으로 먼저 커밋한다", "`.orchestration/bin/orch test T-001` 를 돌린다",
                  "리포트를 따로 커밋한다")
         self.assertEqual([spec.index(text) for text in order], sorted(spec.index(text) for text in order))
+        self.assertIn("테스트가 소유 경로에 만드는 산출물(`__pycache__`, 스냅숏 등)은 `.gitignore` 에 넣는다. "
+                      "무시되지 않은 새 파일이 있으면 orch test 가 거부한다", spec)
         self.assertLess(spec.index("## 테스트"), spec.index("## 작업 규칙"))
         self.assertNotIn("\n\n\n", spec)
         self.assertNotIn("{test_block}", spec)
@@ -221,6 +223,7 @@ class TestBlockTest(TaskCase):
         for text in ("`.orchestration/bin/orch test T-001 --full`", "제품 코드는 고치지 않는다", "약하게",
                      "다시 돌리지 않는다"):
             self.assertIn(text, spec)
+        self.assertIn("고친 테스트(와 QA 리포트 초안)를 커밋한 뒤", spec)
         self.assertNotIn("worker_done 전에 `.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
 
     def test_other_roles_and_no_config_have_no_block(self):

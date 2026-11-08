@@ -254,10 +254,13 @@ def round_section(doc: TaskDoc, rnd: int, commits: list[tuple[str, str]], histor
         "prev_head": head_text, "new_commits": new_commits}) + "\n"
 
 
+STRICT_P1_RE = re.compile(r"^\s*(?:[-*]|\d+\.|#+)?\s*r\d+-F\d+\s*\[P1\]")
+STRICT_PRIOR_RE = re.compile(r"^\s*(?:[-*]|\d+\.)?\s*r\d+-F\d+\s*[:：]\s*미해결")
+
+
 def p1_count(text: str) -> int | None:
-    """막는 지적 수: `## 지적 사항` 절에서 `[P1]` 이 든 줄(`- `·`* `·`1.`·`###` 등 줄 모양과 상관없다)과
-    `## 이전 지적 확인` 절에서 `미해결` 이 든 줄. RC→APPROVE 로 잘못 바꾸는 쪽이 위험해서 넓게 센다.
-    `## 지적 사항` 절이 없으면(이전 형식) None."""
+    """넓은 셈(RC→APPROVE 로 내리는 것을 막는 데만): `## 지적 사항` 절에서 `[P1]` 이 든 줄(줄 모양과 상관없다)과
+    `## 이전 지적 확인` 절에서 `미해결` 이 든 줄. `## 지적 사항` 절이 없으면(이전 형식) None."""
     match = FINDINGS_RE.search(text)
     if not match:
         return None
@@ -268,15 +271,35 @@ def p1_count(text: str) -> int | None:
     return count
 
 
+def strict_p1_count(text: str) -> int | None:
+    """엄격한 셈(APPROVE→RC 로 올리는 데만): `## 지적 사항` 에서 글머리를 뗀 줄이 `rN-Fk [P1]` 로 시작하는 줄과
+    `## 이전 지적 확인` 에서 `rN-Fk: 미해결` 모양의 줄. 문장 속 `[P1]`·`미해결` 은 세지 않는다. 절이 없으면 None."""
+    match = FINDINGS_RE.search(text)
+    if not match:
+        return None
+    count = sum(1 for line in match.group(1).splitlines() if STRICT_P1_RE.match(line))
+    prior = PRIOR_RE.search(text)
+    if prior:
+        count += sum(1 for line in prior.group(1).splitlines() if STRICT_PRIOR_RE.match(line))
+    return count
+
+
 def align_verdict(path: Path, verdict: str) -> str | None:
-    """막는 지적(p1_count)이 있으면 REQUEST_CHANGES, 없으면 APPROVE 로 판정을 맞춘다. 바꿨으면 "원래→바꾼 것", 아니면 None."""
+    """판정을 맞춘다. RC 인데 넓은 셈이 0 이면 APPROVE 로, APPROVE 인데 엄격한 셈이 있으면 RC 로 바꾼다. 그 밖에는 그대로 둔다.
+    바꿨으면 "원래→바꾼 것", 아니면 None."""
     text = path.read_text(encoding="utf-8")
-    count = p1_count(text)
-    if count is None:
+    broad = p1_count(text)
+    if broad is None:
         return None
-    want = "REQUEST_CHANGES" if count else "APPROVE"
-    if want == verdict:
-        return None
+    if verdict == "REQUEST_CHANGES":
+        if broad:
+            return None
+        want, count = "APPROVE", 0
+    else:
+        count = strict_p1_count(text) or 0
+        if not count:
+            return None
+        want = "REQUEST_CHANGES"
     last = list(VERDICT_RE.finditer(text))[-1]
     note = (f"> orch 판정 맞추기: 막는 지적(`## 지적 사항` 의 P1 줄, `## 이전 지적 확인` 의 미해결 줄) {count}개라 "
             f"{want} 로 바꿨다(원래 {verdict}).\n\n")

@@ -59,6 +59,13 @@ src/
 
 
 class SectionItemsTest(unittest.TestCase):
+    def test_id_item_is_never_empty(self):
+        text = ("## 후속\n- r1-F1 없음 상태 화면이 깨진다 — T-002. 근거.\n- r1-F2 해당 없음 문구 — T-002. 근거.\n"
+                "- r1-F3 없음. 근거가 이어진다 — T-002.\n- 해당없음\n- **없음**\n- 해당없음.\n- 해당없음(사유)\n\nVERDICT: APPROVE\n")
+        self.assertEqual(followups.section_items(text, "후속"),
+                         ["r1-F1 없음 상태 화면이 깨진다 — T-002. 근거.", "r1-F2 해당 없음 문구 — T-002. 근거.",
+                          "r1-F3 없음. 근거가 이어진다 — T-002."])
+
     def test_none_with_reason_is_empty(self):
         text = ("## 회귀\n- 해당 없음(묶음 리뷰 아님)\n- 해당 없음 — 묶음 리뷰가 아니다\n- (없음)\n- 없음.\n- 없음\n"
                 "- 해당 없음\n- 없음표 정리 — T-002. 근거.\n- r1-F4 tests/a.test.ts — T-002. 근거.\n\nVERDICT: APPROVE\n")

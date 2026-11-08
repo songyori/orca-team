@@ -654,6 +654,13 @@ class ReviewGroupTest(GateReviewCase):
         self.assertIn("- full: 통과", self.prompt())
         self.assertNotIn("출력 끝:", self.prompt())
 
+    def test_full_record_for_older_head_is_rerun(self):
+        self.orch("test", "T-002", "--full")
+        self.commit_work("tests/grp/b.test.ts", "[T-002] test: 더 쓴 통합 테스트")
+        out = json.loads(self.review_group().stdout)
+        self.assertEqual(out["tests"], {"full": "passed"})
+        self.assertEqual(read_test_args(self), [["--all"], ["--all"]])
+
     def test_full_failure_never_auto_rejects(self):
         set_test_modes(self, "fail")
         self.modes("changes")
@@ -771,6 +778,38 @@ class ReviewRoundTest(ReviewCase):
         self.assertEqual(out["verdict"], "REQUEST_CHANGES")
         self.assertNotIn("verdict_adjusted", out)
 
+    def assert_approve_stays(self, findings, prior):
+        self.commit_work()
+        self.body(review_body(findings, "APPROVE", rnd=2, prior=prior))
+        self.modes("body")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["verdict"], "APPROVE")
+        self.assertNotIn("verdict_adjusted", out)
+
+    def test_approve_stays_with_no_unresolved_phrase(self):
+        self.assert_approve_stays("- 없음", "- r1-F1: 해결\n- 미해결 지적 없음")
+
+    def test_approve_stays_with_unresolved_word_inside_resolved(self):
+        self.assert_approve_stays("- 없음", "- r1-F1: 해결 (r1 에서 미해결이던 입력 검증을 고쳤다)")
+
+    def test_approve_stays_with_unresolved_p2(self):
+        self.assert_approve_stays("- 없음", "- r1-F2 [P2]: 미해결 — P2 라 막지 않는다")
+
+    def test_approve_stays_when_findings_mention_old_p1(self):
+        self.assert_approve_stays("- 없음. r1 의 [P1] 은 모두 해결됐다", "- r1-F1: 해결")
+
+    def test_strict_count_only_matches_id_shaped_lines(self):
+        strict = review.strict_p1_count
+        for line in ("- r1-F1 [P1] a", "* r1-F1 [P1] a", "1. r1-F1 [P1] a", "### r1-F1 [P1] a", "  - r1-F1 [P1] a"):
+            self.assertEqual(strict(review_body(line, "APPROVE")), 1, line)
+        self.assertEqual(strict(review_body("- 없음. r1 의 [P1] 은 해결됐다", "APPROVE")), 0)
+        self.assertEqual(strict(review_body("- r2-F1 [P2] r1-F1 [P1] 와 같은 문제", "APPROVE")), 0)
+        for prior in ("- r1-F1: 미해결 — 근거", "* r1-F1：미해결", "1. r1-F1: 미해결"):
+            self.assertEqual(strict(review_body("- 없음", "APPROVE", prior=prior)), 1, prior)
+        for prior in ("- r1-F1: 해결\n- 미해결 지적 없음", "- r1-F1: 해결 (미해결이던 것을 고쳤다)"):
+            self.assertEqual(strict(review_body("- 없음", "APPROVE", prior=prior)), 0, prior)
+        self.assertIsNone(strict("# 리뷰\n## 이전 지적 확인\n- r1-F1: 미해결\n\nVERDICT: APPROVE\n"))
+
     def test_p1_count_ignores_line_shape_and_counts_unresolved(self):
         for line in ("- r1-F1 [P1] a", "* r1-F1 [P1] a", "1. r1-F1 [P1] a", "### r1-F1 [P1] a", "  - r1-F1 [P1] a"):
             with self.subTest(line=line):
@@ -794,7 +833,7 @@ class ReviewRoundTest(ReviewCase):
         self.review()
         self.orch("fix", "T-001")
         spec = self.arg(self.last_start(), "--spec")
-        self.assertIn("막는 지적(`## 지적 사항` 의 P1, orch 사전 검사 사유)을 모두 고친다", spec)
+        self.assertIn("막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, orch 사전 검사 사유)을 모두 고친다", spec)
         self.assertIn("`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다", spec)
 
 

@@ -55,7 +55,8 @@ class NoConfigTest(TaskCase):
         self.orch("start", "T-001")
         proc = self.orch("test", "T-001", check=False)
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("[test] 가 없다", proc.stderr)
+        self.assertIn("커밋된 HEAD 의 docs/planning/tasks.toml 에 [test] 가 없다", proc.stderr)
+        self.assertIn("작업 트리에만 있으면 커밋한다", proc.stderr)
 
     def test_needs_id_or_full(self):
         proc = self.orch("test", check=False)
@@ -70,7 +71,7 @@ class NoConfigTest(TaskCase):
         self.orch("start", "T-001")
         proc = self.orch("test", "T-001", check=False)
         self.assertEqual(proc.returncode, 2)
-        self.assertIn("[test] 가 없다", proc.stderr)
+        self.assertIn("커밋된 HEAD 의 docs/planning/tasks.toml 에 [test] 가 없다", proc.stderr)
         self.assertEqual(read_test_args(self), [])
 
     def test_repo_without_commits_has_no_gate(self):

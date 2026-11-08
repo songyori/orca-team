@@ -68,7 +68,7 @@
 ## 마무리
 모든 태스크가 done 또는 dropped 면 다음을 차례로 한다.
 1. `orch followups --rest` 로 묶음 밖 developer 태스크의 후속을 "묶음 후속"과 같은 기준으로 처리한다. 만드는 태스크의 `## Change` 첫 줄은 `출처: rest followups` 다. 이 단계는 한 번만 한다. `.orchestration/tasks/` 에 `출처: rest followups` 태스크가 이미 있으면 건너뛴다. 만든 태스크가 있으면 그것들이 끝난 뒤 이 절을 다시 시작한다.
-2. `docs/planning/tasks.toml` 에 `[test]` 가 있으면 `orch test --full` 을 Bash `run_in_background: true` 로 돌린다. exit 1 이면 출력의 `tail` 과 `log` 로 원인 태스크를 찾아 "묶음 후속"의 회귀 수정 태스크처럼 만든다(`## Change` 첫 줄 `출처: final followups`). 그 태스크들이 done 이 되면 다시 `orch test --full`. exit 2 면 `[test]` 를 고치는 기획 태스크를 만들고(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -`), 고친 뒤 `orch test --full` 을 다시 돌린다. 테스트 잠금 대기 초과면 잠시 뒤 다시 돌린다.
+2. 커밋된 `docs/planning/tasks.toml` 에 `[test]` 가 있으면 `orch test --full` 을 Bash `run_in_background: true` 로 돌린다. exit 1 이면 출력의 `tail` 과 `log` 로 원인 태스크를 찾아 "묶음 후속"의 회귀 수정 태스크처럼 만든다(`## Change` 첫 줄 `출처: final followups`). 그 태스크들이 done 이 되면 다시 `orch test --full`. 테스트 잠금 대기 초과면 잠시 뒤 다시 돌린다. 그 밖의 exit 2 면 `[test]` 를 고치는 기획 태스크를 만들고(사용자가 직접 넣은 `[test]` 면 `orch notify --type question --json -`), 고친 뒤 `orch test --full` 을 다시 돌린다.
 3. 통과하면(또는 `[test]` 가 없으면) `orch notify --type done "<결과 요약, 바뀐 주요 파일, 태스크별 리뷰 판정과 라운드 수, 마지막 full 결과>"`.
 
 ## 디자인 일괄 승인

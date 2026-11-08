@@ -255,7 +255,9 @@ class TemplateTest(unittest.TestCase):
                     "`[test]` 명령을 실행할 수 없다", "묶음 테스트(tester) 태스크였으면",
                     "같은 테스트 실패로 orch 사전 검사(source orch) 반려가 두 라운드 이어지면 `orch fix` 하지 않고",
                     "`[test]` 검증 실패", "`docs/planning/tasks.toml` 읽기 실패", "테스트 잠금(exclusive)",
-                    "고친 뒤 `orch test --full` 을 다시 돌린다"):
+                    "고친 뒤 `orch test --full` 을 다시 돌린다",
+                    "커밋된 `docs/planning/tasks.toml` 에 `[test]` 가 있으면",
+                    "테스트 잠금 대기 초과면 잠시 뒤 다시 돌린다. 그 밖의 exit 2 면"):
             self.assertIn(key, coordinator)
         self.assertNotIn("exit 2 면 위 exit≠0 처리를 따른다", coordinator)
         planner = (T / "roles/planner.md").read_text(encoding="utf-8")

@@ -18,7 +18,7 @@
 
 ## 검증
 
-- 테스트: `bash orca-team/tests/run.sh`(657개, 2026-11-08 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
+- 테스트: `bash orca-team/tests/run.sh`(664개, 2026-11-08 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
 - 실환경 확인: 0.3.0, 0.4.0, 0.5.0 을 실제 Orca·Codex·Claude Design 으로 한 바퀴씩 돌렸다. 0.5.1 은 코디네이터 부활만, 0.5.2 는 Codex 디자인 리뷰만 실제로 확인했다. 결과는 0.3.0·0.4.0 설계 문서 §12, 0.5.0 설계 문서 §14, 0.5.1 설계 문서 §13, 0.5.2 설계 문서 §13.1 에 있다.
 - 실환경 확인 방법:
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.
@@ -40,6 +40,7 @@
 
 ## 알려진 사소한 문제 (고치지 않음)
 
+- 0.6.0 리뷰의 추적 안 된 소유 파일 검사는 quick 을 다시 돌릴 때만 한다(같은 head 의 통과 기록을 다시 쓰면 건너뛴다). 추적 중인 파일의 미커밋 변경 검사는 항상 한다.
 - 자동 검사(`lib/orch/lint.py`): U+FE0F 가 두 번 겹치면 보이지 않는 발췌로 보고된다. 여러 줄에 걸친 Tailwind className 은 검사하지 않는다.
 - `tests/test_lint.py`: 그라디언트 줄 번호 테스트가 `str.count` 호출 0회를 요구한다. 선형 비용보다 엄격하다.
 - 코디네이터가 `orch notify --type question` 으로 올린 질문은 직무 정보가 없어 header 기본값이 "기획"이다.

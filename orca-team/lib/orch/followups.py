@@ -11,8 +11,13 @@ from .testgate import DEVELOPER_ROLE, TESTER_ROLE
 
 SECTIONS = (("regressions", "회귀"), ("followups", "후속"), ("planning_gaps", "기획 누락"))
 # 없음·해당 없음으로 시작하고 뒤가 끝·공백·괄호·구두점인 항목은 빈 항목이다(예: `해당 없음(묶음 리뷰 아님)`).
-EMPTY_RE = re.compile(r"^\(?(?:해당 없음|없음)\)?(?:$|[\s(（).,;:!?·—–-])")
+EMPTY_RE = re.compile(r"^\(?\*{0,2}(?:해당 ?없음|없음)\*{0,2}\)?(?:$|[\s(（).,;:!?·—–-])")
 ITEM_ID_RE = re.compile(r"^(r\d+-F\d+)\b")
+
+
+def is_empty(item: str) -> bool:
+    """`rN-Fk` id 가 붙은 항목은 빈 항목이 아니다. id 가 없을 때만 없음·해당 없음·해당없음·**없음** 을 빈 항목으로 본다."""
+    return not ITEM_ID_RE.match(item) and bool(EMPTY_RE.match(item))
 SOURCE_RE = re.compile(r"^출처: (T-\d{3,}|rest|final) followups\s*$")
 
 
@@ -27,7 +32,7 @@ def section_items(text: str, title: str) -> list[str]:
             items.append(line[2:].strip())
         elif items and line[:1] in (" ", "\t") and line.strip():
             items[-1] += " " + line.strip()
-    return [item for item in items if item and not EMPTY_RE.match(item)]
+    return [item for item in items if item and not is_empty(item)]
 
 
 def latest_review(p: Project, task_id: str) -> tuple[int, Path] | None:

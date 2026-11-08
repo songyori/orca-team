@@ -99,7 +99,7 @@ def load_config(p: Project) -> GateConfig | None:
 def require_config(p: Project) -> GateConfig:
     cfg = load_config(p)
     if cfg is None:
-        raise OrchError(f"{PLAN_FILE} 에 [test] 가 없다. 테스트 관문이 꺼져 있다", 2)
+        raise OrchError(f"커밋된 HEAD 의 {PLAN_FILE} 에 [test] 가 없다(작업 트리에만 있으면 커밋한다). 테스트 관문이 꺼져 있다", 2)
     return cfg
 
 
@@ -351,14 +351,14 @@ def gate_results(p: Project, task_id: str, role: str, rnd: int, head: str | None
     """리뷰 관문 결과. [test] 가 없거나 관문 직무가 아니면 None. 실행 불가면 exit 2.
 
     developer 는 {"quick": 기록}. 같은 head(code_head)의 통과 기록을 다시 쓴다.
-    tester 는 {"full": 기록}. 같은 라운드 기록을 다시 쓰고, 없으면 한 번 돌린다. quick 은 돌리지 않는다. 묶음 통합 테스트는
+    tester 는 {"full": 기록}. 같은 라운드·같은 head(code_head)의 기록을 다시 쓰고, 없으면 한 번 돌린다. quick 은 돌리지 않는다. 묶음 통합 테스트는
     제품 회귀를 잡는 것이 일이라 테스트 결과로 자동 반려하지 않고, 묶음 리뷰(Codex)가 실패를 테스트 잘못과 제품 회귀로 나눈다."""
     if role not in GATED_ROLES or load_config(p) is None:
         return None
     records = load_records(p, task_id)
     if role == TESTER_ROLE:
         full = records.get("full")
-        if not (isinstance(full, dict) and full.get("round") == rnd):
+        if not (isinstance(full, dict) and full.get("round") == rnd and full.get("head") == head):
             full = run_task(p, task_id, "full")
         return {"full": full}
     quick = records.get("quick")
