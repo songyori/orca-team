@@ -8,13 +8,14 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import orca, plan
+from . import orca, plan, testgate
 from .config import Config
 from .designdiff import design_diff_lint
 from .globs import matches_any
 from .lint import DESIGN_ROLES, cap, design_findings
 from .paths import TEMPLATES, OrchError, Project, codex_runner
-from .tasks import ACTIVE, TaskDoc, all_states, load_doc, must_state, owns_of, review_pid, save_state
+from .tasks import (ACTIVE, TaskDoc, all_states, deps_of, load_doc, load_state, must_state, owns_of, review_pid,
+                    save_state)
 from .textlint import RULES_FILE, text_lint, text_targets
 from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
 
@@ -127,6 +128,78 @@ def bullets(found: list[str]) -> str:
     return "\n".join(f"- {item}" for item in found) if found else "- 없음"
 
 
+VERIFY_DEFAULT = "리포트의 검증 출력을 그대로 믿지 말고 가능하면 직접 실행한다."
+VERIFY_GATED = ("테스트는 아래 orch 테스트 결과를 쓴다. 전체 테스트를 돌리지 않고, 결과가 의심되면 그 테스트 하나만 "
+                "직접 돌린다. 빌드·화면 확인은 직접 해도 된다.")
+STATUS_TEXT = {"passed": "통과", "flaky": "통과(불안정 의심: 첫 실행은 실패했고 다시 실행해 통과했다)",
+               "skipped": "돌리지 않음(관련 파일 없음)", "failed": "실패", "timeout": "시간 초과"}
+DIRTY_SHOWN = 20
+GROUP_FILES_SHOWN = 15
+
+
+def describe(entry: dict, kind: str) -> list[str]:
+    """테스트 기록 한 건을 프롬프트·리뷰 파일용 줄로."""
+    head = f"{kind}: {STATUS_TEXT.get(entry.get('status'), entry.get('status'))}"
+    if entry.get("command"):
+        head += f" ({entry.get('seconds')}초, exit {entry.get('exit')})"
+    lines = [head]
+    if entry.get("command"):
+        lines.append(f"{kind} 명령: `{entry['command']}`")
+    if entry.get("log"):
+        lines.append(f"{kind} 로그: {entry['log']}")
+    first = entry.get("first")
+    if isinstance(first, dict) and first.get("log"):
+        lines.append(f"{kind} 첫 실행 로그: {first['log']}")
+    dirty = entry.get("dirty") or []
+    if dirty:
+        more = f" 외 {len(dirty) - DIRTY_SHOWN}개" if len(dirty) > DIRTY_SHOWN else ""
+        lines.append("실행 때 커밋 안 된 다른 파일: " + ", ".join(dirty[:DIRTY_SHOWN]) + more)
+    return lines
+
+
+def test_section(gate: dict | None) -> str:
+    """관문이 돌았으면 quick 결과 절(templates/review-tests.md). 다음 절과 사이의 빈 줄까지 붙인다."""
+    if not gate:
+        return ""
+    return render((TEMPLATES / "review-tests.md").read_text(encoding="utf-8"),
+                  {"test_lines": bullets(describe(gate["quick"], "quick"))}) + "\n"
+
+
+def group_rows(p: Project, doc: TaskDoc) -> list[str]:
+    rows = []
+    for dep in deps_of(doc):
+        st = load_state(p, dep) or {}
+        commits = task_commits(p.root, dep, st["base"]) if st.get("base") else []
+        files = changed_files(p.root, [sha for sha, _ in commits])
+        shown = ", ".join(files[:GROUP_FILES_SHOWN]) or "없음"
+        more = f" 외 {len(files) - GROUP_FILES_SHOWN}개" if len(files) > GROUP_FILES_SHOWN else ""
+        rows.append(f"{dep} [{st.get('role', '?')}] {st.get('title', '')} — 작업 커밋 {len(commits)}개, "
+                    f"바꾼 파일: {shown}{more}")
+    return rows
+
+
+def group_section(p: Project, doc: TaskDoc, gate: dict | None) -> str:
+    """묶음 테스트(tester) 리뷰 절(templates/review-group.md). full 결과가 없으면 빈 문자열."""
+    if not gate or "full" not in gate:
+        return ""
+    full = gate["full"]
+    failed = full.get("status") not in testgate.PASSED and full.get("tail")
+    tail = f"출력 끝:\n```\n{full['tail']}\n```\n" if failed else ""
+    st = load_state(p, doc.id) or {}
+    return render((TEMPLATES / "review-group.md").read_text(encoding="utf-8"), {
+        "group_key": st.get("plan_key") or doc.id, "group_tasks": bullets(group_rows(p, doc)),
+        "full_lines": bullets(describe(full, "full")), "full_tail": tail}) + "\n"
+
+
+def gate_failure(task_id: str, entry: dict) -> str:
+    """quick 이 통과하지 못했을 때 orch 사전 검사 리뷰 본문."""
+    lines = ["orch 테스트 관문: quick 이 통과하지 못했다.", "", *(f"- {line}" for line in describe(entry, "quick"))]
+    if entry.get("tail"):
+        lines += ["", "출력 끝:", "```", entry["tail"], "```"]
+    lines += ["", f"고친 뒤 `.orchestration/bin/orch test {task_id}` 로 다시 확인한다."]
+    return "\n".join(lines)
+
+
 def design_section(p: Project, cfg: Config, role: str, files: list[str], shas: list[str]) -> str:
     """디자인·UI 직무 리뷰에 넣는 기준과 orch 자동 검사 결과(templates/review-design.md). 자동 검사는 태스크 커밋 diff
     검사(designdiff.design_diff_lint) 다음에 바뀐 파일 내용 검사(lint.design_findings)를 이어 붙여 50건으로 자른다.
@@ -149,16 +222,20 @@ def text_section(p: Project, files: list[str], shas: list[str]) -> str:
 
 
 def compose_prompt(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: str,
-                   commits: list[tuple[str, str]], files: list[str]) -> str:
+                   commits: list[tuple[str, str]], files: list[str], gate: dict | None = None) -> str:
     prior = [f"docs/reviews/{doc.id}/r{n}.md" for n in range(1, rnd)
              if (p.root / f"docs/reviews/{doc.id}/r{n}.md").is_file()]
+    shas = [sha for sha, _ in commits]
     return render((TEMPLATES / "review-prompt.md").read_text(encoding="utf-8"), {
         "task_id": doc.id, "round": rnd, "role": doc.role, "role_title": cfg.title(doc.role), "title": doc.title,
         "review_path": review_rel, "prior_reviews": ", ".join(prior) or "없음",
         "commits": "\n".join(f"- {sha[:10]} {subject}" for sha, subject in commits),
         "files": "\n".join(f"- {f}" for f in files),
-        "design_section": design_section(p, cfg, doc.role, files, [sha for sha, _ in commits]),
-        "text_section": text_section(p, files, [sha for sha, _ in commits])})
+        "verify_rule": VERIFY_GATED if gate else VERIFY_DEFAULT,
+        "test_section": test_section(gate),
+        "group_section": group_section(p, doc, gate),
+        "design_section": design_section(p, cfg, doc.role, files, shas),
+        "text_section": text_section(p, files, shas)})
 
 
 def review_exclusions(p: Project, task_id: str) -> list[str]:
@@ -277,6 +354,7 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
     st["status"] = "reviewing"
     save_state(p, st)
     untracked: list[str] = []
+    gate = None
     try:
         commits = task_commits(p.root, task_id, st["base"])
         files = changed_files(p.root, [sha for sha, _ in commits])
@@ -299,8 +377,12 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
                 reason = f"`{plan.PLAN_FILE}` 가 orch plan apply 검증을 통과하지 못한다:\n{problem}"
                 verdict, source = auto_review(p, review_rel, task_id, rnd, reason), "orch"
             else:
-                prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files)
-                (verdict, untracked), source = codex_review(p, cfg, doc, rnd, review_rel, prompt), "codex"
+                gate = testgate.gate_results(p, task_id, doc.role, rnd, testgate.code_head(p, task_id, commits))
+                if gate and gate["quick"]["status"] not in testgate.PASSED:
+                    verdict, source = auto_review(p, review_rel, task_id, rnd, gate_failure(task_id, gate["quick"])), "orch"
+                else:
+                    prompt = compose_prompt(p, cfg, doc, rnd, review_rel, commits, files, gate)
+                    (verdict, untracked), source = codex_review(p, cfg, doc, rnd, review_rel, prompt), "codex"
         message = f"[{task_id}] review r{rnd}: {verdict}"
         if untracked:
             message += ("\n\n리뷰 중 새로 생긴 추적 안 된 파일(판정에는 영향 없음):\n"
@@ -316,6 +398,8 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
     st["status"] = "approved" if verdict == "APPROVE" else "changes"
     entry = {"stage": "review", "round": rnd, "at": now(), "verdict": verdict, "source": source}
     result = {"id": task_id, "round": rnd, "verdict": verdict, "source": source, "review": review_rel}
+    if gate:
+        entry["tests"] = result["tests"] = {kind: rec["status"] for kind, rec in gate.items()}
     if untracked:
         entry["untracked"] = result["untracked"] = untracked
     st["history"].append(entry)

@@ -4,7 +4,8 @@ import unittest
 from unittest import mock
 
 import helpers  # noqa: F401  (lib 경로를 sys.path 에 넣는다)
-from orch import review
+from helpers import fake_test_commands, read_test_args, set_test_modes, write_test_config
+from orch import review, testgate
 from orch.config import Config
 from orch.paths import Project
 from test_tasks import TaskCase
@@ -206,6 +207,15 @@ class ReviewTest(ReviewCase):
     def test_review_requires_working_state(self):
         self.set_state("T-001", status="approved")
         self.assertEqual(self.review(check=False).returncode, 2)
+
+    def test_without_test_config_prompt_keeps_run_it_yourself(self):
+        self.commit_work()
+        self.modes("approve")
+        self.review()
+        prompt = sorted((self.tmp / "cache/orca-team/runs").rglob("prompt.txt"))[-1].read_text(encoding="utf-8")
+        self.assertIn("리포트의 검증 출력을 그대로 믿지 말고 가능하면 직접 실행한다.", prompt)
+        self.assertNotIn("## orch 테스트 결과", prompt)
+        self.assertNotIn("{verify_rule}", prompt)
 
 
 class ReviewTamperTest(ReviewCase):
@@ -510,6 +520,128 @@ class ReviewTextSectionTest(ReviewCase):
             section = review.text_section(Project(self.root), ["src/login.tsx"], ["0" * 40])
         self.assertIn("- 자동 검사 실패: RuntimeError: git failed: fatal: bad", section)
         self.assertNotIn("\n\n\n", section)
+
+
+
+class GateReviewCase(ReviewCase):
+    """[test] 를 가짜 테스트 명령으로 둔 리뷰 프로젝트. 테스트 메서드가 없는 공통 부모다(상속한 테스트가 중복 실행되지 않게)."""
+
+    def setUp(self):
+        super().setUp()
+        self.quick, self.full = fake_test_commands(self)
+        write_test_config(self.root, self.quick, self.full)
+        self.git("add", "--", "docs/planning/tasks.toml")
+        self.git("commit", "-q", "-m", "chore: test 설정")
+
+    def prompt(self):
+        return sorted((self.tmp / "cache/orca-team/runs").rglob("prompt.txt"))[-1].read_text(encoding="utf-8")
+
+
+class ReviewGateTest(GateReviewCase):
+    """[test] 가 있으면 orch 가 Codex 전에 quick 을 확인한다."""
+
+    def test_quick_failure_skips_codex(self):
+        self.commit_work()
+        set_test_modes(self, "fail", "fail")
+        out = json.loads(self.review().stdout)
+        self.assertEqual((out["verdict"], out["source"], out["tests"]), ("REQUEST_CHANGES", "orch", {"quick": "failed"}))
+        self.assertEqual(self.runner_calls(), [])
+        review = (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
+        for text in ("quick: 실패", "FAIL tests/a.test.ts", "`.orchestration/bin/orch test T-001`"):
+            self.assertIn(text, review)
+        self.assertEqual(read_test_args(self), [["src/login.ts"], ["src/login.ts"]])
+        self.assertEqual(self.state("T-001")["status"], "changes")
+
+    def test_quick_pass_goes_to_codex_with_results(self):
+        self.commit_work()
+        out = json.loads(self.review().stdout)
+        self.assertEqual((out["verdict"], out["source"], out["tests"]), ("APPROVE", "codex", {"quick": "passed"}))
+        prompt = self.prompt()
+        for text in ("## orch 테스트 결과", "- quick: 통과", "전체 테스트를 돌리지 않고"):
+            self.assertIn(text, prompt)
+        for text in ("가능하면 직접 실행", "{test_section}", "{group_section}", "## 묶음 리뷰"):
+            self.assertNotIn(text, prompt)
+        self.assertNotIn("\n\n\n", prompt)
+
+    def test_flaky_is_noted(self):
+        self.commit_work()
+        set_test_modes(self, "fail", "pass")
+        out = json.loads(self.review().stdout)
+        self.assertEqual(out["source"], "codex")
+        self.assertIn("불안정 의심", self.prompt())
+        self.assertIn("quick 첫 실행 로그:", self.prompt())
+
+    def test_passing_record_for_same_code_is_reused(self):
+        self.commit_work()
+        self.orch("test", "T-001")
+        self.commit_work("docs/tasks/T-001/report.md", "[T-001] docs: 리포트")
+        self.review()
+        self.assertEqual(len(read_test_args(self)), 1)
+
+    def test_changed_code_reruns_quick(self):
+        self.commit_work()
+        self.orch("test", "T-001")
+        self.commit_work("src/b.ts", "[T-001] feat: 더하기")
+        self.review()
+        self.assertEqual(read_test_args(self), [["src/login.ts"], ["src/b.ts", "src/login.ts"]])
+
+    def test_unrunnable_stops_review_without_round(self):
+        self.commit_work()
+        set_test_modes(self, "missing")
+        proc = self.review(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("[test] 명령을 실행할 수 없다", proc.stderr)
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 1))
+        self.assertNotIn("[T-001] review", self.git("log", "--format=%s"))
+        self.assertEqual(self.runner_calls(), [])
+
+    def test_non_gated_role_has_no_gate(self):
+        self.assertIsNone(testgate.gate_results(Project(self.root), "T-001", "designer", 1, None))
+
+
+class ReviewGroupTest(GateReviewCase):
+    """T-001(developer, done)과 그것에 의존하는 묶음 테스트 T-002(tester)."""
+
+    def setUp(self):
+        super().setUp()
+        self.commit_work()
+        self.set_state("T-001", status="done")
+        self.write_spec("T-002", role="tester", title="묶음 테스트",
+                        extra="owns: tests/grp/**, docs/qa/grp.md\ndepends_on: T-001\n")
+        self.git("add", "--", ".orchestration/tasks/T-002.md")
+        self.git("commit", "-q", "-m", "[T-002] spec: 묶음 테스트")
+        self.orch("start", "T-002")
+        self.commit_work("tests/grp/a.test.ts", "[T-002] test: 묶음 통합 테스트")
+
+    def review_group(self, check=True):
+        return self.orch("review", "T-002", check=check)
+
+    def test_tester_review_runs_full_and_adds_group_section(self):
+        set_test_modes(self, "pass", "fail")
+        out = json.loads(self.review_group().stdout)
+        self.assertEqual((out["verdict"], out["source"]), ("APPROVE", "codex"))
+        self.assertEqual(out["tests"], {"quick": "passed", "full": "failed"})
+        self.assertEqual(read_test_args(self)[-2:], [["tests/grp/a.test.ts"], ["--all"]])
+        prompt = self.prompt()
+        for text in ("## 묶음 리뷰", "T-001 [developer] 로그인 — 작업 커밋 1개, 바꾼 파일: src/login.ts",
+                     "- full: 실패", "출력 끝:", "FAIL tests/a.test.ts", "제품 회귀"):
+            self.assertIn(text, prompt)
+        self.assertNotIn("\n\n\n", prompt)
+
+    def test_full_record_of_same_round_is_reused(self):
+        self.orch("test", "T-002", "--full")
+        out = json.loads(self.review_group().stdout)
+        self.assertEqual(out["tests"], {"quick": "passed", "full": "passed"})
+        self.assertEqual(read_test_args(self)[-2:], [["--all"], ["tests/grp/a.test.ts"]])
+        self.assertIn("- full: 통과", self.prompt())
+        self.assertNotIn("출력 끝:", self.prompt())
+
+    def test_quick_failure_skips_full(self):
+        set_test_modes(self, "fail", "fail")
+        out = json.loads(self.review_group().stdout)
+        self.assertEqual((out["verdict"], out["source"], out["tests"]), ("REQUEST_CHANGES", "orch", {"quick": "failed"}))
+        self.assertNotIn(["--all"], read_test_args(self))
 
 
 if __name__ == "__main__":

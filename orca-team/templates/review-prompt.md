@@ -25,12 +25,12 @@ REVIEW_FILE: {review_path}
 diff 는 `git show <sha>` 로 본다.
 
 ## 기준
-1. spec 의 Acceptance 를 실제로 충족하는가. 리포트의 검증 출력을 그대로 믿지 말고 가능하면 직접 실행한다.
+1. spec 의 Acceptance 를 실제로 충족하는가. {verify_rule}
 2. 직무 정의의 품질 기준과 도구 규칙(앱·웹 화면은 Claude Design 소스 `docs/design/`, 래스터 에셋은 `assets/`)을 지키는가.
 3. 버그, 보안, 회귀 위험.
 4. 수정 라운드면 이전 리뷰 지적이 모두 반영됐는가.
 
-{design_section}{text_section}## REVIEW_FILE 형식
+{test_section}{group_section}{design_section}{text_section}## REVIEW_FILE 형식
 # {task_id} r{round} 리뷰
 ## 판정 근거
 ## 지적 사항

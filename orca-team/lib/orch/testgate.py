@@ -312,3 +312,23 @@ def run_final(p: Project) -> dict:
 
 def exit_code(result: dict) -> int:
     return 0 if result["status"] in PASSED else 1
+
+
+def gate_results(p: Project, task_id: str, role: str, rnd: int, head: str | None) -> dict | None:
+    """리뷰 관문 결과 {"quick": 기록, "full": 기록}. [test] 가 없거나 관문 직무가 아니면 None. 실행 불가면 exit 2.
+
+    quick 은 같은 head(code_head)의 통과 기록을 다시 쓴다. full 은 tester 만, 같은 라운드 기록을 다시 쓴다.
+    quick 이 통과하지 못하면 full 은 돌리지 않는다(어차피 돌려보낸다)."""
+    if role not in GATED_ROLES or load_config(p) is None:
+        return None
+    records = load_records(p, task_id)
+    quick = records.get("quick")
+    if not (isinstance(quick, dict) and quick.get("head") == head and quick.get("status") in PASSED):
+        quick = run_task(p, task_id, "quick")
+    out = {"quick": quick}
+    if role == TESTER_ROLE and quick["status"] in PASSED:
+        full = records.get("full")
+        if not (isinstance(full, dict) and full.get("round") == rnd):
+            full = run_task(p, task_id, "full")
+        out["full"] = full
+    return out
