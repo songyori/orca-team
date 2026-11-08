@@ -256,6 +256,7 @@ def round_section(doc: TaskDoc, rnd: int, commits: list[tuple[str, str]], histor
 
 STRICT_ID_RE = re.compile(r"r\d+-F\d+")
 STRICT_GRADE_RE = re.compile(r"\[(P[123])\]", re.I)
+NONE_LINE_RE = re.compile(r"^\s*(?:[-+*#]+|\d+[.)])?[\s*#]*(?:해당\s*)?없음")
 STRICT_PRIOR_RE = re.compile(r"^\s*(?:[-+]|\d+[.)])?\s*r\d+-F\d+\s*(?:\[P1\]\s*)?[:：]\s*미해결", re.I)
 BROAD_P1_RE = re.compile(r"(?<![A-Za-z0-9])P1(?![A-Za-z0-9])", re.I)
 
@@ -266,8 +267,10 @@ def clean_line(line: str) -> str:
 
 
 def strict_finding(line: str) -> bool:
-    """`r\d+-F\d+` id 가 있고 첫 등급 표시가 [P1] 인 줄. 순서와 글머리는 상관없다."""
+    """`rN-Fk` 모양 id 가 있고 첫 등급 표시가 [P1] 인 줄. 순서와 글머리는 상관없다. 글머리 뒤가 `없음`·`해당 없음` 으로 시작하는 줄은 세지 않는다."""
     line = clean_line(line)
+    if NONE_LINE_RE.match(line):
+        return False
     grade = STRICT_GRADE_RE.search(line)
     return bool(STRICT_ID_RE.search(line) and grade and grade.group(1).upper() == "P1")
 

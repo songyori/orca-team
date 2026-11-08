@@ -793,6 +793,12 @@ class ReviewRoundTest(ReviewCase):
         self.assertEqual(out["verdict"], "APPROVE")
         self.assertNotIn("verdict_adjusted", out)
 
+    def test_approve_stays_with_none_finding_mentioning_p1(self):
+        self.assert_approve_stays("- 없음 (r1-F1 [P1] 은 고쳐졌다)", "- r1-F1: 해결")
+
+    def test_approve_stays_with_not_applicable_finding_mentioning_p1(self):
+        self.assert_approve_stays("1. **해당 없음** (r1-F1 [P1] 은 고쳐졌다)", "- r1-F1: 해결")
+
     def test_approve_stays_with_no_unresolved_phrase(self):
         self.assert_approve_stays("- 없음", "- r1-F1: 해결\n- 미해결 지적 없음")
 

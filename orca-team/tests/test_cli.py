@@ -1,7 +1,25 @@
 import json
 import unittest
+import warnings
 
 from helpers import PLUGIN, ProjectCase
+
+
+class CompileWarningTest(unittest.TestCase):
+    def test_every_python_source_compiles_without_warnings(self):
+        files = []
+        for sub in ("lib", "hooks", "templates", "tests"):
+            files += sorted(p for p in (PLUGIN / sub).rglob("*.py") if "__pycache__" not in p.parts)
+        for extra in ("tests/fakes/codex-run.sh", "tests/fakes/orca", "tests/fakes/codex", "bin/orch"):
+            path = PLUGIN / extra
+            if path.is_file() and "python" in path.read_text(encoding="utf-8").splitlines()[0]:
+                files.append(path)
+        self.assertGreater(len(files), 10)
+        for path in files:
+            with self.subTest(path=str(path.relative_to(PLUGIN))):
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    compile(path.read_text(encoding="utf-8"), str(path), "exec")
 
 
 class CliTest(ProjectCase):

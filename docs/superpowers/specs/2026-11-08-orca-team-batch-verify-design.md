@@ -82,14 +82,14 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 
 | 형식 | 하는 일 |
 |---|---|
-| `orch test T-xxx` | `quick`. `{files}` 는 그 태스크 작업 커밋(`task_commits`)이 바꾼 파일 중 작업 트리에 있는 것이다. `docs/tasks/T-xxx/` 는 뺀다. 각 경로를 셸 인용해 공백으로 잇는다 |
+| `orch test T-xxx` | `quick`. `{files}` 는 그 태스크 작업 커밋(`task_commits`)이 바꾼 파일 중 작업 트리에 있는 것이다. `docs/tasks/T-xxx/` 와 `docs/qa/` 는 뺀다. 각 경로를 셸 인용해 공백으로 잇는다 |
 | `orch test T-xxx --full` | `full` |
 | `orch test --full` | 태스크 없이 `full`(마지막 확인용) |
 
 - 프로젝트 루트에서 `/bin/sh -c` 로 실행한다. 코디네이터·워커 누구나 실행할 수 있다(코디네이터 확인을 하지 않는다).
 - `quick` 은 커밋된 변경만 본다. 커밋 전에 돌린 quick 이 통과로 보이지 않게 다음 경우는 실행하지 않고 exit 2 로 끝낸다.
   - 작업 커밋이 하나도 없다: "아직 `[T-xxx]` 작업 커밋이 없다. 작업을 먼저 커밋한 뒤 orch test 를 돌린다(quick 은 커밋된 변경만 본다)".
-  - 소유 경로(리포트 경로 `docs/tasks/T-xxx/` 는 뺀다)에 커밋하지 않은 추적 파일 변경이나 추적되지 않은 새 파일이 있다. 오류 문구에 그 파일 목록을 적는다. 리뷰 관문이 quick 을 돌릴 때도 같다.
+  - 소유 경로(리포트 경로 `docs/tasks/T-xxx/` 와 QA 리포트 경로 `docs/qa/` 는 뺀다)에 커밋하지 않은 추적 파일 변경이나 추적되지 않은 새 파일이 있다. 오류 문구에 그 파일 목록을 적는다. 리뷰 관문이 quick 을 돌릴 때도 같다.
 - 리포트만 바꾼 커밋뿐이라 `quick` 의 대상 파일이 없으면 실행하지 않고 `skipped` 로 끝낸다(통과로 본다).
 - `quick` 이 실패하면 바로 한 번 더 돌린다. 두 번째에 통과하면 `flaky` 다(통과로 보고 리뷰에 "불안정 의심"을 적는다). `full` 은 다시 돌리지 않는다.
 - 종료 코드가 `ok_exit` 에 있으면 통과다. `timeout_min` 을 넘기면 프로세스 그룹을 끝내고 `timeout`(실패)이다. 그룹에 SIGTERM 을 보내고 5초까지 기다린 뒤, 남았든 아니든 SIGKILL 을 보낸다(SIGTERM 을 무시하는 브라우저·e2e 도우미가 남지 않게).
@@ -100,7 +100,7 @@ exclusive = false     # 선택, 기본 false. true 면 테스트 실행을 한 �
 ### 4.3 결과 기록
 
 - 태스크 결과는 `.orchestration/state/tests/T-xxx.json` 에 `quick`·`full` 종류별로 마지막 것 하나씩 남긴다: `round`, `head`, `status`, `exit`, `seconds`, `log`, `tail`, `dirty`, `at`.
-- `head` 는 리포트(`docs/tasks/T-xxx/`)만 바꾼 커밋을 뺀 태스크의 마지막 `[T-xxx]` 작업 커밋이다. 워커는 테스트를 돌린 뒤 리포트를 커밋하므로, 리포트 커밋이 결과 재사용을 막지 않게 한다. 태스크 없는 실행은 `HEAD` 를 적고 `.orchestration/state/tests/final.json` 에 남긴다.
+- `head` 는 리포트(`docs/tasks/T-xxx/`)와 QA 리포트(`docs/qa/`)만 바꾼 커밋을 뺀 태스크의 마지막 `[T-xxx]` 작업 커밋이다. 워커는 테스트를 돌린 뒤 리포트를 커밋하므로, 리포트 커밋이 결과 재사용을 막지 않게 한다. 태스크 없는 실행은 `HEAD` 를 적고 `.orchestration/state/tests/final.json` 에 남긴다.
 - `dirty` 는 실행 시점에 이 태스크 소유 경로 밖에서 커밋되지 않은 변경 파일 목록이다. 다른 워커의 작업 중 파일 탓인 실패를 리뷰어가 구분하는 데 쓴다.
 - 전체 로그는 `~/.cache/orca-team/runs/<프로젝트>/T-xxx-r<round>-<kind>-<시각>.log` 다(`XDG_CACHE_HOME` 을 따른다. 리뷰 run-dir 과 같은 규칙).
 
