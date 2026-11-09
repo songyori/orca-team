@@ -22,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--description-file", required=True)
     sub.add_parser("setup-done", help="세팅 모드 해제")
     upg = sub.add_parser("upgrade", help="복사된 규칙 파일을 이 플러그인 버전 템플릿으로 바꾼다(config.toml 제외, 커밋 안 함)")
-    upg.add_argument("--force", action="store_true", help="진행 중인 태스크가 있어도 한다(옛 coordinator 탭이 떠 있으면 여전히 거부)")
+    upg.add_argument("--force", action="store_true", help="진행 중인 태스크가 있어도 한다(0.6 의 옛 세션 탭이 떠 있으면 여전히 거부)")
     s = sub.add_parser("up", help="관제 확인·기동(메인)")
     s.add_argument("--wait-run", type=int, default=0, metavar="SECONDS")
     sub.add_parser("bind", help="Run 생성·재연결(관제)")
