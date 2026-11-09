@@ -263,6 +263,8 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     agent = cfg.agents[name]
     e = entry(p, name)
     if not e.get("reset_pending") or e.get("task") or e.get("resetting") or e.get("queue"):
+        if e.get("reset_unknown_since"):  # 모름이 이어진 구간이 끊겼다. 다음 모름은 처음부터 잰다
+            update(p, name, lambda x: x.pop("reset_unknown_since", None))
         return None
     handle = e.get("handle")
     state = orca.terminal_state(handle, wait=True) if handle else "dead"

@@ -488,6 +488,19 @@ class ResetTest(AgentCase):
         state = self.agents_state()["production"]
         self.assertEqual((state["reset_pending"], "reset_unknown_since" in state), (False, False))
 
+    def test_unknown_since_is_cleared_while_agent_is_busy(self):
+        """모름 시각은 연속 구간에만 쓴다. 에이전트가 그새 일을 맡으면 지워, 다음 모름이 바로 상한에 걸리지 않게 한다."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        agents.update(self.p, "production", lambda e: e.update(reset_unknown_since="2020-01-01T00:00:00+00:00",
+                                                               task="T-009"))
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        self.assertNotIn("reset_unknown_since", self.agents_state()["production"])
+        agents.update(self.p, "production", lambda e: e.pop("task", None))
+        self.respond("terminal show", {"ok": True, "result": {}})
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        self.assertTrue(self.agents_state()["production"]["reset_pending"])
+
     def test_handoff_never_launches_fresh_session(self):
         """인수인계 직전에 터미널이 죽어도 새 세션에 인수인계를 쓰게 하지 않는다(새 세션은 맥락이 없다)."""
         self.started()
