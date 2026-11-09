@@ -492,6 +492,15 @@ def will_start(p: Project, st: dict, approval, states: list[dict]) -> bool:
     return not any(any_overlap(st.get("owns") or [], o.get("owns") or []) for o in held)
 
 
+def approval_busy(p: Project, cfg: Config) -> list[str]:
+    """승인 대상 태스크 중 아직 끝나지 않은 것(진행 중이거나 곧 시작할 pending)을 `T-xxx(status)` 로 돌려준다."""
+    roles = cfg.user_approval_roles
+    everything = all_states(p)
+    return [f"{st['id']}({st.get('status')})" for st in everything if st.get("role") in roles
+            and (st.get("status") in REVIEW_WAIT_STATUSES
+                 or (st.get("status") == "pending" and will_start(p, st, roles, everything)))]
+
+
 def design_review(p: Project, cfg: Config) -> dict:
     """승인 대상 직무 태스크가 모두 Codex 리뷰를 지나 awaiting_user 가 됐으면 메인에 승인 질문 하나를 올린다.
 
@@ -501,9 +510,7 @@ def design_review(p: Project, cfg: Config) -> dict:
     roles = cfg.user_approval_roles
     everything = all_states(p)
     states = [st for st in everything if st.get("role") in roles]
-    busy = [f"{st['id']}({st.get('status')})" for st in states
-            if st.get("status") in REVIEW_WAIT_STATUSES
-            or (st.get("status") == "pending" and will_start(p, st, roles, everything))]
+    busy = approval_busy(p, cfg)
     if busy:
         raise OrchError("승인 대상 태스크가 아직 끝나지 않았다: " + ", ".join(busy)
                         + ". 모두 Codex 리뷰를 거쳐 awaiting_user 가 되면 다시 한다(pending 은 orch start-ready 가 띄운다)", 2)

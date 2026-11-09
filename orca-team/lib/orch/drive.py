@@ -12,7 +12,7 @@ import sys
 import time
 from datetime import datetime
 
-from . import agents, comm, followups, orca, plan, queue, setup, tasks, testgate
+from . import agents, ask, comm, followups, orca, plan, queue, setup, tasks, testgate
 from .config import Config
 from .globs import matches_any
 from .paths import PLUGIN_ROOT, OrchError, Project
@@ -28,6 +28,9 @@ RECONCILE_SECONDS = 60  # 메일 없이 끝난 일(죽은 워커, 끊긴 리뷰)
 UNKNOWN_GRACE_SECONDS = 60  # start_unknown 이 이만큼 지나도 그대로면 복구한다
 LOCK_WAIT_TEXT = "테스트 잠금"
 TEST_CONFIG_TEXTS = ("`[test]` 명령을 실행할 수 없다", "`[test]` 검증 실패", "tasks.toml` 읽기 실패")
+
+
+OPEN_JUDGMENTS = ("planning_gaps", "unknown_regression", "token_update")
 
 
 class Job:
@@ -425,11 +428,17 @@ class Drive:
     def batch_done(self, task_id: str) -> None:
         """묶음 테스트(tester)가 끝났다: 후속 태스크를 만들고, 고정 에이전트 리셋을 표시하고, 메인에 알린다."""
         source = f"출처: {task_id} followups"
-        if not self.already_made(source):
+        record = self.finish_state()
+        batches = list(record.get("batches") or [])
+        first = task_id not in batches
+        if first and not self.already_made(source):
             found = followups.followups(self.p, task_id)
             self.make_followups(found, source, task_id)
-        names = agents.mark_reset_pending(self.p, self.cfg)
-        comm.post(self.p, "progress", f"묶음 완료: {task_id}" + (f". 리셋할 에이전트: {', '.join(names)}" if names else ""))
+        if first:
+            self.save_finish(batches=[*batches, task_id])
+            names = agents.mark_reset_pending(self.p, self.cfg)
+            comm.post(self.p, "progress",
+                      f"묶음 완료: {task_id}" + (f". 리셋할 에이전트: {', '.join(names)}" if names else ""))
 
     def make_followups(self, found: dict, source: str, origin: str) -> None:
         """회귀는 원인 태스크마다 회귀 수정 태스크, P2·P3 는 정리 태스크 하나, 기획 누락과 원인 모를 회귀는 메인에 올린다."""
@@ -469,11 +478,18 @@ class Drive:
     def save_finish(self, **fields) -> None:
         write_json(self.p.drive_dir / "finish.json", {**self.finish_state(), **fields})
 
+    def open_judgments(self) -> list[dict]:
+        """열린 질문에 outbox 줄의 decide 종류를 붙인다."""
+        kinds = {e.get("id"): e.get("kind") for e in comm.read_outbox(self.p) if e.get("type") == "decide"}
+        return [{**q, "kind": kinds.get(q["id"])} for q in ask.open_questions(self.p)]
+
     def finish_step(self) -> None:
         """모든 태스크가 done·dropped 면: 묶음 밖 후속(한 번만) → [test] 가 있으면 전체 테스트 → done 보고(태스크 묶음마다 한 번)."""
         states = tasks.all_states(self.p)
         if not states or any(st.get("status") not in tasks.FINISHED for st in states) or "final" in self.jobs:
             return
+        if any(q.get("type") == "decide" and q.get("kind") in OPEN_JUDGMENTS for q in self.open_judgments()):
+            return  # 메인의 판단(기획 누락·원인 모를 회귀·토큰 갱신)이 열려 있다
         ids = sorted(st["id"] for st in states)
         record = self.finish_state()
         if record.get("reported") == ids or record.get("final_failed") == ids:
@@ -535,7 +551,7 @@ class Drive:
         gated = [st for st in tasks.all_states(self.p) if st.get("role") in roles]
         if not any(st.get("status") == "awaiting_user" for st in gated):
             return
-        if any(st.get("status") in plan.REVIEW_WAIT_STATUSES for st in gated):
+        if plan.approval_busy(self.p, self.cfg):
             return
         if self.supplement_step(gated):
             return
@@ -566,7 +582,8 @@ class Drive:
             match = re.search(r"^### 시스템 추가 제안[ \t]*\n(.*?)(?=^##+ |\Z)", section, re.M | re.S)
             proposal = match.group(1).strip() if match else ""
             rnd = int(last.group(1))
-            if not proposal or followups.is_empty(proposal) or f"{st['id']} r{rnd}" in recorded:
+            body = [re.sub(r"^[-*]\s+", "", ln.strip()) for ln in proposal.splitlines() if ln.strip()]
+            if not proposal or all(followups.is_empty(ln) for ln in body) or f"{st['id']} r{rnd}" in recorded:
                 continue
             found[st["id"]] = (rnd, proposal)
         return found
@@ -576,25 +593,43 @@ class Drive:
         path = self.p.drive_dir / "supplement.json"
         current = read_json(path, {})
         current = current if isinstance(current, dict) else {}
+        handled = dict(current.get("handled") or {})
         if current.get("task"):
             sup = tasks.load_state(self.p, current["task"]) or {}
             if sup.get("status") == "done":
-                for task_id in current.get("from") or {}:
+                sources = current.get("from") or {}
+                handled.update(sources)
+                write_json(path, {"done": current, "handled": handled})
+                for task_id, rnd in sources.items():
+                    st = tasks.load_state(self.p, task_id) or {}
+                    if st.get("status") != "awaiting_user" or st.get("round") != rnd:
+                        continue
                     note = f"디자인 시스템 보강({current['task']})을 반영한다"
-                    pending = (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
+                    pending = st.get("pending_dep_fix")
                     self.guard(lambda t=task_id, n=note: self.fix_with_pending(t, n, supplement=current["task"]), task_id,
                                "\n".join(x for x in (pending, note) if x))
                 self.decide("token_update", current["task"],
                             f"디자인 시스템 보강 {current['task']} 이 끝났다. UI 기반 개발 태스크에 바뀐 토큰을 반영할지 정한다",
                             files=["docs/design/direction.md", f"docs/tasks/{current['task']}/report.md"],
                             commands=['orch task new developer "토큰 갱신 반영: <요약>"', 'orch scope T-xxx "<바뀐 토큰>"'])
-                write_json(path, {"done": current})
+                write_json(path, {"done": current, "handled": handled, "token_update": True})
                 self.start_ready()
                 return True
             if sup.get("status") not in tasks.FINISHED:
                 return True  # 보강 진행 중
-            write_json(path, {"dropped": current})
-        proposals = self.collect_proposals(gated)
+            handled.update(current.get("from") or {})
+            write_json(path, {"dropped": current, "handled": handled})
+        elif current.get("done") or current.get("dropped"):
+            handled.update((current.get("done") or current.get("dropped") or {}).get("from") or {})
+            if current.get("done") and not current.get("token_update"):
+                # 상태만 쓰고 멈춘 경우: token_update 를 한 번 올린다
+                task = current["done"]["task"]
+                self.decide("token_update", task,
+                            f"디자인 시스템 보강 {task} 이 끝났다. UI 기반 개발 태스크에 바뀐 토큰을 반영할지 정한다",
+                            files=["docs/design/direction.md", f"docs/tasks/{task}/report.md"],
+                            commands=['orch task new developer "토큰 갱신 반영: <요약>"', 'orch scope T-xxx "<바뀐 토큰>"'])
+                write_json(path, {**current, "handled": handled, "token_update": True})
+        proposals = {t: v for t, v in self.collect_proposals(gated).items() if str(handled.get(t)) != str(v[0])}
         if not proposals:
             return False
         lines = "\n".join(f"- {t} r{rnd}: {text}" for t, (rnd, text) in proposals.items())
@@ -604,7 +639,7 @@ class Drive:
                                "이유를 출처(태스크 ID·라운드)와 함께 `docs/design/direction.md` 에 적는다.\n" + lines,
                                "제안마다 반영 여부와 이유가 출처와 함께 `docs/design/direction.md` 에 있다",
                                owns=["docs/design/system/**", "docs/design/direction.md"])
-        write_json(path, {"task": new, "from": {t: rnd for t, (rnd, _) in proposals.items()}})
+        write_json(path, {"task": new, "from": {t: rnd for t, (rnd, _) in proposals.items()}, "handled": handled})
         self.start_ready()
         return True
 
@@ -736,6 +771,14 @@ class Drive:
         elif status == "working":
             self.check_worker(st)
 
+    def settle_batches(self) -> None:
+        """accept 뒤 batch_done 전에 멈춘 묶음 테스트(done tester)의 후속을 한 번 처리한다."""
+        done = set(self.finish_state().get("batches") or [])
+        for st in tasks.all_states(self.p):
+            if st.get("role") == testgate.TESTER_ROLE and st.get("status") == "done" and st["id"] not in done:
+                self.beat()
+                self.isolated(f"task:{st['id']}", f"{st['id']} 묶음 후속", lambda t=st["id"]: self.batch_done(t), st["id"])
+
     def reconcile(self) -> None:
         """메일 없이 끝난 일을 찾는다: 끊긴 리뷰, 잠금으로 미룬 리뷰, accept 전에 멈춘 승인, 죽은 워커, 끝나지 않은 인수인계."""
         self.last_reconcile = self.clock()
@@ -747,6 +790,7 @@ class Drive:
         for st in self.isolated("reconcile:list", "태스크 목록 읽기", lambda: list(tasks.all_states(self.p))) or []:
             self.beat()
             self.isolated(f"task:{st['id']}", f"{st['id']} 재확인", lambda: self.reconcile_task(st), st["id"])
+        self.isolated("reconcile:batches", "묶음 후속 재확인", self.settle_batches)
         for name, step in (("start_ready", self.start_ready), ("design_step", self.design_step),
                            ("finish_step", self.finish_step)):
             self.isolated(f"reconcile:{name}", name, step)

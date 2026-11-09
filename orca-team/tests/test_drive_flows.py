@@ -4,7 +4,7 @@ from unittest import mock
 
 from helpers import fake_test_commands, write_test_config
 from test_drive import DriveCase
-from orch import comm, followups, plan, tasks
+from orch import ask, comm, followups, plan, tasks
 
 
 def item(task, text, item_id=None, rnd=1):
@@ -37,10 +37,35 @@ class BatchFollowupsTest(DriveCase):
         self.assertIn("묶음 완료: T-002", self.outbox("progress")[-1]["body"])
 
 
+class BatchRecoveryTest(DriveCase):
+    def test_reconcile_processes_unrecorded_tester_once(self):
+        self.started("T-001", role="tester")
+        self.set_state("T-001", status="done")
+        found = {"tasks": ["T-001"], "regressions": [], "followups": [],
+                 "planning_gaps": [item("T-001", "누락 화면")]}
+        with mock.patch.object(followups, "followups", return_value=found):
+            self.drive.settle_batches()
+            self.drive.settle_batches()
+        self.assertEqual(len(self.outbox("decide")), 1)
+        self.assertEqual(len([e for e in self.outbox("progress") if "묶음 완료" in e["body"]]), 1)
+        self.assertEqual(self.drive.finish_state()["batches"], ["T-001"])
+
+
 class FinishTest(DriveCase):
     def all_done(self):
         self.started("T-001")
         self.set_state("T-001", status="done")
+
+    def test_open_judgment_blocks_done(self):
+        self.all_done()
+        self.drive.decide("unknown_regression", None, "원인 모름")
+        with mock.patch.object(followups, "followups", return_value={"tasks": [], "regressions": [], "followups": [],
+                                                                     "planning_gaps": []}):
+            self.drive.finish_step()
+            self.assertEqual(self.outbox("done"), [])
+            ask.answer(self.p, self.outbox("decide")[-1]["id"], "처리함")
+            self.drive.finish_step()
+        self.assertEqual(len(self.outbox("done")), 1)
 
     def test_done_is_reported_once_without_test_config(self):
         self.all_done()
@@ -102,6 +127,34 @@ class DesignFlowTest(DriveCase):
         st = self.state("T-001")
         self.assertEqual((st["status"], st["history"][-1]["supplement"]), ("working", sup["id"]))
         self.assertEqual(self.outbox("decide")[-1]["kind"], "token_update")
+
+    def test_dashed_none_is_empty(self):
+        self.awaiting_screen("T-001", proposal="- 없음")
+        with mock.patch.object(plan, "design_review", return_value={"id": "out-0001", "tasks": ["T-001"]}) as review:
+            self.drive.design_step()
+        review.assert_called_once()
+
+    def test_dropped_supplement_is_not_recreated(self):
+        self.awaiting_screen("T-001", proposal="강조 버튼 토큰")
+        with mock.patch.object(plan, "design_review"):
+            self.drive.design_step()
+        [sup] = [st for st in tasks.all_states(self.p) if st.get("role") == "director"]
+        self.set_state(sup["id"], status="dropped")
+        with mock.patch.object(plan, "design_review", return_value={"id": "out-0001", "tasks": ["T-001"]}) as review:
+            self.drive.design_step()
+        review.assert_called_once()
+        self.assertEqual(len([st for st in tasks.all_states(self.p) if st.get("role") == "director"]), 1)
+
+    def test_waits_for_pending_screen_that_will_start(self):
+        self.awaiting_screen("T-001", proposal="강조 버튼 토큰")
+        self.write_spec("T-002", role="designer", extra="owns: docs/design/T-002/**\n")
+        (self.root / ".orchestration/state/tasks/T-002.json").write_text(json.dumps({
+            "id": "T-002", "role": "designer", "title": "화면2", "status": "pending", "stage": "work", "round": 0,
+            "owns": ["docs/design/T-002/**"], "depends_on": [], "history": [], "verdicts": {}}), encoding="utf-8")
+        with mock.patch.object(plan, "design_review") as review:
+            self.drive.design_step()
+        review.assert_not_called()
+        self.assertEqual([st for st in tasks.all_states(self.p) if st.get("role") == "director"], [])
 
     def test_recorded_proposal_is_not_collected_again(self):
         self.awaiting_screen("T-001", proposal="강조 버튼 토큰")
