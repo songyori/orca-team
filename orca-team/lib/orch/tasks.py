@@ -26,6 +26,8 @@ FINISHED = ("done", "dropped")  # 소유 경로 잠금을 잡지 않는다
 RECOVERY_REF = "orca skills get orchestration --reference references/recovery-and-cleanup.md"
 LAUNCH_STALE_SECONDS = 600  # 이보다 오래된 pending 기록은 pid 가 재사용됐을 수 있어 진행 중으로 보지 않는다
 LAUNCHING_NEXT = "워커를 띄우는 중이다. 끝날 때까지 기다린 뒤 orch status 로 다시 본다"
+UNKNOWN_START_LIMIT = 3  # 같은 태스크에서 start_unknown 이 이만큼이면 다시 띄우지 않고 메인에 올린다
+DIED_NOTE = "이전 작업자가 중간에 끝났다. 리포트와 [{task_id}] 커밋을 확인하고 남은 일을 이어서 한다"
 FIX_BLOCK = """## 수정 라운드
 이전 워커의 대화는 사라졌다. 먼저 `docs/tasks/{task_id}/report.md`(있으면)와 이 태스크의 `[{task_id}]` 커밋(`git log --grep "^\\[{task_id}\\]"`)을 읽어 지금까지 한 일을 파악한다.
 {review_line}코디네이터 지시: {note}
@@ -623,6 +625,42 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
     if release_error is not None:
         result["release_error"] = release_error
     return result
+
+
+def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
+    """working 태스크의 디스패치가 start_unknown(입력이 들어갔는지 모름)이면 디스패치를 정리하고 새 작업자로 다시 띄운다.
+
+    늦게 입력이 들어가 같은 체크아웃에서 두 작업자가 일하지 않도록 그 터미널을 닫는다(worker-release). 고정 에이전트면
+    작업 터미널을 잊고 새로 띄운다. 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다."""
+    require_coordinator(p)
+    doc = load_doc(p, cfg, task_id)
+    st = must_state(p, task_id)
+    dispatch = st.get("dispatch_id")
+    info = orca.worker_info(dispatch) if dispatch else None
+    if st.get("status") != "working" or not info or info.get("state") != "start_unknown":
+        return {"id": task_id, "status": "not_unknown"}
+    count = int(st.get("unknown_starts") or 0) + 1
+    st["unknown_starts"] = count
+    for verb in ("worker-abandon", "worker-release"):
+        try:
+            orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+    agent = st.get("agent") if st.get("agent") in cfg.agents else None
+    if agent:
+        agents.forget(p, agent)
+    st["history"].append({"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
+                          "reason": "start_unknown", "count": count})
+    save_state(p, st)
+    if count >= UNKNOWN_START_LIMIT:
+        return {"id": task_id, "status": "escalate", "count": count}
+    stage, rnd = st.get("stage") or "work", int(st.get("round") or 1)
+    note = next((h.get("note") for h in reversed(st["history"])
+                 if h.get("stage") == stage and h.get("round") == rnd and h.get("note")), None)
+    entry = launch(p, cfg, doc, st, stage, rnd, owns_of(doc, cfg), note, None, {"recovered": "start_unknown"},
+                   agent=agent)
+    return {"id": task_id, "status": "relaunched", "dispatch_id": entry.get("dispatch_id"), "count": count}
 
 
 def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:

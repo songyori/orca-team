@@ -170,6 +170,22 @@ def detach(p: Project, name: str, task_id: str) -> None:
     update(p, name, write)
 
 
+def forget(p: Project, name: str) -> None:
+    """작업 터미널을 잊는다(다음 태스크 때 새로 띄운다). 맡은 태스크도 뗀다."""
+    update(p, name, lambda e: e.update(handle=None, review_handle=None, tab_id=None, task=None))
+
+
+def forget_dead(p: Project, cfg: Config) -> list[str]:
+    """작업 터미널이 확실히 죽은(dead) 에이전트의 handle 을 지운다. unknown 은 두고 본다. 맡은 태스크는 drive 가 처리한다."""
+    gone = []
+    for name in cfg.agents:
+        handle = entry(p, name).get("handle")
+        if handle and orca.terminal_state(handle) == "dead":
+            update(p, name, lambda e: e.update(handle=None, review_handle=None, tab_id=None))
+            gone.append(name)
+    return gone
+
+
 def summary(p: Project, cfg: Config) -> list[dict]:
     """orch status 용 표. Orca 를 부르지 않는다."""
     rows = []

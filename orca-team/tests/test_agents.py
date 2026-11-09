@@ -279,5 +279,52 @@ class ResetTest(AgentCase):
         self.assertEqual(self.orch("agent", "reset", "nobody", check=False).returncode, 2)
 
 
+UNKNOWN = {"ok": True, "result": {"dispatchId": "ctx_1", "state": "start_unknown", "stage": "turn_start_unobserved",
+                                  "liveness": "live", "terminal": "term_a1"}}
+
+
+class RecoveryTest(AgentCase):
+    def test_forget_dead_clears_only_dead_handles(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.assertEqual(agents.forget_dead(self.p, self.cfg()), [])
+        self.respond("terminal show", STALE, code=1)
+        self.assertEqual(agents.forget_dead(self.p, self.cfg()), ["production"])
+        self.assertIsNone(self.agents_state()["production"]["handle"])
+        self.assertEqual(self.agents_state()["production"]["task"], "T-001")  # 태스크 처리는 drive 가 한다
+
+    def test_unknown_start_is_relaunched_on_new_agent(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.respond("orchestration worker-show", UNKNOWN)
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        self.respond("terminal split", {"ok": True, "result": {"split": {"handle": "term_r2", "tabId": "tab_2"}}})
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual((out["status"], out["count"]), ("relaunched", 1))
+        for verb in ("worker-abandon", "worker-release"):
+            self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        self.assertIn("--keep-open", self.last_start())
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"]), ("term_a2", "T-001"))
+        self.assertEqual(self.state("T-001")["dispatch_id"], "ctx_5")
+
+    def test_third_unknown_start_escalates(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.set_state("T-001", unknown_starts=2)
+        self.respond("orchestration worker-show", UNKNOWN)
+        starts = len(self.calls_for("orchestration worker-start"))
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "escalate")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+
+    def test_not_unknown_does_nothing(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.respond("orchestration worker-show", {"ok": True, "result": {"state": "running", "stage": "working"}})
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "not_unknown")
+        self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
