@@ -308,6 +308,9 @@ class RecoveryTest(AgentCase):
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a2", "T-001"))
         self.assertEqual(self.state("T-001")["dispatch_id"], "ctx_5")
+        self.assertEqual(self.state("T-001")["unknown_starts"], 1)
+        self.assertTrue(any(h.get("stage") == "recover" and h.get("reason") == "start_unknown"
+                            and h.get("dispatch_id") == "ctx_1" for h in self.state("T-001")["history"]))
 
     def test_third_unknown_start_escalates(self):
         self.commit_spec("T-001")
@@ -317,6 +320,22 @@ class RecoveryTest(AgentCase):
         starts = len(self.calls_for("orchestration worker-start"))
         self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "escalate")
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.state("T-001")["unknown_starts"], 3)
+        self.assertIsNone(self.agents_state()["production"]["handle"])
+
+    def test_failed_release_escalates_without_relaunch(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.respond("orchestration worker-show", UNKNOWN)
+        self.respond("orchestration worker-release", {"ok": False, "error": {"code": "x"}}, code=1)
+        starts = len(self.calls_for("orchestration worker-start"))
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual(out["status"], "escalate")
+        self.assertIn("worker-release", out["release_error"])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        last = self.state("T-001")["history"][-1]
+        self.assertEqual(last["stage"], "recover")
+        self.assertIn("worker-release", last["release_error"])
 
     def test_not_unknown_does_nothing(self):
         self.commit_spec("T-001")

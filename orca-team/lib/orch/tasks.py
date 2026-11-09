@@ -631,7 +631,9 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     """working 태스크의 디스패치가 start_unknown(입력이 들어갔는지 모름)이면 디스패치를 정리하고 새 작업자로 다시 띄운다.
 
     늦게 입력이 들어가 같은 체크아웃에서 두 작업자가 일하지 않도록 그 터미널을 닫는다(worker-release). 고정 에이전트면
-    작업 터미널을 잊고 새로 띄운다. 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다."""
+    작업 터미널을 잊고 새로 띄운다. 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다.
+    worker-abandon / worker-release 가 하나라도 실패하면(종료 코드 또는 ok 가 거짓) 이전 터미널이 닫혔다고 볼 수 없으므로
+    다시 띄우지 않고 release_error 와 함께 메인에 올린다(escalate)."""
     require_coordinator(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
@@ -641,18 +643,28 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
         return {"id": task_id, "status": "not_unknown"}
     count = int(st.get("unknown_starts") or 0) + 1
     st["unknown_starts"] = count
+    failures: dict = {}
     for verb in ("worker-abandon", "worker-release"):
         try:
-            orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
+            code, data = orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
         except OrchError as exc:
             if exc.code == 12:
                 raise
+            failures[verb] = str(exc)
+            continue
+        if code != 0 or not data.get("ok"):
+            failures[verb] = data
     agent = st.get("agent") if st.get("agent") in cfg.agents else None
     if agent:
         agents.forget(p, agent)
-    st["history"].append({"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
-                          "reason": "start_unknown", "count": count})
+    entry = {"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
+             "reason": "start_unknown", "count": count}
+    if failures:
+        entry["release_error"] = failures
+    st["history"].append(entry)
     save_state(p, st)
+    if failures:
+        return {"id": task_id, "status": "escalate", "count": count, "release_error": failures}
     if count >= UNKNOWN_START_LIMIT:
         return {"id": task_id, "status": "escalate", "count": count}
     stage, rnd = st.get("stage") or "work", int(st.get("round") or 1)
