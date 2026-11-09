@@ -10,9 +10,10 @@ from pathlib import Path
 
 from .config import Config
 from .paths import OrchError, Project
-from .tasks import all_states, load_state
+from .tasks import all_states, load_state, parse_task, task_path
 
 POLL_SECONDS = 2.0
+SLACK_SECONDS = 2.0
 
 
 def runs_dir(p: Project) -> Path:
@@ -20,9 +21,26 @@ def runs_dir(p: Project) -> Path:
     return base / "orca-team" / "runs" / p.root.name
 
 
-def latest_run(p: Project, task_id: str, rnd: int) -> Path | None:
-    found = sorted(runs_dir(p).glob(f"{task_id}-r{rnd}-*")) if runs_dir(p).is_dir() else []
+def run_mtime(run: Path) -> float:
+    """run dir 의 시각. dir 은 파일이 새로 생길 때만 바뀌므로 progress.log 의 쓰기 시각도 본다."""
+    log = run / "progress.log"
+    return max(run.stat().st_mtime, log.stat().st_mtime if log.is_file() else 0.0)
+
+
+def latest_run(p: Project, task_id: str, rnd: int, since: float = 0.0) -> Path | None:
+    base = runs_dir(p)
+    if not base.is_dir():
+        return None
+    found = [d for d in sorted(base.glob(f"{task_id}-r{rnd}-*"))
+             if d.is_dir() and run_mtime(d) >= since]
     return found[-1] if found else None
+
+
+def round_of(st: dict) -> int:
+    try:
+        return int(st.get("round") or 1)
+    except (TypeError, ValueError):
+        return 1
 
 
 class Viewer:
@@ -31,6 +49,8 @@ class Viewer:
         self.seen: tuple[str, int] | None = None
         self.run: Path | None = None
         self.offset = 0
+        self.since = 0.0
+        self.last_error: str | None = None
 
     def write(self, text: str) -> None:
         self.out.write(text)
@@ -44,41 +64,85 @@ class Viewer:
 
     def step(self) -> None:
         st = self.current()
-        if self.seen and (st is None or (st["id"], int(st.get("round") or 1)) != self.seen):
+        if self.seen and (st is None or (st.get("id", ""), round_of(st)) != self.seen):
             self.finish()
         if st is None:
             return
-        key = (st["id"], int(st.get("round") or 1))
+        key = (st.get("id", ""), round_of(st))
         if key != self.seen:
-            launch = self.cfg.codex(st["role"])
-            self.write(f"\n{key[0]} r{key[1]} 리뷰 중 ({launch.model}, {launch.effort})\n")
-            self.seen, self.run, self.offset = key, None, 0
-        run = latest_run(self.p, *key)
-        if run != self.run:
-            self.run, self.offset = run, 0
-        log = run / "progress.log" if run else None
-        if log and log.is_file():
-            with log.open("r", encoding="utf-8", errors="replace") as fh:
-                fh.seek(self.offset)
-                chunk = fh.read()
-                self.offset = fh.tell()
-            if chunk:
-                self.write(chunk)
+            self.start(st, key)
+        if self.run is None:
+            self.run = latest_run(self.p, *key, since=self.since)
+            self.offset = 0
+        self.drain()
+
+    def start(self, st: dict, key: tuple[str, int]) -> None:
+        self.write(f"\n{key[0]} r{key[1]} 리뷰 중{self.model_note(st)}\n")
+        self.seen = key
+        self.since = time.time() - SLACK_SECONDS
+        self.run, self.offset = None, 0
+
+    def model_note(self, st: dict) -> str:
+        """태스크 front matter 의 override 를 리뷰와 같이 적용한다. 실패하면 모델 없이 적는다."""
+        front = {}
+        spec = task_path(self.p, st.get("id", ""))
+        try:
+            if spec.is_file():
+                front = parse_task(spec).front
+        except (OrchError, OSError):
+            front = {}
+        try:
+            launch = self.cfg.codex(st.get("role", ""), front)
+        except OrchError:
+            return ""
+        return f" ({launch.model}, {launch.effort})"
+
+    def drain(self) -> None:
+        if self.run is None:
+            return
+        log = self.run / "progress.log"
+        if not log.is_file():
+            return
+        with log.open("r", encoding="utf-8", errors="replace") as fh:
+            fh.seek(self.offset)
+            chunk = fh.read()
+            self.offset = fh.tell()
+        if chunk:
+            self.write(chunk)
 
     def finish(self) -> None:
         task_id, rnd = self.seen
+        self.drain()
         st = load_state(self.p, task_id) or {}
         verdict = next((h.get("verdict") for h in reversed(st.get("history") or [])
                         if h.get("stage") == "review" and h.get("round") == rnd), None)
-        self.write(f"{task_id} r{rnd} {verdict or '리뷰 끝(판정 없음)'} — docs/reviews/{task_id}/r{rnd}.md\n")
+        if verdict:
+            line = f"{task_id} r{rnd} {verdict} — docs/reviews/{task_id}/r{rnd}.md"
+        elif st.get("status") == "working":
+            line = f"{task_id} r{rnd} 리뷰 중단"
+        else:
+            line = f"{task_id} r{rnd} 리뷰 끝(판정 없음) — docs/reviews/{task_id}/r{rnd}.md"
+        self.write(line + "\n")
         self.seen, self.run, self.offset = None, None, 0
+
+    def report_error(self, exc: Exception) -> None:
+        msg = f"{type(exc).__name__}: {exc}"
+        if msg != self.last_error:
+            self.write(f"리뷰 보기 오류: {msg}\n")
+            self.last_error = msg
 
     def loop(self) -> None:
         agent = self.cfg.agents[self.name]
         self.write(f"리뷰 보기: {agent.title} 에이전트. 리뷰가 시작되면 Codex 진행 기록을 보여 준다.\n")
-        while True:
-            self.step()
-            time.sleep(POLL_SECONDS)
+        try:
+            while True:
+                try:
+                    self.step()
+                except Exception as exc:
+                    self.report_error(exc)
+                time.sleep(POLL_SECONDS)
+        except KeyboardInterrupt:
+            return
 
 
 def main(p: Project, cfg: Config, name: str) -> int:

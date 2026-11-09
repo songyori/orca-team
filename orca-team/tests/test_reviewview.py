@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -51,6 +52,72 @@ class ViewerTest(ProjectCase):
         self.state(status="approved", history=[{"stage": "review", "round": 2, "verdict": "APPROVE"}])
         self.viewer.step()
         self.assertIn("T-001 r2 APPROVE — docs/reviews/T-001/r2.md", self.out.getvalue())
+
+    def test_finish_prints_last_log_lines_before_verdict(self):
+        self.state(status="reviewing")
+        run = self.run_dir()
+        (run / "progress.log").write_text("파일 읽는 중\n", encoding="utf-8")
+        self.viewer.step()
+        with (run / "progress.log").open("a", encoding="utf-8") as fh:
+            fh.write("마지막 줄\n")
+        self.state(status="approved", history=[{"stage": "review", "round": 2, "verdict": "APPROVE"}])
+        self.viewer.step()
+        text = self.out.getvalue()
+        self.assertIn("마지막 줄", text)
+        self.assertLess(text.index("마지막 줄"), text.index("T-001 r2 APPROVE"))
+
+    def test_ignores_stale_run_dir_of_same_round(self):
+        old = self.run_dir()
+        (old / "progress.log").write_text("옛 기록\n", encoding="utf-8")
+        past = time.time() - 3600
+        for path in (old, old / "progress.log"):
+            os.utime(path, (past, past))
+        self.state(status="reviewing")
+        self.viewer.step()
+        self.assertNotIn("옛 기록", self.out.getvalue())
+        new = self.tmp / "cache/orca-team/runs" / self.root.name / "T-001-r2-20261109-130000-a2"
+        new.mkdir(parents=True)
+        (new / "progress.log").write_text("새 기록\n", encoding="utf-8")
+        self.viewer.step()
+        self.assertIn("새 기록", self.out.getvalue())
+        self.assertNotIn("옛 기록", self.out.getvalue())
+
+    def test_reports_abort_when_review_goes_back_to_working(self):
+        self.state(status="reviewing")
+        self.viewer.step()
+        self.state(status="working")
+        self.viewer.step()
+        self.assertIn("T-001 r2 리뷰 중단", self.out.getvalue())
+
+    def test_header_without_model_for_unknown_role_and_non_integer_round(self):
+        self.state(status="reviewing", role="nobody", round="x")
+        self.viewer.step()
+        self.assertIn("T-001 r1 리뷰 중\n", self.out.getvalue())
+
+    def test_header_honors_task_front_matter_override(self):
+        spec = self.p.tasks_dir / "T-001.md"
+        spec.parent.mkdir(parents=True, exist_ok=True)
+        spec.write_text("---\nid: T-001\nrole: developer\ncodex_model: gpt-override\n---\n\n## 목적\n본문\n",
+                        encoding="utf-8")
+        self.state(status="reviewing")
+        self.viewer.step()
+        self.assertIn("(gpt-override, xhigh)", self.out.getvalue())
+
+    def test_loop_reports_each_new_error_once_and_keeps_polling(self):
+        script = [RuntimeError("boom"), RuntimeError("boom"), ValueError("bad"), KeyboardInterrupt()]
+
+        def fake_step():
+            item = script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+
+        self.viewer.step = fake_step
+        with mock.patch.object(reviewview.time, "sleep"):
+            self.viewer.loop()
+        text = self.out.getvalue()
+        self.assertEqual(text.count("리뷰 보기 오류: RuntimeError: boom"), 1)
+        self.assertEqual(text.count("리뷰 보기 오류: ValueError: bad"), 1)
+        self.assertEqual(script, [])
 
     def test_ignores_other_agents_and_unknown_name(self):
         self.state(status="reviewing", agent="temp")
