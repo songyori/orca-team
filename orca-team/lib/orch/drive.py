@@ -6,17 +6,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
 from datetime import datetime
 
-from . import agents, comm, orca, plan, queue, setup, tasks, testgate
+from . import agents, comm, followups, orca, plan, queue, setup, tasks, testgate
 from .config import Config
 from .globs import matches_any
 from .paths import PLUGIN_ROOT, OrchError, Project
-from .util import (acquire_pid, git_commit_paths, now, pid_alive, read_json, release_pid, update_run,
-                   write_text_atomic)
+from .util import (acquire_pid, git, git_commit_paths, now, pid_alive, read_json, release_pid, update_run,
+                   write_json, write_text_atomic)
 
 WAIT_MS = 10000  # 메일을 한 번에 기다리는 시간. 메인 요청 큐도 이 간격으로 본다
 IDLE_SECONDS = 1.0
@@ -416,19 +417,196 @@ class Drive:
                  for t in out["tasks"]]
         comm.post(self.p, "progress", "기획 적용: " + "; ".join(lines))
 
+    # --- 묶음 후속
+    def already_made(self, source_line: str) -> bool:
+        """이 출처 줄로 만든 태스크가 이미 있는가(다시 뜬 관제가 같은 태스크를 또 만들지 않게)."""
+        return any(source_line in path.read_text(encoding="utf-8") for path in self.p.tasks_dir.glob("T-*.md"))
+
     def batch_done(self, task_id: str) -> None:
-        """묶음 테스트(tester)가 끝났다. Task 12 에서 묶음 후속을 먼저 처리한다."""
+        """묶음 테스트(tester)가 끝났다: 후속 태스크를 만들고, 고정 에이전트 리셋을 표시하고, 메인에 알린다."""
+        source = f"출처: {task_id} followups"
+        if not self.already_made(source):
+            found = followups.followups(self.p, task_id)
+            self.make_followups(found, source, task_id)
         names = agents.mark_reset_pending(self.p, self.cfg)
         comm.post(self.p, "progress", f"묶음 완료: {task_id}" + (f". 리셋할 에이전트: {', '.join(names)}" if names else ""))
 
-    def design_step(self) -> None:
-        """디자인 승인 흐름(Task 12)."""
+    def make_followups(self, found: dict, source: str, origin: str) -> None:
+        """회귀는 원인 태스크마다 회귀 수정 태스크, P2·P3 는 정리 태스크 하나, 기획 누락과 원인 모를 회귀는 메인에 올린다."""
+        members = set(found.get("tasks") or [])
+        for entry in found.get("regressions") or []:
+            causes = sorted({t for t in re.findall(r"T-\d{3,}", entry["text"]) if t in members and t != entry["task"]})
+            if len(causes) != 1:
+                self.decide("unknown_regression", origin, entry["text"][:300],
+                            files=[f"docs/reviews/{entry['task']}/r{entry['round']}.md"],
+                            commands=['orch task new developer "회귀 수정: <요약>"'],
+                            extra={"source": source})
+                continue
+            owns = (tasks.load_state(self.p, causes[0]) or {}).get("owns") or None
+            self.create_task("developer", f"회귀 수정: {entry['text'][:40]}", ", ".join(owns or []) or "원인 태스크의 소유 경로",
+                             f"{source}\n{entry['text']}",
+                             f"이 항목의 실패 테스트가 `orch test {{id}}` 에서 통과한다: {entry['text']}", owns=owns)
+        items = found.get("followups") or []
+        if items:
+            owns = sorted({o for e in items for o in (tasks.load_state(self.p, e["task"]) or {}).get("owns") or []})
+            lines = "\n".join(f"- {e['id'] or '-'}: {e['text']}" for e in items)
+            self.create_task("developer", f"묶음 정리: {origin}", ", ".join(owns) or "항목이 가리키는 파일",
+                             f"{source}\n{lines}", "항목마다 고쳤거나 고치지 않은 이유를 리포트에 적었다", owns=owns or None)
+        gaps = found.get("planning_gaps") or []
+        if gaps:
+            self.decide("planning_gaps", origin, f"기획 누락 {len(gaps)}건: " + "; ".join(g["text"][:60] for g in gaps),
+                        files=sorted({f"docs/reviews/{g['task']}/r{g['round']}.md" for g in gaps}),
+                        commands=['orch scope T-xxx "<추가 범위>"', 'orch task new planner "<증분 기획>"'],
+                        extra={"items": gaps, "source": source})
+        if any(st.get("status") == "pending" for st in tasks.all_states(self.p)):
+            self.start_ready()
+
+    # --- 마무리
+    def finish_state(self) -> dict:
+        data = read_json(self.p.drive_dir / "finish.json", {})
+        return data if isinstance(data, dict) else {}
+
+    def save_finish(self, **fields) -> None:
+        write_json(self.p.drive_dir / "finish.json", {**self.finish_state(), **fields})
 
     def finish_step(self) -> None:
-        """모두 끝났을 때(Task 12)."""
+        """모든 태스크가 done·dropped 면: 묶음 밖 후속(한 번만) → [test] 가 있으면 전체 테스트 → done 보고(태스크 묶음마다 한 번)."""
+        states = tasks.all_states(self.p)
+        if not states or any(st.get("status") not in tasks.FINISHED for st in states) or "final" in self.jobs:
+            return
+        ids = sorted(st["id"] for st in states)
+        record = self.finish_state()
+        if record.get("reported") == ids or record.get("final_failed") == ids:
+            return
+        if not record.get("rest_done") and not self.already_made("출처: rest followups"):
+            self.save_finish(rest_done=True)
+            self.make_followups(followups.followups(self.p, rest=True), "출처: rest followups", "rest")
+            if any(st.get("status") == "pending" for st in tasks.all_states(self.p)):
+                return
+        try:
+            has_test = testgate.load_config(self.p) is not None
+        except OrchError:
+            has_test = True  # 형식 오류는 전체 테스트가 알린다
+        if has_test:
+            self.jobs["final"] = Job("final", None, self.spawn(["test", "--full"]))
+            self.log("마지막 전체 테스트 시작")
+            return
+        self.report_done(ids)
 
     def final_done(self, code: int, out: str, err: str) -> None:
-        """마지막 전체 테스트 결과(Task 12)."""
+        ids = sorted(st["id"] for st in tasks.all_states(self.p))
+        try:
+            data = json.loads(out) if out.strip() else {}
+        except ValueError:
+            data = {}
+        if code == 0:
+            self.report_done(ids, data)
+        elif code == 1:
+            self.save_finish(final_failed=ids)
+            self.decide("unknown_regression", None, "마지막 전체 테스트가 실패했다. 원인 태스크를 정해 회귀 수정 태스크를 만든다",
+                        files=[data["log"]] if data.get("log") else [],
+                        commands=['orch task new developer "회귀 수정: <요약>"'],
+                        extra={"tail": data.get("tail"), "source": "출처: final followups"})
+        elif code == 2 and LOCK_WAIT_TEXT in err:
+            self.log("전체 테스트 잠금 대기 초과. 다음 확인 때 다시 한다")
+        else:
+            self.save_finish(final_failed=ids)
+            self.decide("test_config", None, f"전체 테스트를 돌리지 못했다(exit {code}): {err.strip()[-300:]}",
+                        files=["docs/planning/tasks.toml"], commands=['orch task new planner "[test] 고치기"'])
+
+    def report_done(self, ids: list[str], final: dict | None = None) -> None:
+        states = tasks.all_states(self.p)
+        rows = [f"- {st['id']} [{st.get('role')}] {st.get('title')}: {st.get('status')}, "
+                f"r{st.get('round')} {(st.get('verdicts') or {}).get(str(st.get('round')), '-')}" for st in states]
+        bases = [st["base"] for st in states if st.get("base")]
+        changed = git(self.p.root, "diff", "--name-only", f"{bases[0]}..HEAD", check=False).split() if bases else []
+        body = ["모든 태스크가 끝났다.", *rows]
+        if changed:
+            body.append("바뀐 주요 파일: " + ", ".join(changed[:15]) + (" …" if len(changed) > 15 else ""))
+        if final:
+            body.append(f"마지막 전체 테스트: {final.get('status')} ({final.get('seconds')}초)")
+        comm.post(self.p, "done", "\n".join(body))
+        self.save_finish(reported=ids)
+
+    # --- 디자인 승인
+    def design_step(self) -> None:
+        """승인 대상 태스크가 모두 리뷰를 지나 awaiting_user 면: 시스템 추가 제안이 있으면 보강부터, 없으면 승인 질문."""
+        roles = self.cfg.user_approval_roles
+        gated = [st for st in tasks.all_states(self.p) if st.get("role") in roles]
+        if not any(st.get("status") == "awaiting_user" for st in gated):
+            return
+        if any(st.get("status") in plan.REVIEW_WAIT_STATUSES for st in gated):
+            return
+        if self.supplement_step(gated):
+            return
+        try:
+            out = plan.design_review(self.p, self.cfg)
+        except OrchError as exc:
+            if exc.code in (2, 3):  # 아직 기다리거나 이미 물었다
+                return
+            raise
+        self.log(f"디자인 승인 질문 {out['id']}: {', '.join(out['tasks'])}")
+
+    def collect_proposals(self, gated: list[dict]) -> dict[str, tuple[int, str]]:
+        """awaiting_user 화면 디자이너 리포트의 마지막 `## r{n}` 절에서 `### 시스템 추가 제안`. "없음" 과 이미
+        docs/design/direction.md 에 출처(T-xxx rN)가 기록된 것은 뺀다."""
+        direction = self.p.root / "docs/design/direction.md"
+        recorded = direction.read_text(encoding="utf-8") if direction.is_file() else ""
+        found = {}
+        for st in gated:
+            if st.get("status") != "awaiting_user" or st.get("role") != "designer":
+                continue
+            report = self.p.root / f"docs/tasks/{st['id']}/report.md"
+            text = report.read_text(encoding="utf-8") if report.is_file() else ""
+            rounds = list(re.finditer(r"^## r(\d+)\s*$", text, re.M))
+            if not rounds:
+                continue
+            last = rounds[-1]
+            section = text[last.end():]
+            match = re.search(r"^### 시스템 추가 제안[ \t]*\n(.*?)(?=^##+ |\Z)", section, re.M | re.S)
+            proposal = match.group(1).strip() if match else ""
+            rnd = int(last.group(1))
+            if not proposal or followups.is_empty(proposal) or f"{st['id']} r{rnd}" in recorded:
+                continue
+            found[st["id"]] = (rnd, proposal)
+        return found
+
+    def supplement_step(self, gated: list[dict]) -> bool:
+        """보강 태스크를 만들거나 기다리거나 마무리했으면 True(승인 질문을 아직 하지 않는다)."""
+        path = self.p.drive_dir / "supplement.json"
+        current = read_json(path, {})
+        current = current if isinstance(current, dict) else {}
+        if current.get("task"):
+            sup = tasks.load_state(self.p, current["task"]) or {}
+            if sup.get("status") == "done":
+                for task_id in current.get("from") or {}:
+                    note = f"디자인 시스템 보강({current['task']})을 반영한다"
+                    pending = (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
+                    self.guard(lambda t=task_id, n=note: self.fix_with_pending(t, n, supplement=current["task"]), task_id,
+                               "\n".join(x for x in (pending, note) if x))
+                self.decide("token_update", current["task"],
+                            f"디자인 시스템 보강 {current['task']} 이 끝났다. UI 기반 개발 태스크에 바뀐 토큰을 반영할지 정한다",
+                            files=["docs/design/direction.md", f"docs/tasks/{current['task']}/report.md"],
+                            commands=['orch task new developer "토큰 갱신 반영: <요약>"', 'orch scope T-xxx "<바뀐 토큰>"'])
+                write_json(path, {"done": current})
+                self.start_ready()
+                return True
+            if sup.get("status") not in tasks.FINISHED:
+                return True  # 보강 진행 중
+            write_json(path, {"dropped": current})
+        proposals = self.collect_proposals(gated)
+        if not proposals:
+            return False
+        lines = "\n".join(f"- {t} r{rnd}: {text}" for t, (rnd, text) in proposals.items())
+        new = self.create_task("director", f"디자인 시스템 보강: {', '.join(proposals)} 제안",
+                               "docs/design/system/, docs/design/direction.md",
+                               "화면 디자이너의 시스템 추가 제안이다. 제안마다 받아들일지 정해 디자인 시스템에 더하고, 결정과 "
+                               "이유를 출처(태스크 ID·라운드)와 함께 `docs/design/direction.md` 에 적는다.\n" + lines,
+                               "제안마다 반영 여부와 이유가 출처와 함께 `docs/design/direction.md` 에 있다",
+                               owns=["docs/design/system/**", "docs/design/direction.md"])
+        write_json(path, {"task": new, "from": {t: rnd for t, (rnd, _) in proposals.items()}})
+        self.start_ready()
+        return True
 
     def create_task(self, role: str, title: str, target: str, change: str, acceptance: str,
                     owns: list[str] | None = None, depends_on=(), front: dict | None = None) -> str:
