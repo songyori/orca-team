@@ -19,7 +19,7 @@
 
 ## 검증
 
-- 테스트: `bash orca-team/tests/run.sh`(674개, 2026-11-08 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
+- 테스트: `bash orca-team/tests/run.sh`(678개, 2026-11-09 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
 - 실환경 확인: 0.3.0, 0.4.0, 0.5.0 을 실제 Orca·Codex·Claude Design 으로 한 바퀴씩 돌렸다. 0.5.1 은 코디네이터 부활만, 0.5.2 는 Codex 디자인 리뷰만 실제로 확인했다. 결과는 0.3.0·0.4.0 설계 문서 §12, 0.5.0 설계 문서 §14, 0.5.1 설계 문서 §13, 0.5.2 설계 문서 §13.1 에 있다.
 - 실환경 확인 방법:
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.

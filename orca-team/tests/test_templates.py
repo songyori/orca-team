@@ -493,6 +493,11 @@ class TemplateTest(unittest.TestCase):
         for key in ("| 0.6.0 |", "specs/2026-11-08-orca-team-batch-verify-design.md"):
             self.assertIn(key, status)
 
+    def test_status_doc_describes_hotfix(self):
+        status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
+        for key in ("(2026-11-09, 0.6.1)", "| 0.6.1 |", "worker-show 를 --full 로"):
+            self.assertIn(key, status)
+
 
 if __name__ == "__main__":
     unittest.main()
