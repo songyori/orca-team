@@ -22,6 +22,7 @@ WAIT_MS = 10000  # 메일을 한 번에 기다리는 시간. 메인 요청 큐�
 IDLE_SECONDS = 1.0
 ORCH_BIN = PLUGIN_ROOT / "bin" / "orch"
 CHECK_TYPES = "worker_done,escalation,question,status"
+RESET_STUCK_SECONDS = 30 * 60  # 인수인계가 이만큼 지나도 안 끝나면 정리한다
 RECONCILE_SECONDS = 60  # 메일 없이 끝난 일(죽은 워커, 끊긴 리뷰)을 찾는 간격
 UNKNOWN_GRACE_SECONDS = 60  # start_unknown 이 이만큼 지나도 그대로면 복구한다
 LOCK_WAIT_TEXT = "테스트 잠금"
@@ -42,6 +43,9 @@ class Drive:
         self.jobs: dict[str, Job] = {}
         self.retry_reviews: set[str] = set()
         self.last_reconcile: float | None = None
+        self.failures: dict[str, str] = {}  # 단위별 마지막 실패 문구. 문구가 바뀔 때만 메인에 올린다
+        self.check_failed = False
+        self.pending_marks: dict[str, tuple[str, object]] = {}  # 리뷰 중 올린 decide 표시(리뷰가 끝난 뒤 쓴다)
 
     def _spawn(self, args: list[str]):
         """orch 하위 명령을 자식 프로세스로 띄운다. 환경(ORCA_TERMINAL_HANDLE=관제)을 그대로 물려준다."""
@@ -57,6 +61,34 @@ class Drive:
                 fh.write(line + "\n")
         except OSError:
             pass
+
+    def fail(self, key: str, where: str, exc: Exception, task_id: str | None = None) -> None:
+        text = f"{where} 실패: {type(exc).__name__}: {exc}"
+        self.log(text)
+        if self.failures.get(key) == text:
+            return
+        self.failures[key] = text
+        try:
+            self.decide("escalation", task_id, text[:300], files=self.task_files(task_id))
+        except Exception as inner:  # 올리는 일마저 실패해도 관제는 계속 돈다
+            if isinstance(inner, OrchError) and inner.code == 12:
+                raise
+            self.log(f"{where} 실패를 올리지 못했다: {type(inner).__name__}: {inner}")
+
+    def isolated(self, key: str, where: str, fn, task_id: str | None = None):
+        """한 단위의 일이 예외로 끝나도 관제를 죽이지 않는다. 12(orca 없음)만 올린다."""
+        try:
+            result = fn()
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+            self.fail(key, where, exc, task_id)
+            return None
+        except Exception as exc:
+            self.fail(key, where, exc, task_id)
+            return None
+        self.failures.pop(key, None)
+        return result
 
     def beat(self) -> None:
         write_text_atomic(self.p.drive_heartbeat, now())
@@ -113,6 +145,7 @@ class Drive:
         args = ["orchestration", "check", "--wait", "--types", CHECK_TYPES, "--timeout-ms", str(wait_ms)]
         if self.ack:
             args += ["--ack", self.ack]
+        self.check_failed = True
         try:
             code, data = orca.call(args, check=False, timeout=wait_ms / 1000 + 30)
         except OrchError as exc:
@@ -123,6 +156,7 @@ class Drive:
         if code != 0 or not data.get("ok"):
             self.log(f"메일 확인 실패(exit {code}): {json.dumps(data, ensure_ascii=False)[:300]}")
             return []
+        self.check_failed = False
         result = data.get("result") if isinstance(data.get("result"), dict) else {}
         self.ack = result.get("deliveryId") or None
         return [m for m in result.get("messages") or [] if isinstance(m, dict)]
@@ -159,6 +193,9 @@ class Drive:
                 self.log(f"어느 태스크인지 모르는 worker_done: {dispatch}")
                 return
             st = tasks.load_state(self.p, task_id) or {}
+            if self.stale_dispatch(st, dispatch):
+                self.log(f"{task_id} 지난 디스패치의 worker_done 무시: {dispatch}")
+                return
             if st.get("agent") in self.cfg.agents:
                 agents.release_task(self.p, st["agent"], task_id)
             if payload.get("outcome") == "succeeded":
@@ -169,6 +206,9 @@ class Drive:
                             commands=[f'orch fix {task_id} --note "<원인과 지시>"', f'orch drop {task_id} --reason "<이유>"'])
         elif kind == "question":
             task_id = self.task_of(dispatch, orca_task)
+            if task_id and self.stale_dispatch(tasks.load_state(self.p, task_id) or {}, dispatch):
+                self.log(f"{task_id} 지난 디스패치의 question 무시: {dispatch}")
+                return
             self.decide("worker_question", task_id, body[:300], files=self.task_files(task_id),
                         commands=['orch answer <이 decide 의 id> "<답>"'],
                         extra={"question": body, "message_id": msg.get("id")})
@@ -176,23 +216,30 @@ class Drive:
             task_id = self.task_of(dispatch, orca_task)
             self.decide("escalation", task_id, body[:300] or "워커가 worker_done 없이 멈췄다", files=self.task_files(task_id))
 
+    @staticmethod
+    def stale_dispatch(st: dict, dispatch) -> bool:
+        return bool(dispatch and st.get("dispatch_id") and st["dispatch_id"] != dispatch)
+
     def decide(self, kind: str, task_id: str | None, summary: str, files=(), commands=(), extra=None) -> dict:
         entry = comm.post_decide(self.p, kind, task_id, summary, files, commands, extra)
         st = tasks.load_state(self.p, task_id) if task_id else None
-        if st:
+        if st and f"review:{task_id}" in self.jobs:
+            self.pending_marks[task_id] = (entry["id"], st.get("round"))  # 상태는 리뷰 자식이 쓴다. 끝난 뒤 적는다
+        elif st:
             st.update(decide=entry["id"], decide_round=st.get("round"))
             tasks.save_state(self.p, st)
         self.log(f"decide {entry['id']} {kind} {task_id or '-'}: {summary[:80]}")
         return entry
 
-    def guard(self, fn, task_id: str | None):
-        """정해진 절차가 거부되면 메인에 올린다. orca 없음(12)은 올린다."""
+    def guard(self, fn, task_id: str | None, note: str | None = None):
+        """정해진 절차가 거부되면 메인에 올린다. orca 없음(12)은 올린다. note 는 아직 못 전한 지시(올리는 글에 붙인다)."""
         try:
             return fn()
         except OrchError as exc:
             if exc.code == 12:
                 raise
-            self.decide("escalation", task_id, f"관제 절차 실패: {exc}"[:300], files=self.task_files(task_id))
+            text = f"관제 절차 실패: {exc}" + (f" (아직 전하지 못한 지시: {note})" if note else "")
+            self.decide("escalation", task_id, text[:300] if not note else text[:600], files=self.task_files(task_id))
             return None
 
     # --- 리뷰
@@ -210,9 +257,17 @@ class Drive:
             out, err = job.proc.communicate()
             del self.jobs[key]
             if job.kind == "review":
+                self.apply_mark(job.task_id)
                 self.review_done(job.task_id, job.proc.returncode, out or "", err or "")
             elif job.kind == "final":
                 self.final_done(job.proc.returncode, out or "", err or "")
+
+    def apply_mark(self, task_id: str) -> None:
+        mark = self.pending_marks.pop(task_id, None)
+        st = tasks.load_state(self.p, task_id) if mark else None
+        if st:
+            st.update(decide=mark[0], decide_round=mark[1])
+            tasks.save_state(self.p, st)
 
     def review_done(self, task_id: str, code: int, out: str, err: str) -> None:
         if code == 0:
@@ -237,10 +292,11 @@ class Drive:
     def on_review(self, task_id: str, result: dict) -> None:
         st = tasks.load_state(self.p, task_id) or {}
         self.log(f"{task_id} r{result.get('round')} {result.get('verdict')}")
-        if st.get("pending_dep_fix"):
-            self.dep_fix(task_id, approved=result.get("verdict") == "APPROVE")
-        elif result.get("verdict") == "APPROVE":
-            self.guard(lambda: self.accepted(task_id, tasks.accept(self.p, task_id)), task_id)
+        if result.get("verdict") == "APPROVE":
+            if st.get("pending_dep_fix"):
+                self.dep_fix(task_id)
+            else:
+                self.guard(lambda: self.accepted(task_id, tasks.accept(self.p, task_id)), task_id)
         else:
             self.request_changes(task_id, result)
         self.start_ready()
@@ -252,6 +308,20 @@ class Drive:
             h.get("source") == "orch" and "quick" in (h.get("tests") or {}) and h["tests"]["quick"] not in testgate.PASSED
             for h in reviews)
 
+    def run_fix(self, task_id: str, note: str | None) -> bool:
+        """tasks.fix. 선행 변경 note(pending_dep_fix)가 남아 있으면 함께 전하고, 성공한 뒤에만 지운다."""
+        pending = (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
+        full = "\n".join(x for x in (note, pending) if x) or None
+        done = []
+        self.guard(lambda: done.append(tasks.fix(self.p, self.cfg, task_id, full)), task_id, pending)
+        if not done:
+            return False
+        if pending:
+            st = tasks.load_state(self.p, task_id) or {}
+            if st.pop("pending_dep_fix", None) is not None:
+                tasks.save_state(self.p, st)
+        return True
+
     def request_changes(self, task_id: str, result: dict) -> None:
         st = tasks.load_state(self.p, task_id) or {}
         review = result.get("review") or f"docs/reviews/{task_id}/r{st.get('round')}.md"
@@ -261,21 +331,22 @@ class Drive:
                         files=[review], commands=[f'orch fix {task_id} --note "<지시>"', *stop])
             return
         if int(st.get("round") or 1) >= self.cfg.max_rounds:
-            self.decide("max_rounds", task_id, f"최대 {self.cfg.max_rounds} 라운드에도 승인되지 않았다", files=[review],
+            summary = f"최대 {self.cfg.max_rounds} 라운드에도 승인되지 않았다"
+            if st.get("pending_dep_fix"):
+                summary += f". 아직 전하지 못한 선행 변경: {st['pending_dep_fix']}"
+            self.decide("max_rounds", task_id, summary[:600], files=[review],
                         commands=[f"orch fix {task_id} --extra-round", *stop])
             return
         owned = [f for f in result.get("untracked") or [] if matches_any(f, st.get("owns") or [])]
         note = ("리뷰 중 소유 경로에 추적 안 된 파일이 생겼다. 커밋하거나 지운다: " + ", ".join(owned)) if owned else None
-        self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, note), task_id)
+        self.run_fix(task_id, note)
 
-    def dep_fix(self, task_id: str, approved: bool) -> None:
-        """디자인 승인 답에서 선행 디자인이 바뀐 태스크. 리뷰 결과를 그대로 받지 않고 선행 변경 note 로 고친다."""
-        st = tasks.load_state(self.p, task_id) or {}
-        note = st.pop("pending_dep_fix", None)
-        tasks.save_state(self.p, st)
-        if approved and self.guard(lambda: tasks.accept(self.p, task_id), task_id) is None:
+    def dep_fix(self, task_id: str) -> None:
+        """디자인 승인 답에서 선행 디자인이 바뀐 태스크가 승인됐다. accept 한 뒤 선행 변경 note 로 고친다.
+        note 는 고치기가 성공할 때까지 상태에 남는다."""
+        if self.guard(lambda: tasks.accept(self.p, task_id), task_id) is None:
             return
-        self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, note), task_id)
+        self.run_fix(task_id, None)
 
     # --- accept 뒤
     def accepted(self, task_id: str, result: dict) -> dict:
@@ -382,6 +453,7 @@ class Drive:
         except OrchError as exc:
             if exc.code == 12:
                 raise
+            self.log(f"{task_id} worker_check 실패: {exc}")
             return
         info = info or {}
         agent = st.get("agent") if st.get("agent") in self.cfg.agents else None
@@ -394,7 +466,8 @@ class Drive:
                 summary = f"작업자 시작을 {out.get('count')}번 확인하지 못했다"
                 if out.get("release_error"):
                     summary += f". 이전 작업자 터미널 정리 실패: {json.dumps(out['release_error'], ensure_ascii=False)}"
-                self.decide("escalation", task_id, summary[:300], files=self.task_files(task_id))
+                self.decide("escalation", task_id, summary[:300], files=self.task_files(task_id),
+                            commands=[f'orch fix {task_id} --force --note "<지시>"', f'orch drop {task_id} --reason "<이유>"'])
             return
         if busy is not False:
             return
@@ -412,29 +485,59 @@ class Drive:
             return
         self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, tasks.DIED_NOTE.format(task_id=task_id)), task_id)
 
+    def settle_resets(self) -> None:
+        """끝나지 않은 인수인계(resetting)를 정리한다: 디스패치가 끝났거나 워커가 없거나 너무 오래됐을 때."""
+        for name, e in agents.load_all(self.p).items():
+            resetting = e.get("resetting") if isinstance(e, dict) else None
+            if isinstance(resetting, dict):
+                self.isolated(f"agent:{name}", f"{name} 인수인계 정리", lambda: self.settle_reset(name, resetting))
+
+    def settle_reset(self, name: str, resetting: dict) -> None:
+        info = orca.worker_info(resetting["dispatch_id"]) if resetting.get("dispatch_id") else None
+        info = info or {}
+        try:
+            age = (datetime.now().astimezone() - datetime.fromisoformat(resetting["at"])).total_seconds()
+        except (KeyError, TypeError, ValueError):
+            age = 0
+        if not (info.get("stage") == "settled" or info.get("verdict") in ("exited", "dead") or age > RESET_STUCK_SECONDS):
+            return
+        ok = info.get("state") == "succeeded"
+        out = agents.finish_reset(self.p, name, ok=ok)
+        self.log(f"{name} 리셋 정리: {out['status']}")
+        if not ok:
+            self.decide("escalation", None, f"{name} 에이전트 인수인계가 끝나지 않았다", commands=[f"orch agent reset {name}"])
+
+    def reconcile_task(self, st: dict) -> None:
+        task_id, status = st["id"], st.get("status")
+        open_decide = (st.get("decide") and st["decide"] not in comm.load_answered(self.p)["ids"]
+                       and st.get("decide_round") == st.get("round"))
+        if f"review:{task_id}" in self.jobs or open_decide:
+            return  # 리뷰 중이거나 이 라운드는 메인 판단을 기다린다(답이 오면 다시 본다)
+        if status == "reviewing" and not pid_alive(tasks.review_pid(self.p, task_id)):
+            self.start_review(task_id)
+        elif status == "approved":
+            self.on_review(task_id, {"verdict": "APPROVE", "round": st.get("round")})
+        elif status == "changes" and not st.get("queued_fix"):
+            last = [h for h in st.get("history") or [] if h.get("stage") == "review"][-1:]
+            self.on_review(task_id, {"verdict": "REQUEST_CHANGES", "round": st.get("round"),
+                                     "untracked": (last[0].get("untracked") if last else None) or []})
+        elif status == "working":
+            self.check_worker(st)
+
     def reconcile(self) -> None:
-        """메일 없이 끝난 일을 찾는다: 끊긴 리뷰, 잠금으로 미룬 리뷰, accept 전에 멈춘 승인, 죽은 워커."""
+        """메일 없이 끝난 일을 찾는다: 끊긴 리뷰, 잠금으로 미룬 리뷰, accept 전에 멈춘 승인, 죽은 워커, 끝나지 않은 인수인계."""
         self.last_reconcile = self.clock()
-        agents.forget_dead(self.p, self.cfg)
+        self.isolated("reconcile:setup", "재확인 준비", lambda: agents.forget_dead(self.p, self.cfg))
+        self.isolated("reconcile:reset", "인수인계 정리", self.settle_resets)
         for task_id in sorted(self.retry_reviews):
             self.retry_reviews.discard(task_id)
-            self.start_review(task_id)
-        for st in tasks.all_states(self.p):
+            self.isolated(f"task:{task_id}", f"{task_id} 리뷰 다시 시작", lambda: self.start_review(task_id), task_id)
+        for st in self.isolated("reconcile:list", "태스크 목록 읽기", lambda: list(tasks.all_states(self.p))) or []:
             self.beat()
-            task_id, status = st["id"], st.get("status")
-            if f"review:{task_id}" in self.jobs or (st.get("decide") and st.get("decide_round") == st.get("round")):
-                continue  # 리뷰 중이거나 이 라운드는 메인 판단을 기다린다
-            if status == "reviewing" and not pid_alive(tasks.review_pid(self.p, task_id)):
-                self.start_review(task_id)
-            elif status == "approved":
-                self.on_review(task_id, {"verdict": "APPROVE", "round": st.get("round")})
-            elif status == "changes" and not st.get("queued_fix"):
-                self.request_changes(task_id, {})
-            elif status == "working":
-                self.check_worker(st)
-        self.start_ready()
-        self.design_step()
-        self.finish_step()
+            self.isolated(f"task:{st['id']}", f"{st['id']} 재확인", lambda: self.reconcile_task(st), st["id"])
+        for name, step in (("start_ready", self.start_ready), ("design_step", self.design_step),
+                           ("finish_step", self.finish_step)):
+            self.isolated(f"reconcile:{name}", name, step)
 
     def resets(self) -> None:
         for name in self.cfg.agents:
@@ -450,19 +553,19 @@ class Drive:
     def tick(self, wait_ms: int = WAIT_MS) -> None:
         self.beat()
         for msg in self.check(wait_ms):
-            self.handle_message(msg)
-        if self.run_queue():
-            self.start_ready()
-        self.poll_jobs()
+            self.isolated(f"msg:{msg.get('id')}", f"메시지 {msg.get('id')} 처리", lambda: self.handle_message(msg))
+        if self.isolated("queue", "메인 요청 처리", self.run_queue):
+            self.isolated("start_ready", "start_ready", self.start_ready)
+        self.isolated("poll_jobs", "자식 프로세스 확인", self.poll_jobs)
         self.beat()
-        self.resets()
+        self.isolated("resets", "에이전트 리셋", self.resets)
         if self.last_reconcile is None or self.clock() - self.last_reconcile >= RECONCILE_SECONDS:
-            self.reconcile()
+            self.isolated("reconcile", "재확인", self.reconcile)
 
     def run_forever(self) -> None:
         while True:
             self.tick()
-            time.sleep(IDLE_SECONDS)
+            time.sleep(IDLE_SECONDS * 5 if self.check_failed else IDLE_SECONDS)  # Orca 가 내려갔을 때 로그를 덜 쌓는다
 
 
 def main(p: Project, cfg: Config) -> int:
@@ -481,7 +584,7 @@ def main(p: Project, cfg: Config) -> int:
         drive.beat()
         with comm._sigterm_exits():
             drive.log(f"관제 시작({handle}): {drive.bind()['status']}")
-            drive.reconcile()
+            drive.isolated("reconcile", "시작 재확인", drive.reconcile)
             drive.run_forever()
     finally:
         release_pid(p.drive_pid)

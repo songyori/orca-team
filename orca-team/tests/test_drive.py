@@ -5,7 +5,7 @@ from unittest import mock
 
 from helpers import FAKES
 from test_tasks import TaskCase
-from orch import agents, comm, drive, plan, tasks
+from orch import agents, ask, comm, drive, plan, tasks
 from orch.config import Config
 from orch.paths import OrchError, Project
 
@@ -143,6 +143,109 @@ class ReviewResultTest(DriveCase):
         self.assertEqual((st["status"], st["round"]), ("working", 2))
         self.assertIn("선행 디자인 T-000", st["history"][-1]["note"])
         self.assertNotIn("pending_dep_fix", st)
+
+
+class FixReviewTest(DriveCase):
+    def test_max_rounds_decide_lifts_after_answer(self):
+        self.started()
+        self.set_state("T-001", round=3)
+        self.drive.start_review("T-001")
+        self.finish_review("REQUEST_CHANGES")
+        self.drive.reconcile()
+        self.assertEqual(len(self.outbox("decide")), 1)
+        ask.answer(self.p, self.outbox("decide")[0]["id"], "그대로 둔다")
+        self.drive.reconcile()
+        self.assertEqual([e["kind"] for e in self.outbox("decide")], ["max_rounds", "max_rounds"])
+
+    def test_reviewing_task_with_answered_decide_is_rereviewed(self):
+        self.started()
+        entry = self.drive.decide("escalation", "T-001", "리뷰 실패")
+        self.set_state("T-001", status="reviewing")
+        self.drive.reconcile()
+        self.assertEqual(self.spawned, [])  # 아직 열려 있다
+        ask.answer(self.p, entry["id"], "다시 한다")
+        self.drive.reconcile()
+        self.assertEqual(self.spawned[-1][0], ["review", "T-001"])
+
+    def test_pending_dep_fix_kept_at_max_round(self):
+        self.started("T-001", role="designer")
+        note = "선행 디자인 T-000 가 바뀐다: 색"
+        self.set_state("T-001", pending_dep_fix=note, round=3)
+        self.drive.start_review("T-001")
+        self.finish_review("REQUEST_CHANGES")
+        [entry] = self.outbox("decide")
+        self.assertEqual(entry["kind"], "max_rounds")
+        self.assertIn(note, entry["summary"])
+        self.assertEqual(self.state("T-001")["pending_dep_fix"], note)
+
+    def test_pending_dep_fix_kept_when_fix_fails_after_approve(self):
+        self.started("T-001", role="designer")
+        note = "선행 디자인 T-000 가 바뀐다: 색"
+        self.set_state("T-001", pending_dep_fix=note)
+        self.drive.start_review("T-001")
+        with mock.patch.object(tasks, "fix", side_effect=OrchError("고치기 거부", 2)):
+            self.finish_review("APPROVE")
+        self.assertEqual(self.state("T-001")["pending_dep_fix"], note)
+        self.assertIn(note, self.outbox("decide")[-1]["summary"])
+
+    def test_late_worker_done_is_ignored(self):
+        self.started()
+        self.drive.handle_message(self.done_msg(dispatch="ctx_old"))
+        self.assertEqual(self.spawned, [])
+        self.assertEqual(self.outbox("decide"), [])
+
+    def test_decide_during_review_is_marked_after_child_exits(self):
+        self.started()
+        self.drive.start_review("T-001")
+        entry = self.drive.decide("escalation", "T-001", "참고")
+        self.assertNotIn("decide", self.state("T-001"))
+        self.spawned[-1][1].finish(3)
+        self.drive.poll_jobs()
+        self.assertEqual(self.state("T-001")["decide"], entry["id"])
+
+
+class IsolationTest(DriveCase):
+    def msgs(self, *ids):
+        return {"ok": True, "result": {"deliveryId": "d", "messages": [
+            {"id": i, "type": "escalation", "body": "x", "payload": {}} for i in ids]}}
+
+    def test_failing_message_does_not_stop_tick_and_posts_once(self):
+        handled = []
+
+        def handler(msg):
+            if msg["id"] == "m1":
+                raise KeyError("boom")
+            handled.append(msg["id"])
+        self.respond("orchestration check", self.msgs("m1", "m2"))
+        with mock.patch.object(self.drive, "handle_message", side_effect=handler):
+            self.drive.tick(wait_ms=0)
+            self.drive.tick(wait_ms=0)
+        self.assertEqual(handled, ["m2", "m2"])
+        [entry] = self.outbox("decide")
+        self.assertIn("KeyError", entry["summary"])
+
+    def test_resets_error_does_not_stop_tick(self):
+        self.respond("orchestration check", {"ok": True, "result": {"messages": []}})
+        with mock.patch.object(self.drive, "resets", side_effect=OrchError("출력 파싱 실패", 1)):
+            self.drive.tick(wait_ms=0)
+        self.assertIsNotNone(self.drive.last_reconcile)
+
+    def test_check_failure_flag(self):
+        self.respond("orchestration check", {"ok": False}, code=1)
+        self.assertEqual(self.drive.check(0), [])
+        self.assertTrue(self.drive.check_failed)
+
+    def test_stuck_resetting_is_cleared(self):
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(path.read_text(encoding="utf-8") + '\n[agents.test]\ntitle = "테스트"\nroles = ["tester"]\n',
+                        encoding="utf-8")
+        self.drive = drive.Drive(self.p, Config.load(path), spawn=self.fake_spawn)
+        agents.update(self.p, "test", lambda e: e.update(resetting={"dispatch_id": "ctx_h", "at": "2026-01-01T00:00:00+00:00"}))
+        self.respond("orchestration worker-show", {"ok": True, "result": {
+            "worker": {"stage": "settled", "state": "failed"}, "projection": {"liveness": {"verdict": "exited"}}}})
+        self.drive.reconcile()
+        self.assertFalse(agents.entry(self.p, "test").get("resetting"))
+        self.assertIn("인수인계가 끝나지 않았다", self.outbox("decide")[-1]["summary"])
 
 
 class AcceptFlowTest(DriveCase):
