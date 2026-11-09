@@ -28,7 +28,7 @@ ASK_WORKER_TITLES = {"worker:planner": "기획", "worker:director": "디자인 �
 SETUP_PREFIXES = (".claude/", ".orchestration/", "docs/superpowers/")
 SETUP_FILES = {"CLAUDE.md", "AGENTS.md", ".gitignore"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
-ORCA_ORCHESTRATION_RE = re.compile(r"(^|[\s;&|(`])orca\s+orchestration\b")
+ORCA_ORCHESTRATION_RE = re.compile(r"(^|[\s;&|(`\"'])orca[\"']?\s+orchestration\b")
 STATE_DIR = ".orchestration/state"
 CONTEXT_DENIED = "context-denied.json"  # state/ 안. render.context 미표시로 한 번 거부한 outbox id(같은 id 는 두 번째에 통과)
 TRANSCRIPT_TAIL_LINES = 400
@@ -37,7 +37,7 @@ MARKDOWN_NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 # 정규화한 render.context 의 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다. 확정 질문 context 는 제목·첫 항목만으로도
 # 80자를 넘어 다른 질문과 겹치지 않고, 표·제목을 다시 그린 것은 맞지만 요약하면 맞지 않는다.
 CONTEXT_FINGERPRINT = 80
-ORCH_DRIVE_RE = re.compile(r"(^|[\s;&|(`])(?:\S*/)?orch\s+drive\b")
+ORCH_DRIVE_RE = re.compile(r"(^|[\s;&|(`\"'])(?:\S*/)?orch[\"']?(?:\s+-\S+)*\s+drive(?![\w-])")
 # 세션 시작 안내의 관제 줄(자동 부활 문구가 없을 때). /orca-team:up 은 수동 복구로 남긴다.
 DEFAULT_UP_LINE = ("- 관제(orch drive)는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다. 메시지 watcher 가 꺼져 있으면 Bash "
                    "`run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. 관제 상태가 의심되면 "

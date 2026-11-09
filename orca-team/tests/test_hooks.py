@@ -51,7 +51,7 @@ class RoleMarkTest(HookCase):
 
     def test_first_prompt_wins(self):
         self.mark("s1", "안녕")
-        self.mark("s1", "[orca-team:coordinator]")
+        self.mark("s1", "안녕 다시")
         self.assertEqual(self.role("s1"), "main")
 
     def test_worker_marker_follows_each_preamble(self):
@@ -71,6 +71,8 @@ class RoleMarkTest(HookCase):
         out = self.hook("guard", {"session_id": "after-clear", "tool_name": "Write",
                                   "tool_input": {"file_path": str(self.root / "src/a.ts")}}, env=env)
         self.assertIsNone(self.decision(out))
+        self.assertIsNone(self.hook("role-mark", {"session_id": "agent-mark", "prompt": "안녕"}, env=env))
+        self.assertEqual(self.role("agent-mark"), "worker")
 
 
 class GuardTest(HookCase):
@@ -103,6 +105,20 @@ class GuardTest(HookCase):
         self.assertIn("관제", self.tool("m", "Bash", {"command": "orca orchestration check"})
                       ["hookSpecificOutput"]["permissionDecisionReason"])
         self.assertIsNone(self.tool("m", "Bash", {"command": ".orchestration/bin/orch drop T-001 --reason x"}))
+
+    def test_main_quoted_orch_drive_and_orca_orchestration_are_denied(self):
+        self.mark("m", "안녕")
+        for command in ('bash -c "orch drive"', "sh -c 'orca orchestration check'", '"/x/bin/orch" drive',
+                         "/x/bin/orch drive"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(self.tool("m", "Bash", {"command": command})), "deny")
+
+    def test_main_lookalike_commands_are_allowed(self):
+        self.mark("m", "안녕")
+        for command in (".orchestration/bin/orch driver-status", ".orchestration/bin/orch status",
+                        ".orchestration/bin/orch start T-001", 'echo orca orchestrations'):
+            with self.subTest(command=command):
+                self.assertIsNone(self.tool("m", "Bash", {"command": command}))
 
     def test_worker_rules(self):
         self.mark("w", "Your task ID is: t")
@@ -256,10 +272,10 @@ class PluginRootRecordTest(HookCase):
         self.assertFalse((other / ".orchestration").exists())
 
 
-COORD_ENV = {"ORCA_TERMINAL_HANDLE": "term_coord"}
+AGENT_ENV = {"ORCA_TERMINAL_HANDLE": "term_agent"}
 
 
-class EnvCoordinatorTest(HookCase):
+class EnvAgentTest(HookCase):
     def setUp(self):
         super().setUp()
         self.orch("setup-done")
@@ -306,10 +322,10 @@ class SessionIdTest(HookCase):
         self.assertEqual(self.decision(self.hook("guard", {"session_id": "../x", "tool_name": "Bash",
                                                            "tool_input": cmd})), "deny")
         (self.root / ".orchestration/state/agents.json").write_text(
-            json.dumps({"production": {"handle": "term_coord"}}), encoding="utf-8")
+            json.dumps({"production": {"handle": "term_agent"}}), encoding="utf-8")
         self.assertIsNone(self.hook("guard", {"session_id": "../x", "tool_name": "Bash", "tool_input": cmd},
-                                    env=COORD_ENV))
-        self.assertIsNone(self.hook("session-start", {"session_id": "../x"}, env=COORD_ENV))
+                                    env=AGENT_ENV))
+        self.assertIsNone(self.hook("session-start", {"session_id": "../x"}, env=AGENT_ENV))
 
 
 class StateAndAllowlistGuardTest(HookCase):
@@ -322,7 +338,9 @@ class StateAndAllowlistGuardTest(HookCase):
         self.mark("m", "hi")
         self.mark("w", "Your task ID is: t")
         self.assertTrue((self.root / ".orchestration/state/setup-mode").exists())
-        for session_id, env in (("m", None), ("w", None), ("c", COORD_ENV)):
+        (self.root / ".orchestration/state/agents.json").write_text(
+            json.dumps({"production": {"handle": "term_agent"}}), encoding="utf-8")
+        for session_id, env in (("m", None), ("w", None), ("c", AGENT_ENV)):
             for tool in ("Edit", "Write", "MultiEdit", "NotebookEdit"):
                 with self.subTest(session=session_id, tool=tool):
                     out = self.edit(session_id, ".orchestration/state/tasks/T-001.json", tool, env)
@@ -337,7 +355,7 @@ class StateAndAllowlistGuardTest(HookCase):
         self.assertEqual(util.load_run(Project(self.root)), {})
         self.orch("setup-done")
         out = self.hook("guard", {"session_id": "s", "tool_name": "Bash",
-                                  "tool_input": {"command": "orca orchestration check"}}, env=COORD_ENV)
+                                  "tool_input": {"command": "orca orchestration check"}})
         self.assertEqual(self.decision(out), "deny")
         self.assertFalse((self.root / ".orchestration/state/hook-errors.log").exists())
 
