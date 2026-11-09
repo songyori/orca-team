@@ -392,6 +392,66 @@ class Upgrade070Test(ProjectCase):
         self.assertEqual(out["config"], {"changed": []})
         self.assertEqual(path.read_bytes(), before)
 
+    def commit_config(self, text):
+        (self.root / ".orchestration/config.toml").write_text(text, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "config")
+
+    def test_keeps_comments_of_other_tables(self):
+        text = OLD_CONFIG.replace("[coordinator]", "# 코디네이터 설정\n[coordinator] # 주석").replace(
+            "[review]", "# 리뷰 설정\n[review]").replace("[defaults]", "\n# 기본값\n[defaults]").replace(
+            "[roles.designer]", "# 디자인 직무\n[roles.designer]")
+        self.commit_config(text)
+        self.upgrade()
+        after = (self.root / ".orchestration/config.toml").read_text(encoding="utf-8")
+        for keep in ("# 리뷰 설정\n[review]", "# 기본값\n[defaults]", "# 디자인 직무\n[roles.designer]"):
+            self.assertIn(keep, after)
+        self.assertNotIn("[coordinator]", after)
+        self.assertIn('codex_effort = "xhigh"', after)
+        self.assertIn('[roles.designer]\ntitle = "디자인"\ncodex_effort = "xhigh"', after)
+
+    def test_migrated_config_loads(self):
+        self.upgrade()
+        sys.path.insert(0, str(PLUGIN / "lib"))
+        try:
+            from orch.config import Config
+            Config.load(self.root / ".orchestration/config.toml")
+        finally:
+            sys.path.remove(str(PLUGIN / "lib"))
+
+    def test_keeps_drive_handle(self):
+        run = self.root / ".orchestration/state/run.json"
+        run.write_text(json.dumps({"run_id": "r", "coordinator_handle": "term_old", "drive_handle": "term_drive"}),
+                       encoding="utf-8")
+        self.upgrade()
+        self.assertEqual(json.loads(run.read_text())["drive_handle"], "term_drive")
+
+    def test_no_run_json_is_not_created(self):
+        run = self.root / ".orchestration/state/run.json"
+        run.unlink()
+        self.upgrade()
+        self.assertFalse(run.exists())
+
+    def test_director_gets_research_agent(self):
+        self.commit_config(OLD_CONFIG + '\n[roles.director]\ntitle = "감독"\nowns = ["docs/direction/**"]\n')
+        self.upgrade()
+        cfg = tomllib.loads((self.root / ".orchestration/config.toml").read_text(encoding="utf-8"))
+        self.assertEqual(cfg["agents"]["research"]["roles"], ["director"])
+
+    def test_unremovable_coordinator_fails_clearly(self):
+        text = OLD_CONFIG.replace("[coordinator]\n", "").replace("max_parallel = 4\n", "max_parallel = 4\ncoordinator = { auto_up = false }\n")
+        self.commit_config(text)
+        out = json.loads(self.upgrade().stdout)
+        self.assertIn("coordinator", out["config"]["skipped"])
+        self.assertEqual((self.root / ".orchestration/config.toml").read_text(encoding="utf-8"), text)
+
+    def test_unmatched_codex_effort_is_not_recorded(self):
+        text = OLD_CONFIG.replace('codex_effort = "high"\n\n[roles.planner]', "codex_effort = { v = 1 }\n\n[roles.planner]", 1)
+        text = text.replace('[roles.planner]\ntitle = "기획"\ncodex_effort = "high"', '[roles.planner]\ntitle = "기획"\ncodex_effort = \'high\'')
+        self.commit_config(text)
+        out = json.loads(self.upgrade().stdout)
+        self.assertFalse([c for c in out["config"]["changed"] if "roles.planner" in c], out["config"])
+
 
 class DoctorTest(ProjectCase):
     def ready(self):

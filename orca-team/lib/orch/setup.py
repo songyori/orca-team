@@ -162,7 +162,9 @@ def editable_reason(p: Project, rel: str) -> str | None:
 
 
 def table_re(header: str) -> re.Pattern:
-    return re.compile(rf"^\[{re.escape(header)}\][ \t]*\n.*?(?=^\[|\Z)", re.M | re.S)
+    """표 하나(헤더 줄부터 다음 표 직전까지). 다음 표 바로 위의 빈 줄·주석 줄은 그 표의 것이라 뺀다."""
+    return re.compile(rf"^\[{re.escape(header)}\][ \t]*(?:#[^\n]*)?\n.*?(?=^(?:[ \t]*(?:#[^\n]*)?\n)*(?:\[|\Z))",
+                      re.M | re.S)
 
 
 def refuse_busy(p: Project) -> None:
@@ -191,15 +193,23 @@ def migrate_config(p: Project) -> dict:
     auto_up = True
     if "coordinator" in data:
         auto_up = data["coordinator"].get("auto_up", True) is not False
-        text = table_re("coordinator").sub("", text)
+        text, n = table_re("coordinator").subn("", text)
+        if not n or "coordinator" in tomllib.loads(text):
+            return {"skipped": "[coordinator] 를 글자로 지울 수 없다. 직접 지운 뒤 다시 한다"}
         changed.append("[coordinator] 지움")
     for header, old in OLD_CODEX_EFFORT.items():
         table = data.get("defaults", {}) if header == "defaults" else data.get("roles", {}).get(header[6:], {})
         if table.get("codex_effort") != old:
             continue
-        text = table_re(header).sub(lambda m: re.sub(r'(?m)^codex_effort\s*=\s*"[^"]*"', 'codex_effort = "xhigh"',
-                                                      m.group(0)), text)
-        changed.append(f"[{header}].codex_effort {old} → xhigh")
+        done = []
+
+        def bump(m):
+            body, n = re.subn(r'(?m)^codex_effort\s*=\s*"[^"]*"', 'codex_effort = "xhigh"', m.group(0))
+            done.append(n)
+            return body
+        text = table_re(header).sub(bump, text)
+        if sum(done):
+            changed.append(f"[{header}].codex_effort {old} → xhigh")
     text = text.rstrip() + "\n"
     if "drive" not in data:
         text += f"\n[drive]\nauto_up = {'true' if auto_up else 'false'}\n"
@@ -271,7 +281,8 @@ def upgrade(p: Project) -> dict:
             removed.append(legacy)
     config = migrate_config(p)
     claude_md = replace_claude_section(p)
-    update_run(p, lambda r: (r.pop("coordinator_handle", None), r.pop("launched_at", None)))
+    if p.run_json.exists():
+        update_run(p, lambda r: (r.pop("coordinator_handle", None), r.pop("launched_at", None)))
     shim = p.root / ".orchestration/bin/orch"
     if shim.exists():
         shim.chmod(0o755)
