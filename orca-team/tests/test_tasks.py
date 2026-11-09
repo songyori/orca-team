@@ -125,11 +125,20 @@ class StartTest(TaskCase):
         proc = self.orch("start", "T-001", check=False)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("--retry", proc.stderr)
+        self.assertNotIn("recovery", proc.stderr)  # 메인이 따를 수 없는 Orca 복구 절차를 가리키지 않는다
         self.assertEqual(self.state("T-001")["status"], "launch_failed")
         self.assertEqual(self.orch("start", "T-001", check=False).returncode, 2)
         self.respond("orchestration worker-start", STARTED)
         self.orch("start", "T-001", "--retry")
         self.assertEqual(self.state("T-001")["status"], "working")
+
+    def test_drive_only_command_from_main_names_queued_commands(self):
+        self.write_spec("T-001")
+        self.orch("start", "T-001")
+        proc = self.orch("review", "T-001", check=False, env={"ORCA_TERMINAL_HANDLE": "term_main"})
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("start, start-ready, fix, accept, drop, design-decide, scope, agent reset", proc.stderr)
+        self.assertNotIn("같은 orch 명령", proc.stderr)
 
     def test_main_without_drive_is_refused(self):
         self.write_spec("T-001")
@@ -391,7 +400,8 @@ class LaunchInProgressTest(TaskCase):
     def assert_plain_launch_failed(self):
         row = self.row()
         self.assertNotIn("launching", row)
-        self.assertIn("orca orchestration worker-list", row["next"])
+        self.assertNotIn("orca orchestration", row["next"])  # 메인은 Orca 를 부르지 못한다
+        self.assertIn("관제가 남은 워커를 확인", row["next"])
         self.assertIn("orch start T-001 --retry", row["next"])
         self.orch("start", "T-001", "--retry")
         self.assertEqual(self.state("T-001")["status"], "working")
@@ -613,7 +623,8 @@ class StartRefusalTest(TaskCase):
         proc = self.orch("start", "T-001", check=False)
         self.assertEqual(proc.returncode, 2)
         self.assertIn("orch start T-001 --retry", proc.stderr)
-        self.assertIn("orca orchestration worker-list", proc.stderr)
+        self.assertNotIn("orca orchestration", proc.stderr)
+        self.assertIn("관제가 남은 워커를 확인", proc.stderr)
         self.assertNotIn("orch fix", proc.stderr)
 
     def test_launch_failed_fix_points_to_fix_retry(self):
@@ -758,19 +769,19 @@ class NextActionTest(TaskCase):
         show_worker(self, "live", stage="running")
         self.assertEqual(self.next(), "워커의 worker_done 을 기다린다")
 
-    def test_working_with_settled_succeeded_worker_reviews_in_background(self):
+    def test_working_with_settled_succeeded_worker_is_reviewed_by_drive(self):
         show_worker(self, "live", stage="settled", state="succeeded")
         nxt = self.next()
-        self.assertTrue(nxt.startswith("orch review T-001"), nxt)
-        self.assertIn("run_in_background: true", nxt)
+        self.assertIn("관제가 리뷰를 시작한다", nxt)
+        self.assertNotIn("orch review", nxt)
 
-    def test_working_with_settled_failed_worker_fixes(self):
+    def test_working_with_settled_failed_worker_is_sent_back_by_drive(self):
         show_worker(self, "live", stage="settled", state="failed")
-        self.assertEqual(self.next(), 'orch fix T-001 --note "워커 종료"')
+        self.assertIn("관제가 이어서 하도록 다시 보낸다", self.next())
 
-    def test_working_with_dead_worker_fixes(self):
+    def test_working_with_dead_worker_is_sent_back_by_drive(self):
         self.liveness("exited")
-        self.assertEqual(self.next(), 'orch fix T-001 --note "워커 종료"')
+        self.assertIn("관제가 이어서 하도록 다시 보낸다", self.next())
 
     def test_working_with_unknown_liveness_waits(self):
         self.respond("orchestration worker-show", {"ok": False, "error": {"code": "x"}}, code=1)
@@ -785,18 +796,18 @@ class NextActionTest(TaskCase):
         self.assertIn("리뷰", nxt)
         self.assertNotIn("orch review", nxt)
 
-    def test_reviewing_without_review_process_reruns_review_in_background(self):
+    def test_reviewing_without_review_process_is_rerun_by_drive(self):
         self.set_state("T-001", status="reviewing")
         nxt = self.next()
-        self.assertTrue(nxt.startswith("orch review T-001"), nxt)
-        self.assertIn("run_in_background: true", nxt)
+        self.assertIn("관제가 다시 리뷰한다", nxt)
+        self.assertNotIn("orch review", nxt)
 
     def test_broken_config_falls_back_without_max_rounds(self):
         self.set_state("T-001", status="changes", round=3)
         (self.root / ".orchestration/config.toml").write_text("roles = [깨진\n", encoding="utf-8")
         out = json.loads(self.orch("status").stdout)
         self.assertIn("config.toml", out["config_error"])
-        self.assertEqual(out["tasks"][0]["next"], "orch fix T-001")
+        self.assertEqual(out["tasks"][0]["next"], tasks.CHANGES_NEXT)
 
     def test_status_survives_non_utf8_config(self):
         (self.root / ".orchestration/config.toml").write_bytes(b"\xff\xfe\x00bad")
@@ -811,32 +822,48 @@ class NextActionTest(TaskCase):
         self.assertEqual(proc.returncode, 0, proc.stderr)
         out = json.loads(proc.stdout)
         self.assertIn("max_rounds", out["config_error"])
-        self.assertEqual(out["tasks"][0]["next"], "orch fix T-001")
+        self.assertEqual(out["tasks"][0]["next"], tasks.CHANGES_NEXT)
 
     def test_status_has_null_config_error_when_config_ok(self):
         self.assertIsNone(json.loads(self.orch("status").stdout)["config_error"])
 
-    def test_approved_accepts(self):
+    def test_approved_is_accepted_by_drive(self):
         self.set_state("T-001", status="approved")
-        self.assertEqual(self.next(), "orch accept T-001")
+        self.assertEqual(self.next(), "관제가 accept 한다")
 
-    def test_changes_fixes(self):
+    def test_changes_is_fixed_by_drive(self):
         self.set_state("T-001", status="changes")
-        self.assertEqual(self.next(), "orch fix T-001")
+        self.assertEqual(self.next(), tasks.CHANGES_NEXT)
 
-    def test_changes_at_max_rounds_asks_main_then_drop(self):
+    def test_changes_at_max_rounds_names_extra_round_and_drop(self):
         self.set_state("T-001", status="changes", round=3)
         nxt = self.next()
-        self.assertIn("decide 로 올리고", nxt)
+        self.assertIn("orch fix T-001 --extra-round", nxt)
         self.assertIn("orch drop T-001", nxt)
-        self.assertNotIn("orch fix", nxt)
+        self.assertNotIn("decide 로 올리고", nxt)
 
     def test_launch_failed_work_stage(self):
         self.set_state("T-001", status="launch_failed", stage="work")
         nxt = self.next()
-        self.assertIn("orca orchestration worker-list", nxt)
+        self.assertNotIn("orca orchestration", nxt)
+        self.assertIn("관제가 남은 워커를 확인", nxt)
         self.assertIn("orch start T-001 --retry", nxt)
         self.assertNotIn("orch fix", nxt)
+
+    def test_hints_name_only_commands_main_can_run(self):
+        """메인은 Orca 를 부르지 못하고, 관제 전용 orch 명령(review·design-review·plan apply)도 부르지 못한다."""
+        cases = [("working", 1, "live"), ("working", 1, "exited"), ("working", 3, "exited"), ("reviewing", 1, None),
+                 ("approved", 1, None), ("changes", 1, None), ("changes", 3, None), ("launch_failed", 1, None),
+                 ("awaiting_user", 1, None)]
+        for status, rnd, verdict in cases:
+            with self.subTest(status=status, round=rnd, verdict=verdict):
+                if verdict:
+                    self.liveness(verdict)
+                self.set_state("T-001", status=status, round=rnd)
+                nxt = self.next()
+                for bad in ("orca orchestration", "orch review", "orch design-review", "orch plan apply",
+                            "run_in_background", "decide 로 올리고", "recovery"):
+                    self.assertNotIn(bad, nxt)
 
     def test_launch_failed_fix_stage(self):
         self.set_state("T-001", status="launch_failed", stage="fix", round=2)
@@ -937,19 +964,20 @@ class DependsPendingTest(TaskCase):
         self.assertEqual((out["status"], out["released"]), ("dropped", None))
         self.assertEqual(self.calls_for("orchestration worker-release"), [])
 
-    def test_pending_next_is_start_ready(self):
+    def test_pending_next_is_started_by_drive(self):
         self.write_spec("T-001")
         self.write_pending("T-001")
-        self.assertEqual(self.next_of("T-001"), "orch start-ready")
+        self.assertIn("관제가 띄운다", self.next_of("T-001"))
 
-    def test_pending_with_dropped_dependency_asks_main_then_drop(self):
+    def test_pending_with_dropped_dependency_names_drop_or_depends_on(self):
         self.write_pending("T-001")
         self.set_state("T-001", status="dropped")
         self.write_pending("T-002", role="tester", depends_on=("T-001",), owns=("tests/**",))
         nxt = self.next_of("T-002")
         self.assertIn("T-001", nxt)
-        self.assertIn("decide 로 올리고", nxt)
+        self.assertNotIn("decide 로 올리고", nxt)
         self.assertIn("orch drop T-002", nxt)
+        self.assertIn("depends_on 을 고쳐 커밋한 뒤 orch start T-002", nxt)
 
     def test_status_survives_malformed_max_parallel(self):
         cfg = self.root / ".orchestration/config.toml"

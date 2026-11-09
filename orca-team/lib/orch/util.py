@@ -192,8 +192,12 @@ def is_drive(p: Project) -> bool:
     return bool(handle) and handle == load_run(p).get("drive_handle")
 
 
+QUEUED_COMMANDS = "start, start-ready, fix, accept, drop, design-decide, scope, agent reset"  # 메인이 관제 큐로 넣는 명령
+
+
 def require_drive(p: Project) -> None:
-    """관제에서만 도는 명령을 보호한다. 메인이 Run 에 묶이는 사고를 막는다."""
+    """관제에서만 도는 명령을 보호한다. 메인이 Run 에 묶이는 사고를 막는다. 큐 명령은 cli 가 메인에서 큐로 보내므로
+    메인이 여기에 닿는 것은 관제만 하는 명령(review, design-review, plan apply, bind 등)이다."""
     if not is_drive(p):
-        raise OrchError("관제(orch drive) 터미널에서만 실행한다(ORCA_TERMINAL_HANDLE 이 run.json 의 drive_handle 과 다르다). "
-                        "메인은 같은 orch 명령을 쓰면 관제 큐를 거친다", 2)
+        raise OrchError("이 명령은 관제(orch drive) 터미널에서만 실행한다(ORCA_TERMINAL_HANDLE 이 run.json 의 drive_handle 과 "
+                        f"다르다). 관제가 스스로 하는 일이다. 메인이 관제 큐로 넣는 orch 명령은 {QUEUED_COMMANDS} 뿐이다", 2)

@@ -21,12 +21,16 @@ class CommTest(ProjectCase):
 
     def test_notify_appends_numbered_lines(self):
         a = json.loads(self.orch("notify", "--type", "progress", "하나").stdout)
-        b = json.loads(self.orch("notify", "--type", "question", "둘").stdout)
+        b = json.loads(self.orch("notify", "--type", "done", "둘").stdout)
         self.assertEqual((a["id"], b["id"]), ("out-0001", "out-0002"))
-        self.assertEqual([m["type"] for m in self.outbox()], ["progress", "question"])
+        self.assertEqual([m["type"] for m in self.outbox()], ["progress", "done"])
 
     def test_notify_rejects_bad_type_and_empty_body(self):
         self.assertEqual(self.orch("notify", "--type", "nope", "x", check=False).returncode, 2)
+        # question 은 orch answer 가 받지 않는 막다른 길이다(질문은 decide·ask-user 로 올린다)
+        proc = self.orch("notify", "--type", "question", "x", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("progress|done 중 하나", proc.stderr)
         self.assertEqual(self.orch("notify", "--type", "done", "  ", check=False).returncode, 2)
 
     def test_watch_returns_only_new_lines(self):

@@ -24,9 +24,11 @@ PLACEHOLDER_RE = re.compile(r"^<.*>$")
 # pending(plan apply 가 만든, 아직 띄우지 않은 태스크)은 잡지 않는다.
 ACTIVE = ("working", "reviewing", "changes", "approved", "launch_failed", "awaiting_user")
 FINISHED = ("done", "dropped")  # 소유 경로 잠금을 잡지 않는다
-RECOVERY_REF = "orca skills get orchestration --reference references/recovery-and-cleanup.md"
 LAUNCH_STALE_SECONDS = 600  # 이보다 오래된 pending 기록은 pid 가 재사용됐을 수 있어 진행 중으로 보지 않는다
 LAUNCHING_NEXT = "워커를 띄우는 중이다. 끝날 때까지 기다린 뒤 orch status 로 다시 본다"
+LAUNCH_CHECK = "관제가 남은 워커를 확인해 decide 로 알린다"  # 메인은 Orca(worker-list)를 부르지 못한다
+CHANGES_NEXT = "관제가 리뷰 지적대로 수정 라운드를 띄운다"
+QUEUED_FIX_NEXT = "수정 라운드가 에이전트 대기열에 있다. 에이전트가 비면 관제가 띄운다"
 PLANNER_ROLE = "planner"  # accept 뒤 관제가 plan apply 하는 직무
 UNKNOWN_START_LIMIT = 3  # 같은 태스크에서 start_unknown 이 이만큼이면 다시 띄우지 않고 메인에 올린다
 DIED_NOTE = "이전 작업자가 중간에 끝났다. 리포트와 [{task_id}] 커밋을 확인하고 남은 일을 이어서 한다"
@@ -361,9 +363,8 @@ def launch(p: Project, cfg: Config, doc: TaskDoc, st: dict, stage: str, rnd: int
     if ok and fixed is not None:
         agents.record_start(p, fixed, receipt, bool(fresh), doc.id)
     if not ok:
-        raise OrchError("worker-start 실패. 같은 명령을 그냥 다시 돌리지 않는다. 영수증의 failedStage·residualResources 를 보고 "
-                        f"Orca recovery 참조(orca skills get orchestration --reference references/recovery-and-cleanup.md)를 "
-                        f"따른 뒤 --retry 로 다시 한다: {receipt_path}")
+        raise OrchError(f"worker-start 실패(영수증: {receipt_path}). 같은 명령을 그냥 다시 돌리지 않는다. {LAUNCH_CHECK}. "
+                        f"그 결과를 보고 {retry_command(st)} 로 다시 하거나 orch drop {doc.id} --reason \"<이유>\" 로 그만둔다")
     return entry
 
 
@@ -371,8 +372,7 @@ def start_refusal(st: dict) -> str:
     task_id, status = st["id"], st.get("status")
     if status == "launch_failed":
         return (f"{task_id} 의 직전 {st.get('stage')} 실행이 실패했거나 실행 도중 끊겼다(launch_failed). 워커가 떠 있을 수 있다. "
-                f"`orca orchestration worker-list` 로 확인하고, 남은 워커는 Orca recovery 참조({RECOVERY_REF})대로 정리한 뒤 "
-                f"`{retry_command(st)}` 로 다시 한다")
+                f"{LAUNCH_CHECK}. 그 결과를 보고 `{retry_command(st)}` 로 다시 한다")
     if status == "dropped":
         return f"{task_id} 는 중단(drop)된 태스크다. 다시 하려면 orch task new 로 새 태스크를 만든다"
     return f"{task_id} 는 이미 시작됐다(status={status}). 수정 라운드는 orch fix"
@@ -793,54 +793,57 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
 
 
 def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:
-    """다시 뜬 관제가 따를 다음 행동. 끝난 태스크는 None. cfg 가 없으면(설정 깨짐) 최대 라운드 검사를 뺀다."""
+    """orch status 가 메인에 보이는 다음 행동. 관제가 스스로 하는 일(리뷰, 승인 질문, 수정 라운드, 남은 워커 확인)은
+    "관제가 …" 로 적고, 메인이 할 일은 메인이 실행할 수 있는 orch 명령(큐 명령·answer·status·task new)으로만 적는다.
+    끝난 태스크는 None. cfg 가 없으면(설정 깨짐) 최대 라운드 검사를 뺀다."""
     task_id, status = st.get("id"), st.get("status")
     max_rounds = cfg.max_rounds if cfg is not None else None
     at_max = max_rounds is not None and int(st.get("round") or 1) >= max_rounds
-    ask_then_drop = (f"최대 {max_rounds} 라운드라 fix 할 수 없다. 메인에 decide 로 올리고, "
-                     f"중단하기로 하면 orch drop {task_id} --reason \"<이유>\"")
+    stop = f'orch drop {task_id} --reason "<이유>"'
+    at_max_next = (f"최대 {max_rounds} 라운드라 그냥 고칠 수 없다. 사용자에게 물어 한 번 더 고치기로 하면 "
+                   f'orch fix {task_id} --extra-round --note "<지시>", 그만두기로 하면 {stop}')
     if status == "pending":
         dropped = [dep for dep in st.get("depends_on") or [] if (load_state(p, dep) or {}).get("status") == "dropped"]
         if dropped:
-            return (f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 시작할 수 없다. 메인에 decide 로 올리고, "
-                    f"진행하지 않기로 하면 orch drop {task_id} --reason \"<이유>\"")
-        return "orch start-ready"
+            return (f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 시작할 수 없다. 진행하지 않으면 {stop}, "
+                    f"이어 가려면 depends_on 을 고쳐 커밋한 뒤 orch start {task_id}")
+        return "선행 태스크와 에이전트가 비면 관제가 띄운다(orch start-ready 로 바로 확인할 수 있다)"
+    if st.get("queued_fix") and status in ("working", "changes", "awaiting_user"):
+        return QUEUED_FIX_NEXT
     if status == "awaiting_user":
         asks = load_design_reviews(p)
         last = asks[-1] if asks else {}
         asked = last.get("tasks") if isinstance(last.get("tasks"), dict) else {}
         if asked.get(task_id) == st.get("round"):
-            return (f"사용자 승인을 기다린다(디자인 승인 질문 {last.get('id')}). 답이 오면 승인은 orch accept {task_id}, "
-                    f"수정 요청은 orch fix {task_id} --note \"<사용자 요청>\"")
-        return ("사용자 승인 대기. orch design-review 로 일괄 승인 질문을 올린다(승인 대상 태스크가 아직 리뷰 중이면 "
-                "exit 2 로 무엇을 기다리는지 알려 준다)")
+            return (f"사용자 승인을 기다린다(디자인 승인 질문 {last.get('id')}). 답이 오면 화면별 결정을 "
+                    f"orch design-decide {last.get('id')} --approve T-xxx,… --fix 'T-yyy=<요청>' 으로 넘긴다")
+        return "사용자 승인 대기. 승인 대상 태스크가 모두 리뷰를 지나면 관제가 디자인 승인 질문을 올린다"
     if status == "working":
         try:
             busy, desc, info = worker_check(st)
         except OrchError:
             busy, desc, info = None, "orca 확인 불가", None
         if busy is False and (info or {}).get("stage") == "settled" and info.get("state") == "succeeded":
-            return f"orch review {task_id} (Bash `run_in_background: true` 로 실행). 워커가 worker_done 없이 정상 종료했다({desc})"
+            return f"워커가 worker_done 없이 정상 종료했다({desc}). 관제가 리뷰를 시작한다"
         if busy is False:
-            return f"워커가 worker_done 없이 끝났다({desc}). {ask_then_drop}" if at_max \
-                else f'orch fix {task_id} --note "워커 종료"'
+            return (f"워커가 worker_done 없이 끝났다({desc}). " +
+                    (at_max_next if at_max else "관제가 이어서 하도록 다시 보낸다"))
         if busy:
             return "워커의 worker_done 을 기다린다"
-        return f"워커의 worker_done 을 기다린다(워커 생존 확인 불가: {desc})"
+        return f"워커의 worker_done 을 기다린다(워커 생존 확인 불가: {desc}). 오래 이어지면 관제가 decide 로 알린다"
     if status == "reviewing":
         if pid_alive(review_pid(p, task_id)):
-            return "리뷰가 진행 중이다. 끝나면 출력의 verdict 대로 accept 또는 fix 한다"
-        return f"orch review {task_id} (Bash `run_in_background: true` 로 실행)"
+            return "리뷰가 진행 중이다. 끝나면 관제가 verdict 대로 처리한다"
+        return "리뷰가 끊겼다. 관제가 다시 리뷰한다"
     if status == "approved":
-        return f"orch accept {task_id}"
+        return "관제가 accept 한다"
     if status == "changes":
-        return ask_then_drop if at_max else f"orch fix {task_id}"
+        return at_max_next if at_max else CHANGES_NEXT
     if status == "launch_failed":
         if launch_in_progress(st):
             return LAUNCHING_NEXT
-        return (f"실행이 실패했거나 실행 도중 끊겼다. `orca orchestration worker-list` 로 이 태스크 워커가 떠 있는지 확인하고, "
-                f"남은 워커는 Orca recovery 참조({RECOVERY_REF})대로 정리한다. 그다음 {retry_command(st)}. "
-                f"복구할 수 없으면 orch drop {task_id} --reason \"<이유>\"")
+        return (f"실행이 실패했거나 실행 도중 끊겼다. {LAUNCH_CHECK}. 그 결과를 보고 {retry_command(st)}. "
+                f"복구할 수 없으면 {stop}")
     if status in FINISHED:
         return None
     return f"알 수 없는 상태({status}). .orchestration/state/tasks/{task_id}.json 을 확인한다"

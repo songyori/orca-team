@@ -491,6 +491,15 @@ class DroppedDependencyTest(DriveCase):
         self.assertEqual(len(self.outbox("decide")), 1)
 
 
+class ReplyTest(DriveCase):
+    def test_reply_failure_names_fix_and_scope(self):
+        self.respond("orchestration reply", {"ok": False, "error": {"code": "message_not_found"}}, code=1)
+        with self.assertRaises(OrchError) as ctx:
+            self.drive.execute({"command": "reply", "args": {"message_id": "msg_9", "body": "답", "id": "T-001"}})
+        self.assertIn('orch fix T-001 --note "<답>"', str(ctx.exception))
+        self.assertIn('orch scope T-001 "<답>"', str(ctx.exception))
+
+
 class FinishedTaskMailTest(DriveCase):
     def test_worker_done_for_dropped_task_is_ignored(self):
         self.started()

@@ -260,12 +260,28 @@ def answer(p: Project, out_id: str, body: str) -> dict:
         if entry.get("kind") == "worker_question":
             if not entry.get("message_id"):
                 raise OrchError(f"{out_id}: 워커 질문의 Orca 메시지 id 가 없다", 2)
-            result["sent"] = queue.submit(p, "reply", {"message_id": entry["message_id"], "body": body})
+            try:
+                result["sent"] = queue.submit(p, "reply", {"message_id": entry["message_id"], "body": body,
+                                                           "id": entry.get("task")})
+            except queue.DriveRefused as exc:
+                # 관제가 보냈지만 Orca 가 받지 않았다(워커가 끝났거나 메시지가 사라졌다). 같은 답을 다시 해도 같으므로 닫고,
+                # 오류(관제가 reply_failed_text 로 만든다)가 fix·scope 로 갈 길을 알린다. 다시 보내는 길은 두지 않는다.
+                with comm.answered_lock(p):
+                    if out_id not in comm.load_answered(p)["ids"]:
+                        comm.record_answered(p, out_id)
+                raise OrchError(f"{out_id}: {exc}. 이 decide 는 닫았다", exc.code) from exc
         with comm.answered_lock(p):  # 보내지 못하면(예외) 기록하지 않는다(다시 답할 수 있다)
             if out_id not in comm.load_answered(p)["ids"]:
                 comm.record_answered(p, out_id)
         return result
     raise OrchError(f"{out_id} 는 {kind} 메시지다. ask·decide 에만 답한다", 2)
+
+
+def reply_failed_text(task: str | None, exc: Exception) -> str:
+    """워커 질문의 답을 Orca 가 받지 않았을 때 메인이 갈 길(관제가 reply 요청의 오류로 쓴다)."""
+    task = task or "T-xxx"
+    return (f"워커에게 답을 보내지 못했다({str(exc)[:300]}). 워커가 끝났으면 답을 지시로 넣어 orch fix {task} --note \"<답>\", "
+            f"아직 일하는 중이면 orch scope {task} \"<답>\" 로 전한다")
 
 
 def open_questions(p: Project) -> list[dict]:

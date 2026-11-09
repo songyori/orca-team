@@ -39,8 +39,31 @@ class AnswerDecideTest(DecideCase):
                                                                                           "question": "토큰 이름?"})
         with mock.patch("orch.queue.submit", return_value={"replied": "msg_9"}) as submit:
             out = ask.answer(self.p, entry["id"], "color.primary 를 쓴다")
-        submit.assert_called_once_with(self.p, "reply", {"message_id": "msg_9", "body": "color.primary 를 쓴다"})
+        submit.assert_called_once_with(self.p, "reply", {"message_id": "msg_9", "body": "color.primary 를 쓴다",
+                                                         "id": "T-001"})
         self.assertEqual(out["sent"], {"replied": "msg_9"})
+
+    def test_reply_refused_by_drive_closes_decide_with_fix_or_scope_hint(self):
+        """관제가 보냈지만 Orca 가 받지 않았다(워커가 끝났다). 같은 답을 다시 해도 같으니 닫고 다른 길을 알린다."""
+        entry = comm.post_decide(self.p, "worker_question", "T-001", "토큰 이름?", extra={"message_id": "msg_9",
+                                                                                          "question": "토큰 이름?"})
+        from orch import queue
+        refused = queue.DriveRefused("워커에게 답을 보내지 못했다(x). 워커가 끝났으면 orch fix T-001 --note \"<답>\", "
+                                     "아직 일하면 orch scope T-001 \"<답>\" 로 전한다", 1)
+        with mock.patch("orch.queue.submit", side_effect=refused):
+            with self.assertRaises(OrchError) as ctx:
+                ask.answer(self.p, entry["id"], "color.primary")
+        self.assertIn("orch fix T-001 --note", str(ctx.exception))
+        self.assertIn("orch scope T-001", str(ctx.exception))
+        self.assertIn("닫았다", str(ctx.exception))
+        self.assertNotIn(entry["id"], [q["id"] for q in ask.open_questions(self.p)])
+
+    def test_reply_not_submitted_keeps_decide_open(self):
+        entry = comm.post_decide(self.p, "worker_question", "T-001", "토큰 이름?", extra={"message_id": "msg_9",
+                                                                                          "question": "토큰 이름?"})
+        with self.assertRaises(OrchError):
+            ask.answer(self.p, entry["id"], "color.primary")  # 관제가 꺼져 있다
+        self.assertIn(entry["id"], [q["id"] for q in ask.open_questions(self.p)])
 
     def test_approval_answer_points_to_design_decide(self):
         entry = comm.post(self.p, "approval", "디자인 확인", {"tasks": ["T-001"]})

@@ -119,7 +119,7 @@ class PlanApplyTest(PlanCase):
         self.assertEqual((st["status"], st["depends_on"], st["plan_key"]), ("pending", ["T-001", "T-002"], "login-ui"))
         self.assertEqual(self.calls_for("orchestration worker-start"), [])
         nexts = {t["id"]: t["next"] for t in json.loads(self.orch("status").stdout)["tasks"]}
-        self.assertEqual(set(nexts.values()), {"orch start-ready"})
+        self.assertTrue(all("관제가 띄운다" in v for v in nexts.values()), nexts)
 
     def test_numbers_continue_after_existing_tasks(self):
         self.orch("task", "new", "planner", "기획")
@@ -659,11 +659,13 @@ class ApprovalTest(PlanCase):
 
     def test_next_action_for_awaiting_user(self):
         self.orch("accept", "T-001")  # accept 는 outbox 에 쓰지 않는다
-        self.assertIn("orch design-review", self.next_of("T-001"))
+        nxt = self.next_of("T-001")
+        self.assertIn("관제가 디자인 승인 질문을 올린다", nxt)
+        self.assertNotIn("orch design-review", nxt)  # 관제 전용 명령이다
         self.orch("design-review")  # out-0001 approval
         nxt = self.next_of("T-001")
-        for text in ("out-0001", "orch accept T-001", "orch fix T-001 --note"):
-            self.assertIn(text, nxt)
+        self.assertIn("orch design-decide out-0001", nxt)
+        self.assertNotIn("orch accept", nxt)
 
 
 class DesignReviewTest(PlanCase):

@@ -149,7 +149,12 @@ class Drive:
         if command == "drop":
             return tasks.drop(p, a["id"], a["reason"], bool(a.get("force")))
         if command == "reply":
-            orca.call(["orchestration", "reply", "--id", str(a["message_id"]), f"--body={a['body']}"])
+            try:
+                orca.call(["orchestration", "reply", "--id", str(a["message_id"]), f"--body={a['body']}"])
+            except OrchError as exc:
+                if exc.code == 12:
+                    raise
+                raise OrchError(ask.reply_failed_text(a.get("id"), exc), exc.code) from exc
             return {"replied": a["message_id"]}
         if command == "design-decide":
             return plan.design_decide(p, cfg, a["id"], list(a.get("approve") or []), dict(a.get("fixes") or {}),
