@@ -14,23 +14,28 @@ COMMIT_DOCS = sorted([*T.rglob("*.md"), *(PLUGIN / "skills").rglob("SKILL.md")])
 class TemplateTest(unittest.TestCase):
     def test_config_enables_auto_up(self):
         text = (T / "config.toml").read_text(encoding="utf-8")
-        self.assertIs(tomllib.loads(text)["coordinator"]["auto_up"], True)
+        self.assertIs(tomllib.loads(text)["drive"]["auto_up"], True)
         self.assertIn("# auto_up:", text)
+        self.assertNotIn("[coordinator]", text)
 
     def test_model_table_matches_spec(self):
         cfg = tomllib.loads((T / "config.toml").read_text(encoding="utf-8"))
         table = {name: (r["claude_model"], r["claude_effort"], r["codex_model"], r["codex_effort"])
                  for name, r in cfg["roles"].items()}
         self.assertEqual(table, {
-            "planner": ("opus", "xhigh", "gpt-6.1-sol", "high"),
-            "director": ("opus", "xhigh", "gpt-6.1-sol", "high"),
-            "designer": ("sonnet", "xhigh", "gpt-6.1-sol", "medium"),
+            "planner": ("opus", "xhigh", "gpt-6.1-sol", "xhigh"),
+            "director": ("opus", "xhigh", "gpt-6.1-sol", "xhigh"),
+            "designer": ("sonnet", "xhigh", "gpt-6.1-sol", "xhigh"),
             "developer": ("opus", "xhigh", "gpt-6.1-sol", "xhigh"),
-            "tester": ("sonnet", "xhigh", "gpt-6.1-sol", "high"),
+            "tester": ("sonnet", "xhigh", "gpt-6.1-sol", "xhigh"),
         })
+        self.assertEqual({name: (a["title"], a["roles"], a["claude_model"]) for name, a in cfg["agents"].items()}, {
+            "production": ("생산", ["planner", "designer", "developer"], "opus"),
+            "research": ("조사", ["director"], "opus"),
+            "test": ("테스트", ["tester"], "sonnet")})
+        self.assertEqual((cfg["overflow"]["enabled"], cfg["defaults"]["codex_effort"]), (True, "xhigh"))
         self.assertEqual((cfg["roles"]["director"]["title"], cfg["roles"]["director"]["owns"]),
                          ("디자인 디렉터", ["docs/design/**", "assets/**"]))
-        self.assertEqual((cfg["coordinator"]["model"], cfg["coordinator"]["effort"]), ("opus", "xhigh"))
         self.assertEqual(cfg["review"]["max_rounds"], 3)
         for name, role in cfg["roles"].items():
             self.assertTrue(role["owns"], name)

@@ -1,37 +1,58 @@
 # orca-team 설정. orch 가 디스패치·리뷰 때 읽는다.
-# 모델 우선순위: orch start/fix --model·--effort > 태스크 front matter(claude_model 등) > [roles.<직무>] > [defaults]
+# 모델 우선순위: 고정 에이전트는 [agents.<이름>] > [defaults]. 임시 워커는 orch start/fix --model·--effort > 태스크 front matter(claude_model 등) > [roles.<직무>] > [defaults]
 # Claude 모델: fable | opus | sonnet | haiku (또는 전체 모델 ID). effort: low | medium | high | xhigh | max
 # Codex 모델: gpt-6-astra | gpt-6.1-sol | gpt-6-luna. effort: low | medium | high | xhigh
 # owns: 직무가 수정·커밋할 수 있는 경로(glob). 진행 중 태스크끼리 겹치면 orch start 가 거부한다.
-# max_parallel: orch start-ready 가 동시에 띄워 두는 working 태스크 수 상한.
+# max_parallel: 동시에 working 인 태스크 수 상한(고정 에이전트와 임시 워커를 합친 수).
 # user_approval_roles: Codex APPROVE 뒤 orch accept 해도 done 이 아니라 awaiting_user(사용자 일괄 승인 대기)가 되는 직무.
 #   [roles] 에 있는 직무만 쓴다. 키가 없으면 [](승인 게이트 없음, 0.2.0 흐름).
 # director: 디자인 방향(레퍼런스·톤 시안·디자인 시스템). 이 직무가 있으면 orch plan check 가 designer 태스크에 director 선행을 요구한다.
-# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.
+# auto_up: 메인 세션 훅이 관제(orch drive)가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.
+# agents: 고정 에이전트. roles 의 직무 태스크를 한 세션이 이어 맡는다. 한 직무는 한 에이전트에만 둔다.
+# overflow: 고정 에이전트가 바쁠 때 준비된 독립 태스크를 임시 워커로 돌린다(기본 true).
 
 max_parallel = 4
 user_approval_roles = ["designer"]
 
-[coordinator]
-model = "opus"
-effort = "xhigh"
+[drive]
 auto_up = true
 
 [review]
 max_rounds = 3
 
+[overflow]
+enabled = true
+
 [defaults]
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
+
+[agents.production]
+title = "생산"
+roles = ["planner", "designer", "developer"]
+claude_model = "opus"
+claude_effort = "xhigh"
+
+[agents.research]
+title = "조사"
+roles = ["director"]
+claude_model = "opus"
+claude_effort = "xhigh"
+
+[agents.test]
+title = "테스트"
+roles = ["tester"]
+claude_model = "sonnet"
+claude_effort = "xhigh"
 
 [roles.planner]
 title = "기획"
 claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["docs/planning/**"]
 
 [roles.director]
@@ -39,7 +60,7 @@ title = "디자인 디렉터"
 claude_model = "opus"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["docs/design/**", "assets/**"]
 
 [roles.designer]
@@ -47,7 +68,7 @@ title = "디자인"
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "medium"
+codex_effort = "xhigh"
 owns = ["docs/design/**", "assets/**"]
 
 [roles.developer]
@@ -63,5 +84,5 @@ title = "테스트"
 claude_model = "sonnet"
 claude_effort = "xhigh"
 codex_model = "gpt-6.1-sol"
-codex_effort = "high"
+codex_effort = "xhigh"
 owns = ["tests/**", "docs/qa/**"]

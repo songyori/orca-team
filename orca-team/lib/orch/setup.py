@@ -214,7 +214,7 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
     elif starting(load_run(p)):
         result = {"status": "starting", "handle": load_run(p).get("coordinator_handle"), "message": STARTING_MESSAGE}
     else:
-        result = launch_coordinator(p, cfg.coordinator(), handle)
+        result = launch_coordinator(p, Launch("opus", "xhigh"), handle)
     deadline = time.monotonic() + wait_run
     while not load_run(p).get("run_id") and time.monotonic() < deadline:
         time.sleep(1)
