@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from helpers import FAKES, ProjectCase
-from test_tasks import TaskCase
+from test_tasks import TaskCase, show_worker
 from orch import agents, tasks
 from orch.config import Config
 from orch.paths import Project
@@ -123,15 +123,33 @@ class AgentStartTest(AgentCase):
         self.assertEqual(self.state("T-002")["agent"], "temp")
         self.assertEqual(self.agents_state()["production"]["task"], "T-001")
 
-    def test_busy_agent_without_overflow_refuses_and_start_ready_waits(self):
+    def test_busy_agent_without_overflow_waits_as_pending_then_start_ready_starts(self):
         self.no_overflow()
         self.commit_spec("T-001")
         self.orch("start", "T-001")
         self.commit_spec("T-002", role="planner")
-        self.assertEqual(self.orch("start", "T-002", check=False).returncode, 3)
-        self.pending("T-002", "planner", ["docs/planning/**"])
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "agent"))
+        self.assertIn("enabled = false", out["message"])
+        st = self.state("T-002")
+        self.assertEqual((st["status"], st["role"], st["depends_on"], st["dispatch_id"]), ("pending", "planner", [], None))
         out = json.loads(self.orch("start-ready").stdout)
         self.assertEqual(out["waiting"], [{"id": "T-002", "reason": "agent", "detail": "생산"}])
+        agents.release_task(self.p, "production", "T-001")
+        self.respond("orchestration worker-start", NEXT)
+        out = json.loads(self.orch("start-ready").stdout)
+        self.assertEqual([s["id"] for s in out["started"]], ["T-002"])
+        self.assertEqual(self.state("T-002")["status"], "working")
+
+    def test_start_during_agent_reset_waits_with_reset_reason(self):
+        self.commit_spec("T-001")
+        agents.update(self.p, "production", lambda e: e.update(resetting={"dispatch_id": "ctx_h", "at": "x"}))
+        out = json.loads(self.orch("start", "T-001").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "agent"))
+        self.assertIn("리셋", out["message"])
+        self.assertNotIn("enabled = false", out["message"])
+        self.assertEqual(self.state("T-001")["status"], "pending")
+        self.assertEqual(self.calls_for("orchestration worker-start"), [])
 
     def test_front_matter_model_is_ignored_for_agent(self):
         self.commit_spec("T-001", extra="claude_model: haiku\n")
@@ -175,6 +193,111 @@ class AgentFixTest(AgentCase):
         self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
         self.assertNotIn("queued_fix", self.state("T-002"))
         self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+    def busy_with_t001_and_t002_changes(self, status="changes", role="planner"):
+        """생산 에이전트가 T-001 을 하는 중이고, 같은 에이전트가 했던 T-002 가 수정을 기다린다."""
+        self.started()
+        self.commit_spec("T-002", role=role)
+        head = self.git("rev-parse", "HEAD").strip()
+        (self.root / ".orchestration/state/tasks/T-002.json").write_text(json.dumps({
+            "id": "T-002", "role": role, "title": "로그인", "status": status, "stage": "work", "round": 1,
+            "base": head, "owns": ["docs/planning/**"], "depends_on": [], "agent": "production", "task_id": "task_x",
+            "dispatch_id": "ctx_x", "history": [], "verdicts": {"1": "REQUEST_CHANGES"}}), encoding="utf-8")
+
+    def test_fix_on_own_finished_task_runs_now_with_main_note(self):
+        """에스컬레이션 뒤 워커는 끝났지만 에이전트는 아직 그 태스크를 맡고 있다. 그 태스크 뒤에 줄 세우지 않고 바로 띄운다."""
+        self.started()
+        show_worker(self, "exited", stage="settled", state="failed")
+        self.respond("orchestration worker-start", NEXT)
+        self.orch("fix", "T-001", "--note", "메인 지시")
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"], st["history"][-1]["note"]), ("working", 2, "메인 지시"))
+        self.assertNotIn("queued_fix", st)
+        state = self.agents_state()["production"]
+        self.assertEqual((state["task"], state.get("queue") or []), ("T-001", []))
+        self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
+
+    def test_force_fix_on_live_own_task_abandons_and_relaunches_fresh(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        self.respond("terminal split", {"ok": True, "result": {"split": {"handle": "term_r2", "tabId": "tab_2"}}})
+        self.orch("fix", "T-001", "--force", "--note", "멈추고 다시")
+        for verb in ("worker-abandon", "worker-release"):
+            self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        self.assertIn("--keep-open", self.last_start())
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"], st["dispatch_id"], st["history"][-1]["note"]),
+                         ("working", 2, "ctx_5", "멈추고 다시"))
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"], state.get("queue") or []), ("term_a2", "T-001", []))
+
+    def test_force_fix_abandon_failure_escalates_without_relaunch(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond("orchestration worker-abandon", {"ok": False, "error": {"code": "x"}}, code=1)
+        starts = len(self.calls_for("orchestration worker-start"))
+        proc = self.orch("fix", "T-001", "--force", "--note", "x", check=False)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("worker-abandon", proc.stderr)
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 1))
+        self.assertIn("worker-abandon", st["history"][-1]["release_error"])
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))
+
+    def test_refusal_for_live_agent_task_does_not_claim_release(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        proc = self.orch("fix", "T-001", "--note", "x", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--force", proc.stderr)
+        self.assertNotIn("해제", proc.stderr)
+
+    def test_second_queued_fix_merges_notes(self):
+        self.busy_with_t001_and_t002_changes()
+        self.orch("fix", "T-002", "--note", "보강")
+        self.orch("fix", "T-002", "--note", "추가")
+        note = self.state("T-002")["queued_fix"]["note"]
+        self.assertIn("보강", note)
+        self.assertIn("추가", note)
+        self.assertLess(note.index("보강"), note.index("추가"))
+        self.assertEqual(self.agents_state()["production"]["queue"], ["T-002"])
+
+    def test_accept_and_drop_clear_queued_fix(self):
+        self.busy_with_t001_and_t002_changes(status="awaiting_user", role="designer")
+        self.assertEqual(json.loads(self.orch("fix", "T-002", "--note", "색").stdout)["status"], "queued")
+        self.assertEqual(json.loads(self.orch("accept", "T-002").stdout)["status"], "done")
+        self.assertNotIn("queued_fix", self.state("T-002"))
+        self.assertEqual(self.agents_state()["production"]["queue"], [])
+        self.set_state("T-002", status="changes")
+        self.orch("fix", "T-002", "--note", "또")
+        self.orch("drop", "T-002", "--reason", "필요 없어졌다")
+        self.assertNotIn("queued_fix", self.state("T-002"))
+        self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+    def test_drain_error_clears_queued_fix_and_reports_note(self):
+        self.busy_with_t001_and_t002_changes()
+        self.orch("fix", "T-002", "--note", "보강")
+        self.set_state("T-002", round=3)  # 그 사이 최대 라운드가 됐다: 대기열의 fix 가 거부된다
+        agents.release_task(self.p, "production", "T-001")
+        out = json.loads(self.orch("start-ready").stdout)
+        [row] = out["fixes"]
+        self.assertEqual((row["id"], row["status"], row["note"]), ("T-002", "error", "보강"))
+        self.assertNotIn("queued_fix", self.state("T-002"))
+        self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+    def test_force_drop_of_live_own_task_frees_terminal(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        out = json.loads(self.orch("drop", "T-001", "--reason", "그만", "--force").stdout)
+        self.assertEqual(out["status"], "dropped")
+        for verb in ("worker-abandon", "worker-release"):
+            self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"]), (None, None))
 
     def test_extra_round(self):
         self.started()

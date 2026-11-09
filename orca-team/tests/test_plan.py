@@ -676,6 +676,17 @@ class DesignReviewTest(PlanCase):
         self.assertNotIn("T-003", proc.stderr)
         self.assertEqual(outbox(self.root, "approval"), [])
 
+    def test_queued_fix_counts_as_busy_and_is_not_asked_again(self):
+        """디자인 수정이 바쁜 에이전트 대기열에 들어가 awaiting_user 로 남아도 같은 화면을 다시 묻지 않는다."""
+        self.awaiting("T-001", "로그인 화면", "docs/design/login/**")
+        self.set_state("T-001", queued_fix={"note": "색", "at": "x"})
+        p = Project(self.root)
+        self.assertEqual(plan.approval_busy(p, Config.load(p.config_path)), ["T-001(awaiting_user)"])
+        proc = self.orch("design-review", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("T-001(awaiting_user)", proc.stderr)
+        self.assertEqual(outbox(self.root, "approval"), [])
+
     def test_refuses_without_awaiting_user(self):
         proc = self.orch("design-review", check=False)
         self.assertEqual(proc.returncode, 2)
@@ -866,9 +877,10 @@ class DesignChainTest(PlanCase):
         out = json.loads(self.orch("start-ready").stdout)
         self.assertEqual(out["started"], [])
         self.assertEqual(self.waiting(out), {"T-003": ("deps", "T-001(awaiting_user)")})
-        proc = self.orch("start", "T-003", check=False)
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("T-001(awaiting_user)", proc.stderr)
+        out = json.loads(self.orch("start", "T-003").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "deps"))
+        self.assertIn("T-001(awaiting_user)", out["message"])
+        self.assertEqual(self.state("T-003")["status"], "pending")
 
     def test_single_start_of_chained_design(self):
         write_plan(self.root, [("ds", "designer", ["docs/design/system/**"], []),

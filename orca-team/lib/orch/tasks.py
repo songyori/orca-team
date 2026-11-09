@@ -2,6 +2,7 @@
 사용자 승인 게이트(awaiting_user)."""
 from __future__ import annotations
 
+import json
 import os
 import re
 from dataclasses import dataclass, field
@@ -376,7 +377,33 @@ def start_refusal(st: dict) -> str:
     return f"{task_id} 는 이미 시작됐다(status={status}). 수정 라운드는 orch fix"
 
 
+def pending_state(doc: TaskDoc, owns: list[str], deps: list[str]) -> dict:
+    """아직 띄우지 않은 태스크의 상태. plan apply·관제 create_task 가 쓰는 것과 같은 모양이다."""
+    return {"id": doc.id, "role": doc.role, "title": doc.title, "status": "pending", "stage": "work", "round": 1,
+            "base": None, "owns": owns, "depends_on": deps, "task_id": None, "dispatch_id": None, "history": [],
+            "verdicts": {}}
+
+
+def agent_wait_text(p: Project, cfg: Config, role: str) -> str:
+    """고정 에이전트를 기다리는(place 가 WAIT) 까닭."""
+    agent = cfg.agent_for(role)
+    e = agents.entry(p, agent.name)
+    if e.get("resetting") or (e.get("reset_pending") and not e.get("task")):
+        return f"{agent.title} 에이전트가 리셋(인수인계) 중이거나 리셋을 기다린다"
+    return f"{agent.title} 에이전트가 바쁘고 임시 워커가 꺼져 있다([overflow] enabled = false)"
+
+
+def wait_pending(p: Project, doc: TaskDoc, st: dict | None, owns: list[str], deps: list[str], reason: str,
+                 message: str) -> dict:
+    """지금 띄울 수 없는 새 태스크를 pending 으로 둔다(start-ready 가 나중에 띄운다). 이미 pending 이면 그대로 둔다."""
+    if st is None:
+        save_state(p, pending_state(doc, owns, deps))
+    return {"id": doc.id, "status": "waiting", "reason": reason, "message": message}
+
+
 def start(p: Project, cfg: Config, task_id: str, retry: bool = False, overrides: dict | None = None) -> dict:
+    """새 태스크를 띄운다. 선행 태스크가 끝나지 않았거나 고정 에이전트를 기다려야 하면 pending 으로 두고
+    {"status": "waiting", "reason": "deps"|"agent"} 를 돌려준다(관제의 start-ready 가 나중에 띄운다)."""
     require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = load_state(p, task_id)
@@ -388,17 +415,20 @@ def start(p: Project, cfg: Config, task_id: str, retry: bool = False, overrides:
     if fresh and retry:
         raise OrchError(f"{task_id}: --retry 할 실패 기록이 없다", 2)
     deps = deps_of(doc)
+    owns = owns_of(doc, cfg)
     unmet = unmet_deps(p, deps, doc.role, cfg.user_approval_roles)
     if unmet:
-        raise OrchError(f"{task_id}: 선행 태스크가 끝나지(done) 않았다: {format_unmet(unmet)}. "
-                        "끝나면 orch start-ready 가 띄운다", 2)
-    owns = owns_of(doc, cfg)
+        text = f"{task_id}: 선행 태스크가 끝나지(done) 않았다: {format_unmet(unmet)}"
+        if not fresh:
+            raise OrchError(f"{text}. 끝나면 {retry_command(st)} 로 다시 한다", 2)
+        return wait_pending(p, doc, st, owns, deps, "deps", f"{text}. pending 으로 두었다. 선행 태스크가 끝나면 관제가 띄운다")
     check_lock(p, task_id, owns)
     target = agents.place(p, cfg, doc.role)
     if target == agents.WAIT:
-        agent = cfg.agent_for(doc.role)
-        raise OrchError(f"{task_id}: {agent.title} 에이전트가 바쁘고 임시 워커가 꺼져 있다([overflow] enabled = false). "
-                        "에이전트가 비면 orch start-ready 가 띄운다", 3)
+        text = f"{task_id}: {agent_wait_text(p, cfg, doc.role)}"
+        if not fresh:
+            raise OrchError(f"{text}. 에이전트가 비면 {retry_command(st)} 로 다시 한다", 3)
+        return wait_pending(p, doc, st, owns, deps, "agent", f"{text}. pending 으로 두었다. 에이전트가 비면 관제가 띄운다")
     if fresh:
         # pending 상태의 plan_key 등은 남기고 실행 필드만 새로 쓴다.
         st = {**(st or {}), "id": task_id, "role": doc.role, "title": doc.title, "status": "new", "stage": "work",
@@ -419,14 +449,73 @@ def check_supplement(p: Project, task_id: str, supplement: str) -> None:
                         f"({supplement}: role={st.get('role')}, status={st.get('status')})", 2)
 
 
+def fix_refusal(task_id: str, desc: str, agent: bool) -> str:
+    """일하는 중일 수 있는 워커가 있는 working 태스크의 fix 거부 문구."""
+    if agent:
+        return (f"{task_id}: 워커가 아직 일하고 있을 수 있다({desc}). 워커의 worker_done 을 기다린다. 그래도 지금 고쳐야 하면 "
+                "--force(이전 디스패치를 버리고 작업 터미널을 닫은 뒤 새 세션으로 띄운다)")
+    return (f"{task_id}: 워커가 아직 일하고 있을 수 있다({desc}). fix 하면 이전 워커를 해제하고 같은 경로에 "
+            "새 워커를 띄워 동시에 고친다. worker_done 을 기다리거나 워커가 끝난 뒤 한다. 그래도 하려면 --force")
+
+
+def close_dispatch(dispatch) -> dict:
+    """디스패치를 버리고(worker-abandon) 그 터미널을 닫는다(worker-release). 실패한 동사 → 오류. 없으면 빈 dict.
+    orca 없음(12)은 올린다."""
+    failures: dict = {}
+    if not dispatch:
+        return failures
+    for verb in ("worker-abandon", "worker-release"):
+        try:
+            code, data = orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+            failures[verb] = str(exc)
+            continue
+        if code != 0 or not data.get("ok"):
+            failures[verb] = data
+    return failures
+
+
+def free_agent_task(p: Project, st: dict, agent: str, force: bool) -> dict:
+    """고정 에이전트가 지금 맡은 이 태스크를 뗀다. force 이고 working 워커가 아직 일하거나 알 수 없으면 이전 디스패치를
+    버리고 터미널을 닫은 뒤(close_dispatch) 작업 터미널을 잊는다(다음 태스크는 새 세션으로 띄운다).
+    닫지 못하면 아무것도 바꾸지 않고 {"release_error": …} 를 돌려준다."""
+    if force and st.get("status") == "working" and busy_or_unknown(st)[0]:
+        failures = close_dispatch(st.get("dispatch_id"))
+        if failures:
+            return {"release_error": failures}
+        agents.forget(p, agent)
+        return {"previous_abandoned": st.get("dispatch_id")}
+    agents.detach(p, agent, st["id"])
+    return {}
+
+
+def merge_queued_fix(old, note: str | None, supplement: str | None, extra_round: bool, force: bool,
+                     retry: bool) -> dict:
+    """대기열의 수정 라운드에 새 fix 를 합친다. 앞선 지시를 덮지 않고 note 를 이어 붙인다."""
+    old = old if isinstance(old, dict) else {}
+    notes = list(dict.fromkeys(n for n in (old.get("note"), note) if n))
+    return {"note": "\n".join(notes) or None, "supplement": supplement or old.get("supplement"),
+            "extra_round": extra_round or bool(old.get("extra_round")), "force": force or bool(old.get("force")),
+            "retry": retry or bool(old.get("retry")), "at": now()}
+
+
+def clear_queued_fix(p: Project, st: dict) -> None:
+    """끝나는 태스크(accept·drop)에 남은 대기 수정을 지우고 에이전트 대기열에서 뺀다. 상태 저장은 호출자가 한다."""
+    if st.pop("queued_fix", None) is not None and st.get("agent") not in (None, agents.TEMP):
+        agents.dequeue(p, st["agent"], st["id"])
+
+
 def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: bool = False,
         overrides: dict | None = None, force: bool = False, supplement: str | None = None,
         extra_round: bool = False, from_queue: bool = False) -> dict:
     """수정 라운드. supplement 는 이 fix 가 반영하는 디자인 시스템 보강(director) 태스크 ID 다. 주면 이력에 supplement 로
     남고, awaiting_user 에서 해도 사용자 요청(user_requested)으로 남기지 않는다.
 
-    고정 에이전트가 한 태스크는 같은 에이전트가 고친다(해제하지 않는다). 그 에이전트가 일하는 중이거나 앞선 수정이
-    기다리면 대기열에 넣고 {"status": "queued"} 를 돌려준다. 에이전트가 비면 drain_fix_queues 가 from_queue 로 띄운다.
+    고정 에이전트가 한 태스크는 같은 에이전트가 고친다(해제하지 않는다). 그 에이전트가 다른 태스크로 일하는 중이거나 앞선
+    수정이 기다리면 대기열에 넣고 {"status": "queued"} 를 돌려준다(앞선 대기 수정의 note 와 합친다). 에이전트가 비면
+    drain_fix_queues 가 from_queue 로 띄운다. 에이전트가 아직 이 태스크를 맡고 있으면 먼저 뗀다(free_agent_task).
     extra_round 는 최대 라운드를 넘긴 태스크를 사용자가 한 번 더 고치기로 했을 때만 쓴다."""
     require_drive(p)
     doc = load_doc(p, cfg, task_id)
@@ -455,21 +544,30 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
         if status == "working" and not force:
             busy, desc = busy_or_unknown(st)
             if busy:
-                raise OrchError(f"{task_id}: 워커가 아직 일하고 있을 수 있다({desc}). fix 하면 이전 워커를 해제하고 같은 경로에 "
-                                "새 워커를 띄워 동시에 고친다. worker_done 을 기다리거나 워커가 끝난 뒤 한다. "
-                                "그래도 하려면 --force", 2)
+                raise OrchError(fix_refusal(task_id, desc, st.get("agent") in cfg.agents), 2)
     owns = owns_of(doc, cfg)
     check_lock(p, task_id, owns)
     agent = st.get("agent") if st.get("agent") in cfg.agents else None
+    freed: dict = {}
+    if agent and agents.entry(p, agent).get("task") == task_id:
+        # 에이전트가 아직 이 태스크를 맡고 있다(에스컬레이션 뒤, 또는 --force). 그 뒤에 줄 세우면 에이전트가 영영 비지 않는다.
+        freed = free_agent_task(p, st, agent, force)
+        if freed.get("release_error"):
+            st["history"].append({"stage": "force_fix", "round": st.get("round"), "at": now(),
+                                  "dispatch_id": st.get("dispatch_id"), "release_error": freed["release_error"]})
+            save_state(p, st)
+            raise OrchError(f"{task_id}: 일하는 중일 수 있는 이전 작업자를 멈추지 못했다"
+                            f"({json.dumps(freed['release_error'], ensure_ascii=False)[:300]}). 다시 띄우지 않았다. "
+                            f"사용자에게 그 에이전트 탭을 닫아 달라고 한 뒤 다시 orch fix {task_id} --force 하거나, "
+                            f"orch drop {task_id} --reason \"<이유>\" --force", 1)
     if agent and not from_queue and (agents.working(p, agent) or agents.entry(p, agent).get("queue")):
-        st["queued_fix"] = {"note": note, "supplement": supplement, "extra_round": extra_round, "force": force,
-                            "retry": retry, "at": now()}
+        st["queued_fix"] = merge_queued_fix(st.get("queued_fix"), note, supplement, extra_round, force, retry)
         save_state(p, st)
         agents.enqueue(p, agent, task_id)
         return {"id": task_id, "status": "queued", "agent": agent}
     st.pop("queued_fix", None)
     if agent:
-        extra: dict = {}  # 고정 에이전트는 해제하지 않는다(해제하면 작업 터미널이 닫힌다)
+        extra: dict = dict(freed)  # 고정 에이전트는 해제하지 않는다(해제하면 작업 터미널이 닫힌다)
     else:
         # 임시 워커는 이전 디스패치를 해제하고 새 워커를 띄운다. awaiting_user 는 accept 때 이미 해제했다.
         extra = {} if status == "awaiting_user" and st.get("released") else release_previous(st)
@@ -502,7 +600,11 @@ def drain_fix_queues(p: Project, cfg: Config) -> list[dict]:
         except OrchError as exc:
             if exc.code == 12:
                 raise
-            out.append({"id": task_id, "status": "error", "error": str(exc)})
+            # 대기열에서 이미 뺐다. 남은 queued_fix 는 재확인이 그 태스크를 영영 건너뛰게 하므로 지우고 지시를 함께 올린다.
+            st = load_state(p, task_id) or {}
+            if st.pop("queued_fix", None) is not None:
+                save_state(p, st)
+            out.append({"id": task_id, "status": "error", "error": str(exc), "note": queued.get("note")})
             continue
         out.append({"id": task_id, "status": "working", "dispatch_id": entry.get("dispatch_id")})
     return out
@@ -551,6 +653,7 @@ def accept(p: Project, task_id: str) -> dict:
     if status == "awaiting_user":
         st.update(status="done", done_at=now(), user_approved_at=now())
         st["history"].append({"stage": "user_approval", "round": st.get("round"), "at": now()})
+        clear_queued_fix(p, st)
         save_state(p, st)
         return {"id": task_id, "status": "done", "user_approved": True}
     if status != "approved":
@@ -565,6 +668,7 @@ def accept(p: Project, task_id: str) -> dict:
         st.update(status="awaiting_user", released=released, awaiting_since=now())
     else:
         st.update(status="done", released=released, done_at=now())
+    clear_queued_fix(p, st)
     save_state(p, st)
     result = {"id": task_id, "status": st["status"], "released": released}
     if released is False:
@@ -576,7 +680,8 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
     """태스크를 중단한다. dropped 는 ACTIVE 가 아니라 소유 경로 잠금이 풀린다.
 
     working 태스크는 워커가 확실히 끝났을 때만 중단한다. worker-release 가 도는 워커를 멈춘다는 보장이 없어
-    잠금을 풀면 다음 태스크와 같은 경로를 동시에 고칠 수 있다. --force 는 이 확인을 건너뛰고 이력에 남긴다."""
+    잠금을 풀면 다음 태스크와 같은 경로를 동시에 고칠 수 있다. --force 는 이 확인을 건너뛰고 이력에 남긴다.
+    결과의 blocked_dependents 는 이 태스크를 선행으로 둔 pending 태스크다(관제가 재확인 때 메인에 올린다)."""
     require_drive(p)
     if not TASK_ID_RE.match(task_id):
         raise OrchError(f"태스크 ID 형식이 아니다: {task_id}", 2)
@@ -601,7 +706,14 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
         released, release_error = None, None
         temp = st.get("agent") in (None, agents.TEMP)
         if not temp:
-            agents.detach(p, st["agent"], task_id)  # 고정 에이전트는 해제하지 않는다
+            # 고정 에이전트는 해제하지 않는다. --force 로 아직 일할 수 있는 워커를 떼면 그 디스패치를 버리고 터미널을 잊는다
+            # (다음 태스크가 일하는 세션에 들어가지 않게). 버리지 못해도 중단은 하고 터미널은 잊는다.
+            name = st["agent"]
+            own = agents.entry(p, name).get("task") == task_id
+            freed = free_agent_task(p, st, name, force) if own else (agents.detach(p, name, task_id) or {})
+            if freed.get("release_error"):
+                agents.forget(p, name)
+                released, release_error = False, freed["release_error"]
         elif st.get("status") == "awaiting_user" and st.get("released"):
             released = True  # accept 때 이미 해제했다(fix 와 같다)
         elif st.get("dispatch_id"):
@@ -617,10 +729,13 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
         st.update(status="dropped", released=released, dropped_at=now(), drop_reason=reason)
         st["history"].append({"stage": "drop", "round": st.get("round"), "at": now(), "reason": reason,
                               "released": released, "forced": force})
+        clear_queued_fix(p, st)
         save_state(p, st)
     finally:
         release_pid(pid)
-    result = {"id": task_id, "status": "dropped", "released": released, "forced": force}
+    result = {"id": task_id, "status": "dropped", "released": released, "forced": force,
+              "blocked_dependents": [s["id"] for s in all_states(p) if s.get("status") == "pending"
+                                     and task_id in (s.get("depends_on") or [])]}
     if release_error is not None:
         result["release_error"] = release_error
     return result
@@ -642,18 +757,8 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
         return {"id": task_id, "status": "not_unknown"}
     count = int(st.get("unknown_starts") or 0) + 1
     st["unknown_starts"] = count
-    failures: dict = {}
-    for verb in ("worker-abandon", "worker-release"):
-        try:
-            code, data = orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
-        except OrchError as exc:
-            if exc.code == 12:
-                raise
-            failures[verb] = str(exc)
-            continue
-        if code != 0 or not data.get("ok"):
-            failures[verb] = data
-    agent = st.get("agent") if st.get("agent") in cfg.agents else None
+    failures = close_dispatch(dispatch)
+    agent =st.get("agent") if st.get("agent") in cfg.agents else None
     if agent:
         agents.forget(p, agent)
     entry = {"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,

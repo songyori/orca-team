@@ -203,6 +203,9 @@ class Drive:
             if self.stale_dispatch(st, dispatch):
                 self.log(f"{task_id} 지난 디스패치의 worker_done 무시: {dispatch}")
                 return
+            if st.get("status") in tasks.FINISHED:  # 예: drop --force 뒤 늦게 끝난 워커. 리뷰도 판단도 필요 없다
+                self.log(f"{task_id} 이미 끝난 태스크({st.get('status')})의 worker_done 무시: {dispatch}")
+                return
             if st.get("agent") in self.cfg.agents:
                 agents.release_task(self.p, st["agent"], task_id)
             if payload.get("outcome") == "succeeded":
@@ -679,8 +682,10 @@ class Drive:
             return
         for row in [*out.get("fixes", []), *out["started"]]:
             if row.get("status") in ("launch_failed", "error"):
-                self.decide("escalation", row["id"], f"작업자를 띄우지 못했다: {row.get('error')}"[:300],
-                            files=self.task_files(row["id"]),
+                summary = f"작업자를 띄우지 못했다: {row.get('error')}"[:300]
+                if row.get("note"):
+                    summary += f" (아직 전하지 못한 지시: {row['note']})"
+                self.decide("escalation", row["id"], summary[:600], files=self.task_files(row["id"]),
                             commands=["orch status", f'orch drop {row["id"]} --reason "<이유>"'])
 
     # --- 재확인
@@ -769,8 +774,28 @@ class Drive:
             last = [h for h in st.get("history") or [] if h.get("stage") == "review"][-1:]
             self.on_review(task_id, {"verdict": "REQUEST_CHANGES", "round": st.get("round"),
                                      "untracked": (last[0].get("untracked") if last else None) or []})
-        elif status == "working":
+        elif status == "working" and not st.get("queued_fix"):  # 메인의 수정이 에이전트 대기열에 있다(덮지 않는다)
             self.check_worker(st)
+        elif status == "pending":
+            self.check_dropped_deps(st)
+
+    def check_dropped_deps(self, st: dict) -> None:
+        """선행 태스크가 중단(dropped)돼 시작할 수 없는 pending 태스크를 메인에 한 번 올린다(같은 선행 태스크로 다시 묻지 않는다)."""
+        task_id = st["id"]
+        try:
+            deps = tasks.deps_of(tasks.load_doc(self.p, self.cfg, task_id))  # 메인이 고친 spec 을 따른다
+        except OrchError:
+            deps = st.get("depends_on") or []
+        dropped = [d for d in deps if (tasks.load_state(self.p, d) or {}).get("status") == "dropped"]
+        if not dropped or st.get("dropped_deps_asked") == dropped:
+            return
+        self.decide("escalation", task_id,
+                    f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 {task_id} 를 시작할 수 없다. 진행하지 않으면 drop 하고, "
+                    "이어 가려면 depends_on 을 고친다", files=[f".orchestration/tasks/{task_id}.md"],
+                    commands=[f'orch drop {task_id} --reason "<이유>"', f"depends_on 을 고쳐 커밋한 뒤 orch start {task_id}"])
+        current = tasks.load_state(self.p, task_id) or st
+        current["dropped_deps_asked"] = dropped
+        tasks.save_state(self.p, current)
 
     def settle_batches(self) -> None:
         """accept 뒤 batch_done 전에 멈춘 묶음 테스트(done tester)의 후속을 한 번 처리한다."""

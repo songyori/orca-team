@@ -453,6 +453,9 @@ def start_ready(p: Project, cfg: Config) -> dict:
                 continue
             started.append({"id": task_id, "status": "launch_failed", "error": str(exc)})
             continue
+        if entry.get("status") == "waiting":  # start 가 pending 으로 둔 태스크(선행·에이전트 대기)
+            waiting.append({"id": task_id, "reason": entry["reason"], "detail": entry.get("message")})
+            continue
         started.append({"id": task_id, "status": "working", "dispatch_id": entry.get("dispatch_id")})
         running += 1
     return {"started": started, "waiting": waiting, "running": running, "max_parallel": limit, "fixes": fixes}
@@ -493,11 +496,12 @@ def will_start(p: Project, st: dict, approval, states: list[dict]) -> bool:
 
 
 def approval_busy(p: Project, cfg: Config) -> list[str]:
-    """승인 대상 태스크 중 아직 끝나지 않은 것(진행 중이거나 곧 시작할 pending)을 `T-xxx(status)` 로 돌려준다."""
+    """승인 대상 태스크 중 아직 끝나지 않은 것(진행 중이거나 곧 시작할 pending, 바쁜 에이전트 대기열에 수정이 들어간
+    queued_fix)을 `T-xxx(status)` 로 돌려준다."""
     roles = cfg.user_approval_roles
     everything = all_states(p)
     return [f"{st['id']}({st.get('status')})" for st in everything if st.get("role") in roles
-            and (st.get("status") in REVIEW_WAIT_STATUSES
+            and (st.get("status") in REVIEW_WAIT_STATUSES or st.get("queued_fix")
                  or (st.get("status") == "pending" and will_start(p, st, roles, everything)))]
 
 
@@ -514,7 +518,7 @@ def design_review(p: Project, cfg: Config) -> dict:
     if busy:
         raise OrchError("승인 대상 태스크가 아직 끝나지 않았다: " + ", ".join(busy)
                         + ". 모두 Codex 리뷰를 거쳐 awaiting_user 가 되면 다시 한다(pending 은 orch start-ready 가 띄운다)", 2)
-    ready = [st for st in states if st.get("status") == "awaiting_user"]
+    ready = [st for st in states if st.get("status") == "awaiting_user" and not st.get("queued_fix")]
     if not ready:
         raise OrchError("사용자 승인을 기다리는(awaiting_user) 태스크가 없다"
                         f"(승인 대상 직무: {', '.join(roles) or '없음'})", 2)

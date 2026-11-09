@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from helpers import FAKES
+from test_agents import FRESH, LIVE, NEXT, SPLIT
 from test_tasks import TaskCase
 from orch import agents, ask, comm, drive, plan, tasks
 from orch.config import Config
@@ -410,6 +411,93 @@ class SettleResetTest(DriveCase):
         self.show("running", None)
         self.drive.reconcile()
         self.assertTrue(agents.entry(self.p, "test").get("resetting"))
+        self.assertEqual(self.outbox("decide"), [])
+
+
+class AgentDriveCase(DriveCase):
+    """생산 고정 에이전트(planner·designer·developer)가 있는 관제."""
+
+    def setUp(self):
+        super().setUp()
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(path.read_text(encoding="utf-8")
+                        + '\n[agents.production]\ntitle = "생산"\nroles = ["planner", "designer", "developer"]\n',
+                        encoding="utf-8")
+        self.respond("orchestration worker-start", FRESH)
+        self.respond("terminal split", SPLIT)
+        self.respond("terminal show", LIVE)
+        self.respond("orchestration task-create", {"ok": True, "result": {"taskId": "task_2"}})
+        self.drive = drive.Drive(self.p, Config.load(path), spawn=self.fake_spawn)
+
+
+class StartWaitTest(AgentDriveCase):
+    def test_start_request_during_reset_waits_then_starts(self):
+        self.write_spec("T-001")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "[T-001] spec")
+        agents.update(self.p, "production", lambda e: e.update(resetting={"dispatch_id": "ctx_h", "at": "x"}))
+        out = self.drive.execute({"command": "start", "args": {"id": "T-001"}})
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "agent"))
+        self.drive.finish_step()
+        self.assertEqual(self.outbox("done"), [])
+        agents.update(self.p, "production", lambda e: e.update(resetting=None))
+        self.drive.start_ready()
+        self.assertEqual(self.state("T-001")["status"], "working")
+
+
+class QueuedFixReconcileTest(AgentDriveCase):
+    def test_working_task_with_queued_fix_keeps_main_note(self):
+        """worker_failed 뒤 메인의 fix 가 바쁜 에이전트 대기열에 들어갔다. 재확인이 그 지시를 DIED_NOTE 로 덮지 않는다."""
+        self.started("T-001")
+        self.drive.handle_message(self.done_msg(outcome="failed"))
+        self.respond("orchestration worker-start", NEXT)
+        self.started("T-002", role="planner")
+        self.assertEqual(agents.entry(self.p, "production")["task"], "T-002")
+
+        def check(st):
+            if st["id"] == "T-001":
+                return False, "stage=settled", {"stage": "settled", "state": "failed"}
+            return True, "stage=running", {"stage": "running"}
+        with mock.patch.object(tasks, "worker_check", side_effect=check):
+            out = self.drive.execute({"command": "fix", "args": {"id": "T-001", "note": "원인: X. Y 를 고친다"}})
+            self.assertEqual(out["status"], "queued")
+            ask.answer(self.p, self.outbox("decide")[-1]["id"], "fix 로 다시 보냈다")
+            self.drive.reconcile()
+        self.assertEqual(self.state("T-001")["queued_fix"]["note"], "원인: X. Y 를 고친다")
+        self.assertEqual(agents.entry(self.p, "production")["queue"], ["T-001"])
+
+
+class DroppedDependencyTest(DriveCase):
+    def test_pending_with_dropped_dependency_escalates_once(self):
+        self.write_spec("T-001")
+        self.write_spec("T-002", role="tester", extra="depends_on: T-001\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "specs")
+        base = {"stage": "work", "round": 1, "base": None, "task_id": None, "dispatch_id": None, "history": [],
+                "verdicts": {}}
+        tasks.save_state(self.p, {**base, "id": "T-001", "role": "developer", "title": "a", "status": "dropped",
+                                  "owns": ["src/**"], "depends_on": []})
+        tasks.save_state(self.p, {**base, "id": "T-002", "role": "tester", "title": "b", "status": "pending",
+                                  "owns": ["tests/**"], "depends_on": ["T-001"]})
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-002"))
+        self.assertIn("T-001", entry["summary"])
+        self.assertIn('orch drop T-002 --reason "<이유>"', entry["commands"])
+        self.assertIn("depends_on 을 고쳐 커밋한 뒤 orch start T-002", entry["commands"])
+        self.drive.reconcile()
+        ask.answer(self.p, entry["id"], "확인")
+        self.drive.reconcile()
+        self.assertEqual(len(self.outbox("decide")), 1)
+
+
+class FinishedTaskMailTest(DriveCase):
+    def test_worker_done_for_dropped_task_is_ignored(self):
+        self.started()
+        self.set_state("T-001", status="dropped")
+        for outcome in ("succeeded", "failed"):
+            self.drive.handle_message(self.done_msg(outcome=outcome))
+        self.assertEqual(self.spawned, [])
         self.assertEqual(self.outbox("decide"), [])
 
 

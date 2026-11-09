@@ -873,20 +873,31 @@ class DependsPendingTest(TaskCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("depends_on=login, T-004", proc.stderr)
 
-    def test_start_refuses_until_dependency_done(self):
+    def test_start_with_unmet_dependency_waits_as_pending(self):
+        """선행 태스크가 끝나지 않았으면 거부하지 않고 pending 으로 둔다. 선행 태스크가 끝나면 start-ready 가 띄운다."""
         self.write_spec("T-001")
         self.write_spec("T-002", role="tester", extra="depends_on: T-001\n")
-        proc = self.orch("start", "T-002", check=False)
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("T-001(없음)", proc.stderr)
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "deps"))
+        self.assertIn("T-001(없음)", out["message"])
+        st = self.state("T-002")
+        self.assertEqual((st["status"], st["role"], st["depends_on"], st["round"]), ("pending", "tester", ["T-001"], 1))
         self.orch("start", "T-001")
-        proc = self.orch("start", "T-002", check=False)
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("T-001(working)", proc.stderr)
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertIn("T-001(working)", out["message"])
         self.assertEqual(len(self.calls_for("orchestration worker-start")), 1)
         self.set_state("T-001", status="done")
-        self.orch("start", "T-002")
+        out = json.loads(self.orch("start-ready").stdout)
+        self.assertEqual([s["id"] for s in out["started"]], ["T-002"])
         self.assertEqual(self.state("T-002")["status"], "working")
+
+    def test_drop_reports_blocked_dependents(self):
+        self.write_pending("T-001")
+        self.write_pending("T-002", role="tester", depends_on=("T-001",), owns=("tests/**",))
+        self.write_pending("T-003", role="tester", depends_on=("T-001",), owns=("tests/a/**",))
+        self.set_state("T-003", status="done")
+        out = json.loads(self.orch("drop", "T-001", "--reason", "범위 제외").stdout)
+        self.assertEqual(out["blocked_dependents"], ["T-002"])
 
     def test_start_launches_pending_task_and_keeps_plan_fields(self):
         self.write_spec("T-001")
