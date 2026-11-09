@@ -435,8 +435,8 @@ class Drive:
             found = followups.followups(self.p, task_id)
             self.make_followups(found, source, task_id)
         if first:
+            names = agents.mark_reset_pending(self.p, self.cfg)  # 멱등: reset_pending=True 만 적는다
             self.save_finish(batches=[*batches, task_id])
-            names = agents.mark_reset_pending(self.p, self.cfg)
             comm.post(self.p, "progress",
                       f"묶음 완료: {task_id}" + (f". 리셋할 에이전트: {', '.join(names)}" if names else ""))
 
@@ -598,8 +598,7 @@ class Drive:
             sup = tasks.load_state(self.p, current["task"]) or {}
             if sup.get("status") == "done":
                 sources = current.get("from") or {}
-                handled.update(sources)
-                write_json(path, {"done": current, "handled": handled})
+                # 화면을 먼저 고친다(죽고 다시 와도 이미 고친 화면은 awaiting_user 가 아니라 건너뛴다). 그 뒤에 상태를 적는다.
                 for task_id, rnd in sources.items():
                     st = tasks.load_state(self.p, task_id) or {}
                     if st.get("status") != "awaiting_user" or st.get("round") != rnd:
@@ -608,6 +607,8 @@ class Drive:
                     pending = st.get("pending_dep_fix")
                     self.guard(lambda t=task_id, n=note: self.fix_with_pending(t, n, supplement=current["task"]), task_id,
                                "\n".join(x for x in (pending, note) if x))
+                handled.update(sources)
+                write_json(path, {"done": current, "handled": handled})
                 self.decide("token_update", current["task"],
                             f"디자인 시스템 보강 {current['task']} 이 끝났다. UI 기반 개발 태스크에 바뀐 토큰을 반영할지 정한다",
                             files=["docs/design/direction.md", f"docs/tasks/{current['task']}/report.md"],

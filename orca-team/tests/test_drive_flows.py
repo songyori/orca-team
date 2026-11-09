@@ -4,7 +4,11 @@ from unittest import mock
 
 from helpers import fake_test_commands, write_test_config
 from test_drive import DriveCase
-from orch import ask, comm, followups, plan, tasks
+from orch import agents, ask, comm, followups, plan, tasks
+
+
+class Crash(Exception):
+    """절차 중간에 관제가 죽는 것을 흉내 낸다(guard 는 OrchError 만 잡는다)."""
 
 
 def item(task, text, item_id=None, rnd=1):
@@ -49,6 +53,20 @@ class BatchRecoveryTest(DriveCase):
         self.assertEqual(len(self.outbox("decide")), 1)
         self.assertEqual(len([e for e in self.outbox("progress") if "묶음 완료" in e["body"]]), 1)
         self.assertEqual(self.drive.finish_state()["batches"], ["T-001"])
+
+    def test_reset_is_marked_before_batch_is_recorded(self):
+        self.started("T-001", role="tester")
+        self.set_state("T-001", status="done")
+        found = {"tasks": ["T-001"], "regressions": [], "followups": [], "planning_gaps": []}
+        with mock.patch.object(followups, "followups", return_value=found), \
+                mock.patch.object(agents, "mark_reset_pending", side_effect=Crash):
+            with self.assertRaises(Crash):
+                self.drive.batch_done("T-001")
+        self.assertEqual(self.drive.finish_state().get("batches"), None)  # 리셋 표시 전에는 묶음을 적지 않는다
+        with mock.patch.object(followups, "followups", return_value=found):
+            self.drive.batch_done("T-001")
+        self.assertEqual(self.drive.finish_state()["batches"], ["T-001"])
+        self.assertEqual(len([e for e in self.outbox("progress") if "묶음 완료" in e["body"]]), 1)
 
 
 class FinishTest(DriveCase):
@@ -163,6 +181,55 @@ class DesignFlowTest(DriveCase):
         with mock.patch.object(plan, "design_review", return_value={"id": "out-0001", "tasks": ["T-001"]}) as review:
             self.drive.design_step()
         review.assert_called_once()
+
+    def supplement_done(self, *screens):
+        for task_id in screens:
+            self.awaiting_screen(task_id, proposal="강조 버튼 토큰이 필요하다")
+        with mock.patch.object(plan, "design_review"):
+            self.drive.design_step()
+        [sup] = [st for st in tasks.all_states(self.p) if st.get("role") == "director"]
+        self.set_state(sup["id"], status="done")
+        return sup["id"]
+
+    def test_crash_in_fix_loop_resumes_without_refixing(self):
+        self.supplement_done("T-001", "T-002")
+        real_fix = self.drive.fix_with_pending
+        calls = []
+
+        def crash_on_second(task_id, note, *a, **kw):
+            calls.append(task_id)
+            if len(calls) == 2:
+                raise Crash()
+            return real_fix(task_id, note, *a, **kw)
+
+        with mock.patch.object(self.drive, "fix_with_pending", side_effect=crash_on_second):
+            with self.assertRaises(Crash):
+                self.drive.design_step()
+        sup_path = self.p.drive_dir / "supplement.json"
+        self.assertIn("task", json.loads(sup_path.read_text(encoding="utf-8")))  # 상태는 아직 안 적었다
+        def record(task_id, note, *a, **kw):
+            calls.append(task_id)
+            return real_fix(task_id, note, *a, **kw)
+
+        # 첫 고침(T-001)이 승인 대기를 잡고 있으므로 design_step 대신 보강 단계를 직접 다시 부른다
+        gated = [st for st in tasks.all_states(self.p) if st.get("role") in self.drive.cfg.user_approval_roles]
+        with mock.patch.object(self.drive, "fix_with_pending", side_effect=record):
+            self.drive.supplement_step(gated)
+        self.assertEqual(calls, ["T-001", "T-002", "T-002"])  # T-001 은 다시 고치지 않는다
+        self.assertEqual((self.state("T-001")["status"], self.state("T-002")["status"]), ("working", "working"))
+        self.assertIn("token_update", json.loads(sup_path.read_text(encoding="utf-8")))
+
+    def test_token_update_posted_once_across_passes(self):
+        self.supplement_done("T-001")
+        self.drive.design_step()
+        self.drive.design_step()
+        self.assertEqual([e["kind"] for e in self.outbox("decide")].count("token_update"), 1)
+
+    def test_screen_at_other_round_is_not_fixed(self):
+        self.supplement_done("T-001", "T-002")
+        self.set_state("T-002", round=2)  # from 은 r1
+        self.drive.design_step()
+        self.assertEqual((self.state("T-001")["status"], self.state("T-002")["status"]), ("working", "awaiting_user"))
 
 
 if __name__ == "__main__":
