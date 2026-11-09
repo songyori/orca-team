@@ -18,8 +18,8 @@ from .paths import OrchError, Project
 from .util import acquire_pid, now, read_json, release_pid, write_json, write_text_atomic
 
 TYPES = ("progress", "done")  # orch notify 가 받는 타입. 질문은 decide(관제)·ask(orch ask-user)로만 올린다(orch answer 가 받는 타입)
-# outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다. question 은 0.6 이하 outbox 줄과의 호환으로만 남긴다
-POST_TYPES = (*TYPES, "question", "ask", "approval", "decide", "result")
+# outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다. 0.6 이하 outbox 의 question 줄은 읽기만 한다(쓰지 않는다)
+POST_TYPES = (*TYPES, "ask", "approval", "decide", "result")
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure",
                 "test_config", "planning_gaps", "unknown_regression", "token_update")
 REPLY_TYPES = ("approval", "decide")  # 메인이 답해 닫는 타입. 답한 id 는 state/answered.json 에 남긴다

@@ -8,6 +8,7 @@ import fcntl
 import shlex
 import time
 from contextlib import contextmanager
+from datetime import datetime
 
 from . import orca
 from .config import Agent, Config
@@ -18,6 +19,7 @@ TEMP = "temp"  # 임시 워커(태스크마다 새 워커)
 WAIT = "wait"  # 고정 에이전트를 기다린다
 TAB_PREFIX = "orca-team "
 HANDOFF_DIR = "docs/handoff"
+RESET_UNKNOWN_SECONDS = 30 * 60  # 리셋할 작업 터미널의 상태를 이만큼 모르면 리셋 표시를 지우고 메인에 올린다
 RESET_SETTLE_SECONDS = 5.0  # /clear 뒤 tui-idle 이 떠도 새 세션 화면이 입력을 받기까지 기다린다(실험 E4)
 
 
@@ -265,7 +267,21 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     handle = e.get("handle")
     state = orca.terminal_state(handle, wait=True) if handle else "dead"
     if state == "unknown":
-        return None  # 터미널 상태를 알 수 없다. 다음에 다시 본다
+        # 터미널 상태를 알 수 없다. 다음에 다시 보되, RESET_UNKNOWN_SECONDS 가 지나면 리셋 표시를 지워 직무가 멈추지 않게 한다.
+        since = e.get("reset_unknown_since")
+        if not since:
+            update(p, name, lambda x: x.update(reset_unknown_since=now()))
+            return None
+        try:
+            age = (datetime.now().astimezone() - datetime.fromisoformat(since)).total_seconds()
+        except (TypeError, ValueError):
+            age = 0
+        if age < RESET_UNKNOWN_SECONDS:
+            return None
+        update(p, name, lambda x: (x.update(reset_pending=False), x.pop("reset_unknown_since", None)))
+        return {"name": name, "status": "unknown_stuck", "minutes": int(age // 60)}
+    if e.get("reset_unknown_since"):
+        update(p, name, lambda x: x.pop("reset_unknown_since", None))
     if state == "dead":
         update(p, name, lambda x: x.update(reset_pending=False, since_reset=0, handle=None))
         return {"name": name, "status": "skipped"}

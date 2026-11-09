@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from .paths import VERSION, OrchError, Project, find_root, git_toplevel
+from .util import QUEUED_COMMAND_NAMES
 
 
 def emit(obj) -> None:
@@ -104,7 +105,7 @@ def add_graph_commands(sub) -> None:
 GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # 태스크 그래프 명령(관제). add_graph_commands·run_graph 가 처리한다
 CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
 # 메인에서 실행하면 관제 큐를 거치는 명령(Orca 를 부른다). 관제 터미널에서는 바로 실행한다.
-QUEUED = {"start", "start-ready", "fix", "accept", "drop", "design-decide", "scope", "agent"}
+QUEUED = set(QUEUED_COMMAND_NAMES)
 CONFIG_COMMANDS.update({"agent", "drive", "review-view"})
 
 

@@ -4,7 +4,7 @@ import tomllib
 import unittest
 
 from helpers import PLUGIN
-from orch import ask, plan, testgate
+from orch import ask, plan, tasks, testgate
 from orch.config import Config
 
 T = PLUGIN / "templates"
@@ -198,6 +198,24 @@ class TemplateTest(unittest.TestCase):
             body = doc.read_text(encoding="utf-8")
             for bad in ("orch review ", "orch design-review", "orch plan apply", "orch bind", "orca orchestration worker"):
                 self.assertNotIn(bad, body, f"{doc.name}: {bad}")
+
+    def test_planner_task_rows_say_plan_append(self):
+        text = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        rows = {line.split("|")[1].strip(): line for line in text.splitlines() if line.startswith("| ") and "|" in line[2:]}
+        for kind in ("test_config", "planning_gaps"):
+            self.assertIn("plan: append", rows[kind], kind)
+
+    def test_readme_recovery_table_matches_next_action(self):
+        text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        part = text.split("## 복구")[1].split("- `orch drop")[0]
+        rows = {m.group(1): m.group(2) for m in re.finditer(r"^\s*\| `(\w+)` \| (.*) \|$", part, re.M)}
+        self.assertIn("design-decide", rows["awaiting_user"])
+        for status in ("awaiting_user", "approved", "reviewing"):
+            for bad in ("orch review", "orch design-review", "orch accept"):
+                self.assertNotIn(bad, rows[status], f"{status}: {bad}")
+        self.assertIn("관제가 리뷰 지적대로 수정 라운드를 띄운다", rows["changes"])
+        self.assertIn("--extra-round", rows["changes"])
+        self.assertNotIn("관제(`orch drive`)는 이것을 따른다", part)
 
     def test_readme_upgrade_steps(self):
         text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")

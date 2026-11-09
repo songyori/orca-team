@@ -297,6 +297,10 @@ class Drive:
         except OrchError as exc:
             if exc.code == 12:
                 raise
+            st = tasks.load_state(self.p, task_id) if task_id else None
+            if st and st.get("status") == "launch_failed" and not tasks.launch_in_progress(st):
+                self.launch_failed_decide(st, error=str(exc), note=note)  # 다시 띄우는 명령이 든 decide 하나로 올린다
+                return None
             text = f"관제 절차 실패: {exc}" + (f" (아직 전하지 못한 지시: {note})" if note else "")
             self.decide("escalation", task_id, text[:300] if not note else text[:600], files=self.task_files(task_id))
             return None
@@ -432,6 +436,8 @@ class Drive:
     def apply_plan(self, task_id: str) -> None:
         doc = tasks.load_doc(self.p, self.cfg, task_id)
         append = doc.front.get("plan") == "append"
+        if not append and plan.load_plan_state(self.p)["tasks"]:
+            append = True  # 이미 적용한 계획이 있으면 기획 태스크 결과는 새 key 만 더한다(없으면 "새 key 가 없다"로 끝낸다)
         try:
             out = plan.apply(self.p, self.cfg, append)
         except OrchError as exc:
@@ -949,7 +955,11 @@ class Drive:
             if not out:
                 continue
             self.log(f"{name} 리셋 시작: {out['status']}")
-            if out["status"] == "failed":
+            if out["status"] == "unknown_stuck":
+                self.decide("escalation", None, f"{name} 에이전트의 작업 터미널 상태를 {out['minutes']}분 넘게 알 수 없어 "
+                            "리셋(인수인계)을 취소했다. 터미널을 확인한 뒤 필요하면 다시 요청한다",
+                            commands=[f"orch agent reset {name}"])
+            elif out["status"] == "failed":
                 self.decide("escalation", None, f"{name} 에이전트에 인수인계 태스크를 넣지 못했다",
                             commands=[f"orch agent reset {name}"])
                 agents.update(self.p, name, lambda e: e.update(reset_pending=False))

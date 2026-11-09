@@ -102,6 +102,14 @@ def deps_of(doc: TaskDoc) -> list[str]:
     return [x.strip() for x in doc.front.get("depends_on", "").split(",") if x.strip()]
 
 
+def spec_deps(p: Project, st: dict) -> list[str]:
+    """태스크 spec(메인이 고친 최신 depends_on)의 선행 태스크. spec 을 읽을 수 없으면 상태의 값을 쓴다."""
+    try:
+        return deps_of(parse_task(task_path(p, st["id"])))
+    except (OSError, OrchError, ValueError, KeyError):
+        return list(st.get("depends_on") or [])
+
+
 def dep_met(dep_st: dict | None, role: str | None, approval) -> bool:
     """선행 태스크가 충족됐는가. done 이면 충족이다. 선행 태스크와 후속 태스크(role)가 모두 사용자 승인 대상 직무면
     awaiting_user 도 충족이다(디자인 시스템 → 화면처럼 이어진 디자인을 한 번의 design-review 로 함께 승인받는다).
@@ -275,7 +283,7 @@ def check_lock(p: Project, task_id: str, owns: list[str]) -> None:
         if hits:
             conflicts.append(f"{st['id']}({st.get('status')}): " + ", ".join(f"{a}~{b}" for a, b in hits))
     if conflicts:
-        raise OrchError("소유 경로가 진행 중 태스크와 겹친다. 앞 태스크를 accept 한 뒤 시작한다: " + "; ".join(conflicts), 1)
+        raise OrchError("소유 경로가 진행 중 태스크와 겹친다: " + "; ".join(conflicts), 1)
 
 
 def gate_block(p: Project, doc: TaskDoc) -> str:
@@ -423,7 +431,12 @@ def start(p: Project, cfg: Config, task_id: str, retry: bool = False, overrides:
         if not fresh:
             raise OrchError(f"{text}. 끝나면 {retry_command(st)} 로 다시 한다", 2)
         return wait_pending(p, doc, st, owns, deps, "deps", f"{text}. pending 으로 두었다. 선행 태스크가 끝나면 관제가 띄운다")
-    check_lock(p, task_id, owns)
+    try:
+        check_lock(p, task_id, owns)
+    except OrchError as exc:
+        if not fresh:
+            raise
+        return wait_pending(p, doc, st, owns, deps, "lock", f"{task_id}: {exc}. pending 으로 두었다. 잠금이 풀리면 관제가 띄운다")
     target = agents.place(p, cfg, doc.role)
     if target == agents.WAIT:
         text = f"{task_id}: {agent_wait_text(p, cfg, doc.role)}"
@@ -563,6 +576,9 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
                             f"orch drop {task_id} --reason \"<이유>\" --force", 1)
     if agent and not from_queue and (agents.working(p, agent) or agents.entry(p, agent).get("queue")):
         st["queued_fix"] = merge_queued_fix(st.get("queued_fix"), note, supplement, extra_round, force, retry)
+        if freed.get("previous_abandoned"):
+            st["history"].append({"stage": "force_fix", "round": st.get("round"), "at": now(),
+                                  "previous_abandoned": freed["previous_abandoned"]})
         save_state(p, st)
         agents.enqueue(p, agent, task_id)
         return {"id": task_id, "status": "queued", "agent": agent}
@@ -748,9 +764,11 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
         release_pid(pid)
     result = {"id": task_id, "status": "dropped", "released": released, "forced": force,
               "blocked_dependents": [s["id"] for s in all_states(p) if s.get("status") == "pending"
-                                     and task_id in (s.get("depends_on") or [])]}
+                                     and task_id in spec_deps(p, s)]}
     if release_error is not None:
         result["release_error"] = release_error
+        result["hint"] = ("이전 세션을 멈추지 못했다. 사용자에게 그 에이전트 탭(터미널)을 닫아 달라고 한다. "
+                          "닫지 않으면 이전 세션이 지금 풀린 소유 경로를 계속 고칠 수 있다")
     return result
 
 
@@ -771,7 +789,7 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     count = int(st.get("unknown_starts") or 0) + 1
     st["unknown_starts"] = count
     failures = close_dispatch(dispatch)
-    agent =st.get("agent") if st.get("agent") in cfg.agents else None
+    agent = st.get("agent") if st.get("agent") in cfg.agents else None
     if agent:
         agents.forget(p, agent)
     entry = {"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
@@ -803,7 +821,7 @@ def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:
     at_max_next = (f"최대 {max_rounds} 라운드라 그냥 고칠 수 없다. 사용자에게 물어 한 번 더 고치기로 하면 "
                    f'orch fix {task_id} --extra-round --note "<지시>", 그만두기로 하면 {stop}')
     if status == "pending":
-        dropped = [dep for dep in st.get("depends_on") or [] if (load_state(p, dep) or {}).get("status") == "dropped"]
+        dropped = [dep for dep in spec_deps(p, st) if (load_state(p, dep) or {}).get("status") == "dropped"]
         if dropped:
             return (f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 시작할 수 없다. 진행하지 않으면 {stop}, "
                     f"이어 가려면 depends_on 을 고쳐 커밋한 뒤 orch start {task_id}")

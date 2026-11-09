@@ -303,6 +303,15 @@ class AgentFixTest(AgentCase):
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))
 
+    def test_force_fix_that_ends_up_queued_records_previous_abandoned(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        agents.enqueue(self.p, "production", "T-009")  # 다른 태스크가 먼저 줄을 서 있다
+        out = json.loads(self.orch("fix", "T-001", "--force", "--note", "멈추고 다시").stdout)
+        self.assertEqual(out["status"], "queued")
+        entry = self.state("T-001")["history"][-1]
+        self.assertEqual((entry["stage"], entry["previous_abandoned"]), ("force_fix", "ctx_1"))
+
     def test_refusal_for_live_agent_task_does_not_claim_release(self):
         self.started()
         show_worker(self, "live", stage="running")
@@ -465,6 +474,19 @@ class ResetTest(AgentCase):
         state = self.agents_state()["production"]
         self.assertEqual((state["reset_pending"], state["handle"]), (True, "term_a1"))
         self.assertEqual(self.calls_for("orchestration task-create"), [])
+
+    def test_begin_reset_gives_up_after_unknown_cap(self):
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("terminal show", {"ok": True, "result": {}})
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        self.assertTrue(self.agents_state()["production"]["reset_unknown_since"])
+        old = "2020-01-01T00:00:00+00:00"
+        agents.update(self.p, "production", lambda e: e.update(reset_unknown_since=old))
+        out = agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertEqual(out["status"], "unknown_stuck")
+        state = self.agents_state()["production"]
+        self.assertEqual((state["reset_pending"], "reset_unknown_since" in state), (False, False))
 
     def test_handoff_never_launches_fresh_session(self):
         """인수인계 직전에 터미널이 죽어도 새 세션에 인수인계를 쓰게 하지 않는다(새 세션은 맥락이 없다)."""

@@ -33,6 +33,13 @@ class CommTest(ProjectCase):
         self.assertIn("progress|done 중 하나", proc.stderr)
         self.assertEqual(self.orch("notify", "--type", "done", "  ", check=False).returncode, 2)
 
+    def test_question_is_no_longer_a_post_type(self):
+        from orch import comm
+        from orch.paths import OrchError, Project
+        self.assertNotIn("question", comm.POST_TYPES)
+        with self.assertRaises(OrchError):
+            comm.post(Project(self.root), "question", "질문")
+
     def test_watch_returns_only_new_lines(self):
         self.orch("notify", "--type", "progress", "먼저")
         first = json.loads(self.orch("watch", "--timeout", "5", env=MAIN).stdout)

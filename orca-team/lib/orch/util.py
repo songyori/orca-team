@@ -192,7 +192,9 @@ def is_drive(p: Project) -> bool:
     return bool(handle) and handle == load_run(p).get("drive_handle")
 
 
-QUEUED_COMMANDS = "start, start-ready, fix, accept, drop, design-decide, scope, agent reset"  # 메인이 관제 큐로 넣는 명령
+# 메인이 관제 큐로 넣는 명령(cli 의 QUEUED 도 이것에서 만든다). agent 는 하위 명령 reset 만 큐를 거친다
+QUEUED_COMMAND_NAMES = ("start", "start-ready", "fix", "accept", "drop", "design-decide", "scope", "agent")
+QUEUED_COMMANDS = ", ".join("agent reset" if name == "agent" else name for name in QUEUED_COMMAND_NAMES)
 
 
 def require_drive(p: Project) -> None:

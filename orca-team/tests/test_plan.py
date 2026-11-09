@@ -572,9 +572,9 @@ class ApprovalTest(PlanCase):
         self.assertEqual(len(self.calls_for("orchestration worker-release")), 1)
         self.assertEqual(self.state("T-001")["status"], "awaiting_user")
         self.write_spec("T-002", role="designer", title="회원가입")
-        proc = self.orch("start", "T-002", check=False)
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("T-001(awaiting_user)", proc.stderr)
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "lock"))
+        self.assertIn("T-001(awaiting_user)", out["message"])
 
     def test_accept_from_awaiting_user_is_user_approval(self):
         self.orch("accept", "T-001")

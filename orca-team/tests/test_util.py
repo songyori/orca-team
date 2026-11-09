@@ -13,6 +13,14 @@ READ_ONLY = {"status", "diff", "log", "rev-parse", "diff-tree", "merge-base"}
 LOCKED = subprocess.CompletedProcess([], 128, "", "fatal: Unable to create '/x/.git/index.lock': File exists.")
 
 
+class QueuedCommandsTest(unittest.TestCase):
+    def test_cli_set_and_message_text_come_from_one_constant(self):
+        from orch import cli
+        self.assertEqual(cli.QUEUED, set(util.QUEUED_COMMAND_NAMES))
+        for name in util.QUEUED_COMMAND_NAMES:
+            self.assertIn("agent reset" if name == "agent" else name, util.QUEUED_COMMANDS)
+
+
 class GitCommitPathsTest(ProjectCase):
     def setUp(self):
         super().setUp()

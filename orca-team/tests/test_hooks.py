@@ -413,7 +413,16 @@ class MainContextGuardTest(HookCase):
             data["context"] = context
         q = ask.validate_question(data)
         extra = {"render": ask.build_render(q), **({"task": "T-001"} if kind == "ask" else {})}
-        return comm.post(Project(self.root), kind, q["question"], extra)
+        proj = Project(self.root)
+        if kind == "question":
+            # 0.6 이하 outbox 에 남은 줄을 그대로 흉내 낸다(comm.post 는 더 이상 이 타입을 쓰지 않는다)
+            proj.ensure_state()
+            entry = {"id": comm._next_id(comm.read_outbox(proj)), "type": "question", "body": q["question"], **extra,
+                     "at": "2026-01-01T00:00:00+00:00"}
+            with proj.outbox.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            return entry
+        return comm.post(proj, kind, q["question"], extra)
 
     def append(self, entry):
         with self.transcript.open("a", encoding="utf-8") as fh:

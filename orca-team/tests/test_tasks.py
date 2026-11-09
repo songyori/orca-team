@@ -109,13 +109,13 @@ class StartTest(TaskCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("## Target 비었음", proc.stderr)
 
-    def test_refuses_overlapping_owns(self):
+    def test_overlapping_owns_waits_as_pending_with_lock_reason(self):
         self.write_spec("T-001")
         self.orch("start", "T-001")
         self.write_spec("T-002", extra="owns: src/ui/**\n")
-        proc = self.orch("start", "T-002", check=False)
-        self.assertEqual(proc.returncode, 1)
-        self.assertIn("T-001", proc.stderr)
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "lock"))
+        self.assertIn("T-001", out["message"])
         self.write_spec("T-003", role="tester")
         self.orch("start", "T-003")
 
@@ -715,6 +715,12 @@ class DropTest(TaskCase):
         self.assertIn("파싱 실패", out["release_error"])
         self.assertEqual(self.state("T-001")["status"], "dropped")
 
+    def test_release_error_hints_to_close_the_old_tab(self):
+        self.liveness("exited")
+        self.respond_raw("orchestration worker-release", "not json at all")
+        out = json.loads(self.drop().stdout)
+        self.assertIn("탭", out["hint"])
+
     def test_launch_failed_without_dispatch_skips_release(self):
         self.set_state("T-001", status="launch_failed", dispatch_id=None)
         out = json.loads(self.drop().stdout)
@@ -917,6 +923,31 @@ class DependsPendingTest(TaskCase):
         out = json.loads(self.orch("start-ready").stdout)
         self.assertEqual([s["id"] for s in out["started"]], ["T-002"])
         self.assertEqual(self.state("T-002")["status"], "working")
+
+    def test_start_lock_conflict_waits_as_pending_then_start_ready_starts(self):
+        self.write_spec("T-001")
+        self.write_spec("T-002")
+        self.orch("start", "T-001")
+        out = json.loads(self.orch("start", "T-002").stdout)
+        self.assertEqual((out["status"], out["reason"]), ("waiting", "lock"))
+        self.assertNotIn("accept 한 뒤", out["message"])
+        self.assertEqual(self.state("T-002")["status"], "pending")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), 1)
+        self.set_state("T-001", status="done")
+        out = json.loads(self.orch("start-ready").stdout)
+        self.assertEqual([s["id"] for s in out["started"]], ["T-002"])
+        self.assertEqual(self.state("T-002")["status"], "working")
+
+    def test_next_and_blocked_dependents_read_depends_on_from_spec(self):
+        self.write_pending("T-001")
+        self.write_pending("T-002", depends_on=("T-001",), owns=("tests/**",))
+        self.write_spec("T-002", extra="depends_on: T-003\n")  # 메인이 spec 의 depends_on 을 고쳤다
+        self.write_pending("T-003")
+        self.orch("drop", "T-001", "--reason", "범위 제외")
+        self.assertNotIn("중단", self.next_of("T-002"))
+        out = json.loads(self.orch("drop", "T-003", "--reason", "x").stdout)
+        self.assertEqual(out["blocked_dependents"], ["T-002"])
+        self.assertIn("T-003", self.next_of("T-002"))
 
     def test_drop_reports_blocked_dependents(self):
         self.write_pending("T-001")

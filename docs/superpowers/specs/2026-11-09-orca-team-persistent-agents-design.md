@@ -58,6 +58,8 @@
     - 선행 태스크가 dropped 인 pending 태스크는 `escalation` decide 를 한 번 올린다.
     - `launch_failed` 태스크도 `escalation` decide 를 한 번 올린다. 남은 워커 확인은 관제가 한다.
     - 메인에게 보이는 `next` 힌트는 메인이 실행할 수 있는 명령만 적고, 관제만 하는 단계는 "관제가 한다" 로 적는다.
+    - 관제는 `orch status` 의 `next` 를 따르지 않는다. 태스크마다 `reconcile_task` 로 상태를 다시 맞추고, `next` 는 메인이 읽는 안내 문장이다. 이 문서에서 관제가 `next` 로 이어 간다고 쓴 곳은 `reconcile_task` 로 읽는다.
+    - 소유 경로 잠금 때문에 지금 시작할 수 없는 새 태스크도 `pending` 으로 저장하고 `{"status": "waiting", "reason": "lock"}` 을 돌려준다.
 
 ## 3. 실험 결과 (2026-11-08)
 
@@ -175,7 +177,7 @@ worker_done 이 오면 drive 가 `agents.json` 의 `task` 를 비운다. 리뷰�
 | 상황 | drive 가 하는 일 |
 |---|---|
 | 태스크를 넣기 전 작업 터미널이 죽었다 | `handle` 을 비우고 그 태스크로 §5.2 를 한다(새 에이전트는 인수인계 파일을 읽는다) |
-| 작업 중 에이전트가 worker_done 없이 죽었다 | 지금 `orch status` 의 `next` 규칙을 따른다. 리포트와 `[T-xxx]` 작업 커밋이 있으면 리뷰한다. 없으면 새 에이전트(§5.2)에 `orch fix --note "이전 작업자가 중간에 끝났다. [T-xxx] 커밋을 확인하고 이어서 한다"` 로 넣는다 |
+| 작업 중 에이전트가 worker_done 없이 죽었다 | 관제의 재확인(`reconcile_task`, §2.1)이 이어받는다. 리포트와 `[T-xxx]` 작업 커밋이 있으면 리뷰한다. 없으면 새 에이전트(§5.2)에 `orch fix --note "이전 작업자가 중간에 끝났다. [T-xxx] 커밋을 확인하고 이어서 한다"` 로 넣는다 |
 | `start_unknown` | `worker-abandon` → 그 터미널을 `worker-release` 로 닫는다(늦게 입력이 들어가 같은 체크아웃에서 두 에이전트가 일하는 것을 막는다) → `task-update --status ready` → §5.2 로 새 에이전트를 띄운다. 같은 태스크에서 세 번째면 메인에 `decide`(escalation) |
 | 리뷰 보기 pane 이 죽었다 | 다음에 태스크를 넣을 때 다시 split 한다. 리뷰에는 영향이 없다 |
 | Orca 재시작 | drive 도 같이 죽는다. 메인 훅이 drive 를 살린다(§6.1). 새 drive 는 `agents.json` 의 handle 을 하나씩 확인해 죽은 것을 비우고, 다음 태스크 때 다시 띄운다 |
@@ -197,7 +199,7 @@ worker_done 이 오면 drive 가 `agents.json` 의 `task` 를 비운다. 리뷰�
 2. 받은 메시지를 §6.3 대로 처리한다.
 3. 메인 요청 큐(§6.4)를 순서대로 실행한다.
 4. 끝난 리뷰 자식 프로세스의 결과를 §6.3 대로 처리한다. 리뷰는 `orch review T-xxx` 자식 프로세스로 돌려 루프가 멈추지 않게 한다.
-5. 60초마다 `orch status` 의 `next` 로 메시지 없이 끝난 일(죽은 워커, 끊긴 리뷰)을 찾아 처리한다.
+5. 60초마다 재확인(`reconcile_task`, §2.1)으로 메시지 없이 끝난 일(죽은 워커, 끊긴 리뷰)을 찾아 처리한다.
 
 ### 6.3 이벤트 처리
 
@@ -399,10 +401,10 @@ claude_effort = "xhigh"
 
 | 상황 | 처리 |
 |---|---|
-| drive 가 죽었다 | 메인 훅이 살린다. 새 drive 는 `next` 로 이어간다 |
+| drive 가 죽었다 | 메인 훅이 살린다. 새 drive 는 재확인(`reconcile_task`)으로 이어간다 |
 | Orca 호출 실패 | 지금 `launch_failed`·`--retry` 규칙. 넘기면 `decide` escalation |
 | 고정 에이전트 터미널이 죽었다, `start_unknown` | §5.8 |
-| 리뷰 자식 프로세스가 죽었다 | 태스크가 `reviewing` 으로 남는다. `next` 로 다시 리뷰 |
+| 리뷰 자식 프로세스가 죽었다 | 태스크가 `reviewing` 으로 남는다. 재확인(`reconcile_task`)이 다시 리뷰한다 |
 | 큐 요청이 잘못됐다 | 검증 단계에서 바로 오류. drive 실행 중 실패면 결과 파일·`result` 에 오류 |
 | 메인이 `decide` 에 답하지 않는다 | 그 태스크만 멈춘다. 다른 태스크는 계속 간다 |
 | 두 프로세스가 같은 태스크를 쓴다 | 쓰는 쪽은 drive 와 리뷰 자식뿐이고 태스크별 잠금을 건다 |

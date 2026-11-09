@@ -554,6 +554,25 @@ class LaunchFailedReconcileTest(DriveCase):
         self.assertEqual(len(self.outbox("decide")), 1)
 
 
+class GuardLaunchFailedTest(DriveCase):
+    def test_internal_fix_launch_failure_posts_one_decide_with_retry_commands(self):
+        self.started()
+
+        def failing_fix(p, cfg, task_id, *args, **kw):
+            st = tasks.load_state(p, task_id)
+            st.update(status="launch_failed", stage="fix", round=2)
+            tasks.save_state(p, st)
+            raise OrchError("worker-start 실패", 1)
+
+        self.respond("orchestration worker-list", {"ok": True, "result": {"workers": []}})
+        with mock.patch.object(tasks, "fix", side_effect=failing_fix):
+            self.drive.run_fix("T-001", "고친다")
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual(entry["commands"], ["orch fix T-001 --retry", 'orch drop T-001 --reason "<이유>"'])
+        self.assertIn("worker-start 실패", entry["summary"])
+
+
 class PlanRecoveryTest(DriveCase):
     def test_planner_accept_recovers_after_crash_before_apply(self):
         self.started("T-001", role="planner")
@@ -568,6 +587,24 @@ class PlanRecoveryTest(DriveCase):
             self.drive.reconcile()
             self.drive.reconcile()
         apply.assert_called_once()
+        self.assertIs(self.state("T-001")["plan_applied"], True)
+
+
+    def test_planner_without_append_after_applied_plan_does_not_loop(self):
+        self.p.plan_json.write_text(json.dumps({"tasks": {"a": "T-009"}, "digests": {}}), encoding="utf-8")
+        self.started("T-001", role="planner")
+        self.set_state("T-001", status="approved")
+        calls = []
+
+        def fake_apply(p, cfg, append):
+            calls.append(append)
+            raise OrchError("새 key 가 없다" if append else "계획을 이미 적용했다(state/plan.json)", 2)
+
+        before = len(list(self.p.tasks_dir.glob("T-*.md")))
+        with mock.patch.object(plan, "apply", side_effect=fake_apply):
+            self.drive.accepted("T-001", tasks.accept(self.p, "T-001"))
+        self.assertEqual(calls, [True])
+        self.assertEqual(len(list(self.p.tasks_dir.glob("T-*.md"))), before)
         self.assertIs(self.state("T-001")["plan_applied"], True)
 
 
@@ -695,6 +732,18 @@ class ResetTest(DriveCase):
             self.drive.resets()
         self.assertEqual(begin.call_count, 2 * len(cfg.agents))
         self.assertEqual(len(self.outbox("decide")), 1)
+        self.assertFalse(agents.entry(self.p, name).get("reset_pending"))
+
+    def test_unknown_terminal_cap_escalates_once_and_frees_roles(self):
+        name = "test"
+        agents.update(self.p, name, lambda e: e.update(reset_pending=True, handle="term_x",
+                                                       reset_unknown_since="2020-01-01T00:00:00+00:00"))
+        with mock.patch.object(agents.orca, "terminal_state", return_value="unknown"):
+            self.drive.resets()
+            self.drive.resets()
+        [entry] = self.outbox("decide")
+        self.assertEqual(entry["kind"], "escalation")
+        self.assertIn(name, entry["summary"])
         self.assertFalse(agents.entry(self.p, name).get("reset_pending"))
 
 

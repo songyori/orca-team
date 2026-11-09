@@ -47,7 +47,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 - 메인이 `render.context` 를 출력하지 않고 그 질문을 AskUserQuestion 으로 부르면 훅이 context 를 담아 한 번 거부한다. 메인 transcript 끝부분의 assistant 텍스트에서 context 앞부분(공백·마크다운 기호를 뺀 80자)을 찾는다. 같은 질문의 두 번째 호출과 판단할 수 없는 경우(transcript 없음·깨짐)는 통과시킨다.
 - 기획 워커는 마지막에 확정 질문을 하고 `docs/planning/` 에 spec.md(기능), contracts.md(인터페이스 약속), tasks.toml(태스크 그래프), interview.md(질문과 답)를 커밋한다. 확정 질문 전에 `orch plan check [--file <경로>]` 로 tasks.toml 을 검사한다. `plan apply` 와 같은 규칙이고 아무것도 쓰지 않는다(누구나 실행할 수 있다).
 - 기획 태스크를 accept 하면 관제가 `orch plan apply` 로 tasks.toml 을 검증해 태스크 spec 과 `pending` 상태를 만든다(증분 기획은 `--append`). `orch start-ready` 는 선행 태스크가 모두 done 이고 소유 경로가 겹치지 않는 태스크를 `max_parallel`(기본 4)까지 한 번에 띄운다. `max_parallel` 은 `orch start-ready` 만 지킨다. `orch fix`(수정 라운드)와 단건 `orch start` 는 상한을 세지 않고 바로 띄우므로 working 이 잠시 상한을 넘을 수 있다.
-- `user_approval_roles`(새 프로젝트는 designer) 태스크는 Codex APPROVE 뒤 `awaiting_user` 로 기다린다. 모두 모이면 관제가 디자인 링크를 모은 승인 질문 하나를 메인에 올린다. 승인하면 done, 수정을 요청하면 새 라운드다. 승인 대상 직무끼리 이어진 태스크(디자인 시스템 → 화면)는 선행이 `awaiting_user` 여도 시작해 한 번의 승인 질문에 함께 들어간다. 승인 대상이 아닌 후속 태스크(개발)는 사용자 승인(done)을 기다린다.
+- `user_approval_roles`(새 프로젝트는 designer) 태스크는 Codex APPROVE 뒤 `awaiting_user` 로 기다린다. 모두 모이면 관제가 `orch design-review` 로 디자인 링크를 모은 승인 질문 하나를 메인에 올린다. 승인하면 done, 수정을 요청하면 새 라운드다. 승인 대상 직무끼리 이어진 태스크(디자인 시스템 → 화면)는 선행이 `awaiting_user` 여도 시작해 한 번의 승인 질문에 함께 들어간다. 승인 대상이 아닌 후속 태스크(개발)는 사용자 승인(done)을 기다린다.
 - 메인이 질문에 답하기 전에 세션이 끝나도 질문은 남는다. `orch status` 의 `open_questions` 가 답하지 않은 질문을 보여 주고, `/orca-team:up` 이 `orch reask` 로 다시 받아 묻는다. `orch answer` 는 ask 와 decide 에 한 번만 답한다(두 번째는 exit 3). 디자인 승인 질문은 `orch design-decide` 로 답한다.
 - 설정은 `.orchestration/config.toml` 최상위 `max_parallel = 4`, `user_approval_roles = ["designer"]` 다. 새 프로젝트는 scaffold 가 이 두 줄을 적는다. `user_approval_roles` 에는 `[roles]` 에 있는 직무만 쓴다(없는 직무는 exit 2).
 - 0.7.0 부터는 `orch upgrade`("0.6.0 이하 프로젝트를 올리기" 참고)가 아래 수동 복사 단계를 대신한다. `coordinator.md` 는 더 이상 없다. 아래 버전별 안내는 그 버전 당시의 기록이다.
@@ -131,16 +131,16 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
 
 ## 복구
 
-- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. 재시작한 관제(`orch drive`)는 이것을 따른다. 아래 표의 `review`·`design-review` 는 관제만 실행하는 명령이고, 메인은 `start`·`fix`·`accept`·`drop` 처럼 큐를 거치는 명령만 쓴다.
+- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. `next` 는 메인이 읽는 안내 문장이다. 재시작한 관제(`orch drive`)는 `next` 를 따르지 않고 태스크마다 `reconcile_task` 로 상태를 다시 맞춘다. 아래 표의 "관제가 …" 는 관제가 스스로 하는 일이고, 메인은 `start`·`fix`·`accept`·`drop`·`design-decide`·`scope` 처럼 큐를 거치는 명령과 `answer`·`status` 만 쓴다.
 
   | status | next |
   |---|---|
-  | `pending` | `orch start-ready`. 선행 태스크가 dropped 면 메인에 묻고 `orch drop` |
-  | `working` | 워커가 일하는 중이면 worker_done 대기. 끝났는데(settled) 정상 종료면 `orch review T-xxx` 를 백그라운드로, 실패·종료면 `orch fix T-xxx --note "워커 종료"` |
-  | `reviewing` | 리뷰 프로세스가 없으면 `orch review T-xxx` 를 백그라운드로(끊긴 리뷰를 다시 돌린다) |
-  | `approved` | `orch accept T-xxx` |
-  | `awaiting_user` | 아직 묻지 않았으면 `orch design-review`. 물었으면 메인 답을 기다린 뒤 승인은 `orch accept T-xxx`, 수정 요청은 `orch fix T-xxx --note "<사용자 요청>"` |
-  | `changes` | `orch fix T-xxx`. 최대 라운드면 메인에 묻고 `orch drop` |
+  | `pending` | 선행 태스크가 dropped 면 `orch drop T-xxx --reason "<이유>"` 또는 `depends_on` 을 고쳐 커밋한 뒤 `orch start T-xxx`. 아니면 선행 태스크와 에이전트가 비면 관제가 띄운다(`orch start-ready`) |
+  | `working` | 워커가 살아 있으면 worker_done 대기. 생존 확인이 안 되면 대기하되 오래 이어지면 관제가 decide 로 알린다. worker_done 없이 정상 종료하면 관제가 리뷰를 시작하고, 실패·종료면 관제가 이어서 하도록 다시 보낸다(최대 라운드면 사용자에게 묻고 `orch fix T-xxx --extra-round --note "<지시>"` 또는 `orch drop`) |
+  | `reviewing` | 리뷰가 진행 중이면 끝나기를 기다리고, 끊겼으면 관제가 다시 리뷰한다 |
+  | `approved` | 관제가 accept 한다 |
+  | `awaiting_user` | 아직 묻지 않았으면 승인 대상 태스크가 모두 리뷰를 지난 뒤 관제가 디자인 승인 질문을 올린다. 물었으면 답이 오면 `orch design-decide <질문 id> --approve T-xxx,… --fix 'T-yyy=<요청>'` 으로 화면별 결정을 넘긴다 |
+  | `changes` | 관제가 리뷰 지적대로 수정 라운드를 띄운다. 최대 라운드면 사용자에게 묻고 `orch fix T-xxx --extra-round --note "<지시>"` 또는 `orch drop` |
   | `launch_failed` | 관제가 Orca 에 남은 워커를 확인하고 escalation decide 를 한 번 올린다. 메인은 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`, 포기하면 `orch drop`. 행에 `launching: true` 가 있으면 아직 워커를 띄우는 중이라 끝날 때까지 기다린다(그동안 `--retry` 는 exit 2) |
   | `done`, `dropped` | 없음(`null`) |
 

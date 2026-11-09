@@ -41,7 +41,7 @@ decide 에 적힌 `files` 만 읽고 `commands` 중 하나로 처리한다. 사�
 | escalation | 내용을 정리해 지시로 풀거나 사용자에게 묻는다 |
 | max_rounds | 리뷰 요약과 함께 "한 번 더 / 중단"을 묻는다. 한 번 더면 `orch fix T-xxx --extra-round`, 중단이면 `orch drop` |
 | repeat_test_failure | 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일의 quick 출력 끝을 보고 사용자에게 묻는다 |
-| test_config | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크를 만들어 시작한다(위 "직접 만든 태스크" 규칙) |
+| test_config | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크(`plan: append`)를 만들어 시작한다(위 "직접 만든 태스크" 규칙) |
 | planning_gaps | 문서로 답할 수 있으면 묶음 정리 태스크 spec 에 넣는다(시작 전이면 spec 커밋, working 이면 `orch scope`). 제품 결정이 필요한 항목은 모아 한 번에 묻고, 넣기로 하면 증분 기획 태스크(`plan: append`)를 만들어 시작한다 |
 | unknown_regression | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 developer 태스크를 만들어 시작한다. front matter `owns:` 는 원인 태스크와 같게, Change 첫 줄은 decide 의 `source`(예: `출처: T-xxx followups`), Acceptance 는 "실패한 테스트 <이름>이 `orch test T-yyy` 에서 통과한다". spec 을 커밋하고 `orch start T-yyy` 한 뒤 `orch answer` 로 닫는다 |
 | token_update | 보강한 디자인 시스템의 토큰을 UI 기반 developer 태스크에 반영할지 정한다. 그 태스크가 done 이면 `orch task new developer "토큰 갱신 반영: <요약>"`(owns 는 UI 기반 태스크와 같게, `depends_on:` 에 보강 태스크. 커밋하고 `orch start T-yyy`), working 이면 `orch scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
