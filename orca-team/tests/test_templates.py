@@ -490,7 +490,7 @@ class TemplateTest(unittest.TestCase):
 
     def test_status_doc_describes_batch_verify(self):
         status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
-        for key in ("(2026-11-08, 0.6.0)", "| 0.6.0 |", "specs/2026-11-08-orca-team-batch-verify-design.md"):
+        for key in ("| 0.6.0 |", "specs/2026-11-08-orca-team-batch-verify-design.md"):
             self.assertIn(key, status)
 
 

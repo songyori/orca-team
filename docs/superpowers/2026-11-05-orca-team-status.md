@@ -1,4 +1,4 @@
-# orca-team 현재 상태 (2026-11-08, 0.6.0)
+# orca-team 현재 상태 (2026-11-09, 0.6.1)
 
 다음 작업을 시작할 때 먼저 읽는 문서다. 세부 결정은 각 설계 문서와 기본 설계 §13 에 있다.
 
@@ -15,6 +15,7 @@
 | 0.5.1 | 코디네이터 자동 부활: 메인 세션 훅이 확실히 죽은 코디네이터를 orch up 분리 실행으로 살림(config.toml auto_up) | `specs/2026-11-06-orca-team-auto-up-design.md`, `plans/2026-11-06-orca-team-auto-up.md` |
 | 0.5.2 | 디자인 규칙: design-rules.md 를 §0–§7(접근성·색·글자·레이아웃·표면·동작·상태)로 넓힘, Codex 디자인 리뷰를 변경분 분류·지운 줄 읽기·즉시 차단 항목 기준으로, 지운 줄 접근성 신호 자동 검사(designdiff) | `specs/2026-11-06-orca-team-design-rules-design.md`, `plans/2026-11-06-orca-team-design-rules.md` |
 | 0.6.0 | 묶음 검증: `[test]` quick·full 을 orch 가 돌리는 테스트 관문(`orch test`), 묶음(tester 태스크) 단위 전체 테스트와 묶음 리뷰, P1 만 막는 수렴형 리뷰와 판정 맞추기, 후속 모으기(`orch followups`), 기존 프로젝트 갱신(`orch upgrade`) | `specs/2026-11-08-orca-team-batch-verify-design.md`, `plans/2026-11-08-orca-team-batch-verify.md` |
+| 0.6.1 | Orca 1.4.240 응답에 맞춘다: worker-show 를 --full 로 읽고 간략형도 읽는다(바쁨 판정이 늘 확인 불가였다), 지금 Orca 에 없는 worker-retain 호출을 지운다 | — |
 
 ## 검증
 

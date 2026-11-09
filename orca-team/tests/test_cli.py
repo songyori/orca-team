@@ -24,7 +24,7 @@ class CompileWarningTest(unittest.TestCase):
 
 class CliTest(ProjectCase):
     def test_version(self):
-        self.assertIn("orca-team 0.6.0", self.orch("--version").stdout)
+        self.assertIn("orca-team 0.6.1", self.orch("--version").stdout)
 
     def test_version_matches_manifests(self):
         from orch.paths import VERSION

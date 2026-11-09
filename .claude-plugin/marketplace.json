@@ -7,7 +7,7 @@
     {
       "name": "orca-team",
       "source": "./orca-team",
-      "version": "0.6.0",
+      "version": "0.6.1",
       "description": "/orca-team:init 한 번으로 메인·코디네이터·직무 워커 Orca 오케스트레이션과 Codex 리뷰를 세팅한다."
     }
   ]
