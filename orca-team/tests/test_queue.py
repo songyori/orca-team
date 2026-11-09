@@ -75,6 +75,44 @@ class QueueTest(ProjectCase):
         self.assertEqual((last["type"], last["request"], last["result"]["ok"]), ("result", request["id"], True))
         self.assertEqual(sorted(self.p.queue_dir.iterdir()), [])
 
+    def test_complete_after_abandon_marker_posts_one_outbox_result(self):
+        self.make_alive()
+        queue_dir = self.p.queue_dir
+        queue_dir.mkdir(parents=True, exist_ok=True)
+        request = {"id": "q-000001", "command": "fix", "args": {"id": "T-001"}, "at": now()}
+        write_text_atomic(queue_dir / "000001.json", json.dumps(request))
+        (queue_dir / "000001.abandoned").touch()
+        path = queue_dir / "000001.json"
+        queue.complete(self.p, path, request, {"ok": True, "result": {"id": "T-001"}})
+        results = [e for e in comm.read_outbox(self.p) if e["type"] == "result"]
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["request"], "q-000001")
+        self.assertEqual(sorted(queue_dir.iterdir()), [])
+
+    def test_finish_wait_takes_result_when_present(self):
+        self.make_alive()
+        self.p.queue_dir.mkdir(parents=True, exist_ok=True)
+        write_text_atomic(self.p.queue_dir / "000001.result.json",
+                          json.dumps({"ok": True, "result": {"id": "T-001"}}))
+        out = queue._finish_wait(self.p, "000001")
+        self.assertEqual(out, {"id": "T-001"})
+        self.assertEqual(sorted(self.p.queue_dir.iterdir()), [])
+
+    def test_finish_wait_marks_abandoned_when_result_absent(self):
+        self.make_alive()
+        self.p.queue_dir.mkdir(parents=True, exist_ok=True)
+        out = queue._finish_wait(self.p, "000001")
+        self.assertEqual((out["status"], out["request"]), ("queued", "q-000001"))
+        self.assertEqual([f.name for f in self.p.queue_dir.iterdir()], ["000001.abandoned"])
+
+    def test_naive_heartbeat_counts_as_down(self):
+        self.make_alive()
+        write_text_atomic(self.p.drive_heartbeat, "2026-01-01T00:00:00")
+        with self.assertRaises(OrchError) as ctx:
+            queue.submit(self.p, "start", {"id": "T-001"}, wait=0.1)
+        self.assertIn("/orca-team:up", str(ctx.exception))
+        self.assertEqual(queue.pending(self.p), [])
+
     def test_pending_keeps_submit_order(self):
         self.make_alive()
         queue.submit(self.p, "start", {"id": "T-001"}, wait=0)

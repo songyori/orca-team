@@ -134,7 +134,7 @@ def drive_alive(p: Project) -> bool:
     try:
         stamp = p.drive_heartbeat.read_text(encoding="utf-8").strip()
         age = (datetime.now().astimezone() - datetime.fromisoformat(stamp)).total_seconds()
-    except (OSError, ValueError):
+    except (OSError, ValueError, TypeError):  # TypeError: offset 없는 시각은 빼기가 안 된다
         return False
     return 0 <= age < DRIVE_STALE_SECONDS
 

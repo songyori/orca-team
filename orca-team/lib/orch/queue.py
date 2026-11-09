@@ -43,10 +43,17 @@ def submit(p: Project, command: str, args: dict, wait: float = WAIT_SECONDS) -> 
         if time.monotonic() >= deadline:
             break
         time.sleep(POLL_SECONDS)
-    abandoned.touch()
-    if result_path.exists():  # 표시를 남기는 사이에 끝났다
-        abandoned.unlink(missing_ok=True)
-        return _take(result_path)
+    return _finish_wait(p, number)
+
+
+def _finish_wait(p: Project, number: str) -> dict:
+    """기다림이 끝난 뒤 결과를 정한다. 잠금 안에서 결과 파일이 있으면 가져가고, 없으면 그만둔 표시를 남긴다.
+    complete 도 같은 잠금을 쓰므로 '표시' 와 '결과 파일' 중 한쪽만 일어난다."""
+    _, result_path, abandoned = _paths(p, number)
+    with comm._file_lock(p.drive_dir / "queue.lock"):
+        if result_path.exists():
+            return _take(result_path)
+        abandoned.touch()
     return {"status": "queued", "request": f"q-{number}",
             "message": "관제가 처리 중이다. 결과는 orch watch 의 result 메시지로 온다"}
 
@@ -67,18 +74,16 @@ def pending(p: Project) -> list[Path]:
 
 
 def complete(p: Project, path: Path, request: dict, result: dict) -> None:
-    """요청을 끝낸다. 요청한 쪽이 기다리면 결과 파일을, 그만뒀으면 outbox `result` 를 쓴다."""
+    """요청을 끝낸다. 잠금 안에서 그만둔 표시가 있으면 outbox `result` 를 보내고 표시를 지운다. 없으면 결과 파일을 쓴다.
+    _finish_wait 와 같은 잠금을 쓰므로 한 요청의 결과는 한 번만 전달된다."""
     number = path.name[:6]
     _, result_path, abandoned = _paths(p, number)
-    if abandoned.exists():
-        _post_result(p, request, result)
-        abandoned.unlink(missing_ok=True)
-    else:
-        write_json(result_path, result)
-        if abandoned.exists() and result_path.exists():  # 결과를 쓰는 사이에 그만뒀다
-            result_path.unlink(missing_ok=True)
+    with comm._file_lock(p.drive_dir / "queue.lock"):
+        if abandoned.exists():
             _post_result(p, request, result)
             abandoned.unlink(missing_ok=True)
+        else:
+            write_json(result_path, result)
     path.unlink(missing_ok=True)
 
 
