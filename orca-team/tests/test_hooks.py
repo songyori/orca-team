@@ -46,14 +46,31 @@ class RoleMarkTest(HookCase):
 
     def test_roles_from_first_prompt(self):
         self.mark("s-main", "안녕")
-        self.mark("s-co", "[orca-team:coordinator] 너는 코디네이터다")
         self.mark("s-w", "Your task ID is: task_1")
-        self.assertEqual([self.role(s) for s in ("s-main", "s-co", "s-w")], ["main", "coordinator", "worker"])
+        self.assertEqual([self.role(s) for s in ("s-main", "s-w")], ["main", "worker"])
 
     def test_first_prompt_wins(self):
         self.mark("s1", "안녕")
         self.mark("s1", "[orca-team:coordinator]")
         self.assertEqual(self.role("s1"), "main")
+
+    def test_worker_marker_follows_each_preamble(self):
+        self.mark("s-w", "Your task ID is: t1\n너는 orca-team 의 개발(developer) 워커다.")
+        self.assertEqual(self.role("s-w"), "worker")
+        self.mark("s-w", "Your task ID is: t2\n너는 orca-team 의 기획(planner) 워커다.")
+        self.assertEqual(self.role("s-w"), "worker:planner")
+        self.mark("s-main", "안녕")
+        self.mark("s-main", "Your task ID is: t3")
+        self.assertEqual(self.role("s-main"), "main")
+
+    def test_agent_terminal_is_worker_without_marker(self):
+        (self.root / ".orchestration/state/agents.json").write_text(
+            json.dumps({"production": {"handle": "term_a1"}}), encoding="utf-8")
+        env = {"ORCA_TERMINAL_HANDLE": "term_a1"}
+        self.assertIsNone(self.hook("session-start", {"session_id": "after-clear", "source": "clear"}, env=env))
+        out = self.hook("guard", {"session_id": "after-clear", "tool_name": "Write",
+                                  "tool_input": {"file_path": str(self.root / "src/a.ts")}}, env=env)
+        self.assertIsNone(self.decision(out))
 
 
 class GuardTest(HookCase):
@@ -75,14 +92,17 @@ class GuardTest(HookCase):
         out = self.tool("m", "Bash", {"command": "orca orchestration run-create --objective x"})
         self.assertEqual(self.decision(out), "deny")
         self.assertEqual(self.decision(self.tool("m", "Bash", {"command": "cd x && orca orchestration check"})), "deny")
-        self.assertIsNone(self.tool("m", "Bash", {"command": '.orchestration/bin/orch tell "로그인"'}))
+        self.assertIsNone(self.tool("m", "Bash", {"command": '.orchestration/bin/orch start T-001'}))
 
-    def test_coordinator_rules(self):
-        self.mark("c", "[orca-team:coordinator] 시작")
-        self.assertEqual(self.decision(self.write("c", str(self.root / "src/app.ts"))), "deny")
-        self.assertIsNone(self.write("c", str(self.root / ".orchestration/tasks/T-001.md")))
-        self.assertEqual(self.decision(self.tool("c", "AskUserQuestion")), "deny")
-        self.assertIsNone(self.tool("c", "Bash", {"command": "orca orchestration reply --id m1 --body ok"}))
+    def test_main_cannot_call_orca_orchestration_or_run_drive(self):
+        self.mark("m", "안녕")
+        for command in ("orca orchestration send --to run:x", ".orchestration/bin/orch drive", "cd x && orch drive"):
+            with self.subTest(command=command):
+                out = self.tool("m", "Bash", {"command": command})
+                self.assertEqual(self.decision(out), "deny")
+        self.assertIn("관제", self.tool("m", "Bash", {"command": "orca orchestration check"})
+                      ["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIsNone(self.tool("m", "Bash", {"command": ".orchestration/bin/orch drop T-001 --reason x"}))
 
     def test_worker_rules(self):
         self.mark("w", "Your task ID is: t")
@@ -94,8 +114,6 @@ class GuardTest(HookCase):
         return out["hookSpecificOutput"]["permissionDecisionReason"]
 
     def test_ask_user_question_deny_points_to_the_right_command(self):
-        self.mark("c", "[orca-team:coordinator] 시작")
-        self.assertIn("orch notify --type question --json -", self.reason(self.tool("c", "AskUserQuestion")))
         self.mark("w", "Your task ID is: t\n너는 orca-team 의 개발(developer) 워커다. 아래 태스크 하나만 수행한다.")
         worker = self.reason(self.tool("w", "AskUserQuestion"))
         self.assertIn("프리앰블의 ask 명령", worker)
@@ -160,11 +178,13 @@ class StopAndSessionStartTest(HookCase):
         pid_file.unlink()
         self.assertIsNone(self.hook("stop", {"session_id": "m", "stop_hook_active": True}))
 
-    def test_stop_ignores_coordinator_and_missing_coordinator(self):
-        self.mark("c", "[orca-team:coordinator]")
-        self.assertIsNone(self.hook("stop", {"session_id": "c"}))
-        (self.root / ".orchestration/state/run.json").write_text("{}", encoding="utf-8")
+    def test_stop_needs_run_id(self):
+        run_json = self.root / ".orchestration/state/run.json"
+        run_json.write_text("{}", encoding="utf-8")
         self.assertIsNone(self.hook("stop", {"session_id": "m"}))
+        run_json.write_text('{"run_id": "run_x"}', encoding="utf-8")
+        out = self.hook("stop", {"session_id": "m"})
+        self.assertEqual(out["decision"], "block")
 
     def test_session_start_for_main_mentions_up_and_unread(self):
         self.orch("notify", "--type", "progress", "x")
@@ -244,9 +264,6 @@ class EnvCoordinatorTest(HookCase):
         super().setUp()
         self.orch("setup-done")
 
-    def test_session_start_silent_for_env_coordinator_without_marker(self):
-        self.assertIsNone(self.hook("session-start", {"session_id": "fresh"}, env=COORD_ENV))
-
     def test_session_start_main_context_has_main_session_only_disclaimer(self):
         out = self.hook("session-start", {"session_id": "fresh"})
         context = out["hookSpecificOutput"]["additionalContext"]
@@ -257,20 +274,6 @@ class EnvCoordinatorTest(HookCase):
         out = self.hook("session-start", {"session_id": "fresh"}, env={"ORCA_TERMINAL_HANDLE": "term_other"})
         self.assertIn("메인 세션에만", out["hookSpecificOutput"]["additionalContext"])
 
-    def test_coordinator_after_clear_with_nudge_prompt_keeps_role(self):
-        self.hook("role-mark", {"session_id": "new", "prompt": "You have 1 orchestration message"}, env=COORD_ENV)
-        cmd = {"command": "orca orchestration worker-list"}
-        out = self.hook("guard", {"session_id": "new", "tool_name": "Bash", "tool_input": cmd}, env=COORD_ENV)
-        self.assertIsNone(out)
-        self.assertIsNone(self.hook("stop", {"session_id": "new"}, env=COORD_ENV))
-
-    def test_env_coordinator_overrides_existing_main_marker(self):
-        self.mark("s", "hi")
-        cmd = {"command": "orca orchestration worker-list"}
-        self.assertEqual(self.decision(self.hook("guard", {"session_id": "s", "tool_name": "Bash",
-                                                           "tool_input": cmd})), "deny")
-        self.assertIsNone(self.hook("guard", {"session_id": "s", "tool_name": "Bash", "tool_input": cmd},
-                                    env=COORD_ENV))
 
 
 class MalformedInputTest(HookCase):
@@ -302,50 +305,11 @@ class SessionIdTest(HookCase):
         self.orch("setup-done")
         self.assertEqual(self.decision(self.hook("guard", {"session_id": "../x", "tool_name": "Bash",
                                                            "tool_input": cmd})), "deny")
+        (self.root / ".orchestration/state/agents.json").write_text(
+            json.dumps({"production": {"handle": "term_coord"}}), encoding="utf-8")
         self.assertIsNone(self.hook("guard", {"session_id": "../x", "tool_name": "Bash", "tool_input": cmd},
                                     env=COORD_ENV))
-
-
-
-class MainReplyGuardTest(HookCase):
-    """[main] 메시지에 reply 하면 메인 입력란이 깨어난다. orch wait 가 기록한 id 로의 reply 를 막는다."""
-
-    def setUp(self):
-        super().setUp()
-        self.orch("setup-done")
-        (self.root / ".orchestration/state/main-msg-ids.json").write_text('["msg_main"]', encoding="utf-8")
-
-    def bash(self, command):
-        return self.hook("guard", {"session_id": "c", "tool_name": "Bash", "tool_input": {"command": command}},
-                         env=COORD_ENV)
-
-    def test_reply_to_recorded_main_message_is_denied(self):
-        for command in ("orca orchestration reply --id msg_main --body ok",
-                        "orca orchestration reply --id=msg_main --body ok",
-                        'cd /x && orca orchestration reply --body "답" --id "msg_main" --json'):
-            with self.subTest(command=command):
-                out = self.bash(command)
-                self.assertEqual(self.decision(out), "deny")
-                self.assertIn("orch notify --type", out["hookSpecificOutput"]["permissionDecisionReason"])
-
-    def test_reply_to_other_message_is_allowed(self):
-        self.assertIsNone(self.bash("orca orchestration reply --id msg_worker --body ok"))
-        self.assertIsNone(self.bash("orca orchestration worker-show --id msg_main"))
-
-    def test_coordinator_raw_check_is_denied_worker_keeps_it(self):
-        for command in ("orca orchestration check --wait --types worker_done",
-                        "cd /x && orca orchestration check --peek"):
-            with self.subTest(command=command):
-                out = self.bash(command)
-                self.assertEqual(self.decision(out), "deny")
-                self.assertIn("orch wait", out["hookSpecificOutput"]["permissionDecisionReason"])
-        self.mark("w", "Your task ID is: t")
-        self.assertIsNone(self.tool("w", "Bash", {"command": "orca orchestration check --wait"}))
-        self.assertIsNone(self.bash(".orchestration/bin/orch wait --ack d1"))
-
-    def test_unparseable_reply_is_allowed(self):
-        self.assertIsNone(self.bash("orca orchestration reply --body ok"))
-        self.assertIsNone(self.bash('orca orchestration reply --id "$ID" --body ok'))
+        self.assertIsNone(self.hook("session-start", {"session_id": "../x"}, env=COORD_ENV))
 
 
 class StateAndAllowlistGuardTest(HookCase):
@@ -364,17 +328,6 @@ class StateAndAllowlistGuardTest(HookCase):
                     out = self.edit(session_id, ".orchestration/state/tasks/T-001.json", tool, env)
                     self.assertEqual(self.decision(out), "deny")
         self.assertEqual(self.decision(self.edit("w", ".orchestration/state", env=None)), "deny")
-
-    def test_coordinator_may_edit_only_orchestration(self):
-        self.orch("setup-done")
-        for rel in (".orchestration/tasks/T-001.md", ".orchestration/project.md"):
-            self.assertIsNone(self.edit("c", rel, env=COORD_ENV), rel)
-        for rel in ("CLAUDE.md", "AGENTS.md", ".gitignore", ".claude/settings.json", "docs/superpowers/x.md",
-                    "docs/tasks/T-001/report.md", "src/app.ts"):
-            self.assertEqual(self.decision(self.edit("c", rel, env=COORD_ENV)), "deny", rel)
-        out = self.hook("guard", {"session_id": "c", "tool_name": "Write",
-                                  "tool_input": {"file_path": str(self.tmp / "scratch.txt")}}, env=COORD_ENV)
-        self.assertIsNone(out)
 
     def test_non_dict_run_json_is_treated_as_empty(self):
         from orch import util
@@ -498,17 +451,18 @@ class MainContextGuardTest(HookCase):
         self.assertIsNone(self.ask_user(entry["render"]["question"]))
         self.assertEqual(self.denied_ids(), [])
 
-    def test_coordinator_and_worker_deny_messages_are_unchanged(self):
-        self.mark("c", "[orca-team:coordinator] 시작")
+    def test_worker_deny_messages_are_unchanged(self):
         self.mark("w", "Your task ID is: t\n너는 orca-team 의 개발(developer) 워커다.")
         self.mark("p", "Your task ID is: t\n너는 orca-team 의 기획(planner) 워커다.")
         question = f"{CONFIRM}\n예: 전체 문서는 docs/planning/ 에 있다"
-        before = {s: self.reason(self.ask_user(question, session=s)) for s in ("c", "w", "p")}
+        before = {s: self.reason(self.ask_user(question, session=s)) for s in ("w", "p")}
         self.post()
-        after = {s: self.reason(self.ask_user(question, session=s)) for s in ("c", "w", "p")}
+        after = {s: self.reason(self.ask_user(question, session=s)) for s in ("w", "p")}
         self.assertEqual(after, before)
         for reason in after.values():
             self.assertNotIn(CONTEXT, reason)
+        self.assertIn("프리앰블의 ask 명령", after["w"])
+        self.assertIn("메인", after["w"])
         self.assertEqual(self.denied_ids(), [])
 
     def test_fails_open_on_transcript_problems(self):
@@ -603,9 +557,8 @@ class AutoUpHookTest(HookCase):
         self.assertIn("자동으로 다시 띄우는 중", context)
         self.wait_spawned()
 
-    def test_coordinator_and_worker_sessions_skip(self):
+    def test_worker_sessions_skip(self):
         self.respond("terminal show", STALE, code=1)
-        self.assertIsNone(self.hook("role-mark", {"session_id": "c", "prompt": "[orca-team:coordinator] 시작"}))
         self.assertIsNone(self.hook("role-mark", {"session_id": "w", "prompt": "Your task ID is: t"}))
         self.assertEqual(self.calls_for("terminal show"), [])
         self.assertEqual(self.calls_for("agent launch"), [])

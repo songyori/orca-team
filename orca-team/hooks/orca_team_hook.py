@@ -15,11 +15,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
-from orch.comm import main_message_ids, read_outbox, unread  # noqa: E402
+from orch.comm import read_outbox, unread  # noqa: E402
 from orch.paths import Project  # noqa: E402
 from orch.util import load_run, now, pid_alive, read_json, record_plugin_root, write_json  # noqa: E402
 
-COORDINATOR_MARK = "[orca-team:coordinator]"
 WORKER_MARKS = ("Your task ID is:", "=== TASK ===", "Please carry out this task from my Orca coordinator")
 # templates/worker-spec.md 첫 줄 "너는 orca-team 의 {role_title}({role}) 워커다." 의 직무가 orch ask-user 로 사용자에게 직접 묻는
 # 직무(orch.ask.ASK_ROLES)면 세션을 worker:<직무> 로 표시한다. 역할 표시는 매 첫 프롬프트에 돌므로 orch.ask 를 불러오지 않고 여기 적는다.
@@ -30,11 +29,7 @@ SETUP_PREFIXES = (".claude/", ".orchestration/", "docs/superpowers/")
 SETUP_FILES = {"CLAUDE.md", "AGENTS.md", ".gitignore"}
 EDIT_TOOLS = {"Edit", "Write", "MultiEdit", "NotebookEdit"}
 ORCA_ORCHESTRATION_RE = re.compile(r"(^|[\s;&|(`])orca\s+orchestration\b")
-ORCA_REPLY_RE = re.compile(r"(^|[\s;&|(`])orca\s+orchestration\s+reply\b")
-ORCA_CHECK_RE = re.compile(r"(^|[\s;&|(`])orca\s+orchestration\s+check\b")
-REPLY_ID_RE = re.compile(r"--id(?:=|\s+)([\"']?)([^\s\"';&|)`]+)\1")
 STATE_DIR = ".orchestration/state"
-COORDINATOR_PREFIX = ".orchestration/"
 CONTEXT_DENIED = "context-denied.json"  # state/ 안. render.context 미표시로 한 번 거부한 outbox id(같은 id 는 두 번째에 통과)
 TRANSCRIPT_TAIL_LINES = 400
 TRANSCRIPT_TAIL_BYTES = 1 << 20  # 끝 1MiB 안에서만 줄을 본다. 훅은 빨리 끝나야 한다
@@ -42,9 +37,10 @@ MARKDOWN_NOISE_RE = re.compile(r"[\s#*_>|\-`]+")
 # 정규화한 render.context 의 앞 80자가 메인 텍스트에 있으면 보여 준 것으로 본다. 확정 질문 context 는 제목·첫 항목만으로도
 # 80자를 넘어 다른 질문과 겹치지 않고, 표·제목을 다시 그린 것은 맞지만 요약하면 맞지 않는다.
 CONTEXT_FINGERPRINT = 80
-# 세션 시작 안내의 코디네이터 줄(자동 부활 문구가 없을 때). /orca-team:up 은 수동 복구로 남긴다.
-DEFAULT_UP_LINE = ("- 코디네이터는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다. 메시지 watcher 가 꺼져 있으면 Bash "
-                   "`run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. 코디네이터 상태가 의심되면 "
+ORCH_DRIVE_RE = re.compile(r"(^|[\s;&|(`])(?:\S*/)?orch\s+drive\b")
+# 세션 시작 안내의 관제 줄(자동 부활 문구가 없을 때). /orca-team:up 은 수동 복구로 남긴다.
+DEFAULT_UP_LINE = ("- 관제(orch drive)는 훅이 확인하고 꺼져 있으면 자동으로 다시 띄운다. 메시지 watcher 가 꺼져 있으면 Bash "
+                   "`run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. 관제 상태가 의심되면 "
                    "`/orca-team:up` 을 실행한다.")
 
 
@@ -63,21 +59,30 @@ def valid_session_id(session_id) -> bool:
     return isinstance(session_id, str) and bool(SESSION_ID_RE.match(session_id)) and ".." not in session_id
 
 
-def env_coordinator(p: Project) -> bool:
-    """ORCA_TERMINAL_HANDLE 이 run.json 의 coordinator_handle 과 같으면 코디네이터 터미널이다."""
+def env_agent(p: Project) -> bool:
+    """ORCA_TERMINAL_HANDLE 이 고정 에이전트 작업 터미널(state/agents.json 의 handle)인가.
+    /clear 로 세션 id 가 바뀌어 표시가 없어도 워커로 본다."""
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
-    return bool(handle) and handle == load_run(p).get("coordinator_handle")
+    if not handle:
+        return False
+    data = read_json(p.agents_json, {})
+    return isinstance(data, dict) and any(isinstance(e, dict) and e.get("handle") == handle for e in data.values())
 
 
-# 알려진 한계: 새 세션 ID의 첫 지시에 워커 표시가 없으면 main 으로 기록된다(워커는 1회성 디스패치라 드묾).
 def role_of(p: Project, session_id: str | None) -> str:
-    if env_coordinator(p):  # /clear·새 세션 ID·넛지 첫 프롬프트에도 코디네이터 역할을 잃지 않는다
-        return "coordinator"
     if valid_session_id(session_id):
         marker = p.sessions / session_id
         if marker.is_file():
             return marker.read_text(encoding="utf-8").strip() or "main"
-    return "main"
+    return "worker" if env_agent(p) else "main"
+
+
+def worker_role(prompt: str) -> str | None:
+    """디스패치 프리앰블이면 worker 또는 worker:<직무>(orch ask-user 로 묻는 직무)."""
+    if not any(mark in prompt for mark in WORKER_MARKS):
+        return None
+    found = ASK_WORKER_RE.search(prompt)
+    return f"worker:{found.group(1)}" if found else "worker"
 
 
 def log_hook_error(p: Project, label: str) -> None:
@@ -106,17 +111,13 @@ def role_mark(p: Project, payload: dict):
     session_id = payload.get("session_id")
     if not valid_session_id(session_id):
         return None
-    if not (p.sessions / session_id).exists():
-        prompt = payload.get("prompt") or ""
-        if prompt.lstrip().startswith(COORDINATOR_MARK) or env_coordinator(p):
-            role = "coordinator"
-        elif any(mark in prompt for mark in WORKER_MARKS):
-            found = ASK_WORKER_RE.search(prompt)
-            role = f"worker:{found.group(1)}" if found else "worker"
-        else:
-            role = "main"
+    marker = p.sessions / session_id
+    current = marker.read_text(encoding="utf-8").strip() if marker.is_file() else None
+    found = worker_role(payload.get("prompt") or "")
+    # 고정 에이전트는 한 세션에서 여러 직무 태스크를 받는다. 워커 세션은 프리앰블마다 직무를 다시 적는다. 메인은 그대로다.
+    if current is None or (found and current.startswith("worker")):
         p.ensure_state()
-        (p.sessions / session_id).write_text(role + "\n", encoding="utf-8")
+        marker.write_text((found or ("worker" if env_agent(p) else "main")) + "\n", encoding="utf-8")
     if role_of(p, session_id) != "main":
         return None
     context = auto_up_context(p, force=False)
@@ -148,14 +149,6 @@ def product_path(p: Project, raw: str) -> str | None:
 
 def in_state_dir(rel: str | None) -> bool:
     return rel is not None and (rel == STATE_DIR or rel.startswith(STATE_DIR + "/"))
-
-
-def main_reply_ids(p: Project, command: str) -> list[str]:
-    """`orca orchestration reply --id <id>` 가 `[main]` 메시지를 가리키면 그 id. id 를 못 읽으면 빈 목록(통과)."""
-    if not ORCA_REPLY_RE.search(command):
-        return []
-    ids = {m.group(2) for m in REPLY_ID_RE.finditer(command)}
-    return sorted(ids & set(main_message_ids(p))) if ids else []
 
 
 def deny(reason: str) -> dict:
@@ -265,40 +258,28 @@ def guard(p: Project, payload: dict):
     tool_input = payload.get("tool_input") or {}
     if tool == "AskUserQuestion" and role == "main":
         return context_guard(p, payload, tool_input)
-    if tool == "AskUserQuestion" and role == "coordinator":
-        return deny("코디네이터는 사용자에게 직접 묻지 않는다. 질문 JSON(question·example·options·recommended·reason)을 "
-                    "`.orchestration/bin/orch notify --type question --json -` 의 표준 입력으로 메인에 올린다"
-                    "(coordinator.md \"사용자에게 묻기\").")
     if tool == "AskUserQuestion" and role in ASK_WORKER_TITLES:
         return deny(f"{ASK_WORKER_TITLES[role]} 워커는 AskUserQuestion 을 쓰지 않는다. 질문 JSON 을 "
                     "`.orchestration/bin/orch ask-user --task T-xxx --json -` 의 표준 입력으로 보내 메인을 거쳐 사용자에게 묻는다"
                     "(직무 정의 \"질문 보내기\", Bash `timeout: 600000`).")
     if tool == "AskUserQuestion" and role == "worker":
-        return deny("워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령으로 코디네이터에게 묻는다.")
+        return deny("워커는 사용자에게 직접 묻지 않는다. 프리앰블의 ask 명령으로 묻는다(메인이 답한다).")
     if tool in EDIT_TOOLS:
         raw = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
-        rel = project_rel(p, raw)
-        if in_state_dir(rel):
+        if in_state_dir(project_rel(p, raw)):
             return deny("`.orchestration/state/` 는 orch 가 관리한다. 직접 고치지 않는다. "
                         "복구는 `.orchestration/bin/orch status` 의 next, 중단은 `orch drop` 을 쓴다.")
-        if role == "coordinator" and rel is not None and not rel.startswith(COORDINATOR_PREFIX):
-            return deny(f"코디네이터는 `.orchestration/`(state 제외) 밖({rel})을 직접 수정하지 않는다. "
-                        "`orch task new` 로 태스크를 만들어 워커에게 맡긴다.")
         rel = product_path(p, raw)
         if role == "main" and rel and not p.setup_mode.exists():
-            return deny(f"메인은 산출물({rel})을 직접 수정하지 않는다. "
-                        '`.orchestration/bin/orch tell "<요청>"` 으로 코디네이터에게 넘긴다.')
+            return deny(f"메인은 산출물({rel})을 직접 수정하지 않는다. 태스크 spec(`.orchestration/tasks/`)을 쓰고 커밋한 뒤 "
+                        "`.orchestration/bin/orch start T-xxx` 로 맡긴다(CLAUDE.md \"메인 규칙\").")
     command = (tool_input.get("command") or "") if tool == "Bash" else ""
     if command and role == "main" and ORCA_ORCHESTRATION_RE.search(command):
-        return deny("메인은 `orca orchestration` 을 직접 호출하지 않는다. 메인이 Run 에 묶이면 Orca 알림이 사용자 입력란에 "
-                    "들어온다. `.orchestration/bin/orch tell` 을 쓴다.")
-    if command and role == "coordinator" and ORCA_CHECK_RE.search(command):
-        return deny("코디네이터는 `orca orchestration check` 를 직접 부르지 않는다. 배달을 가로채고 `[main]` 메시지 id 기록을 "
-                    "건너뛴다. `.orchestration/bin/orch wait` 를 Bash `run_in_background: true` 로 띄운다.")
-    hit = main_reply_ids(p, command) if command else []
-    if hit:
-        return deny(f"{', '.join(hit)} 는 메인이 보낸 `[main]` 메시지다. reply 하면 메인 입력란이 깨어난다. "
-                    '메인에게는 `.orchestration/bin/orch notify --type progress|question|done "<답>"` 으로 답한다.')
+        return deny("메인은 `orca orchestration` 을 직접 부르지 않는다. 메인이 Run 에 묶이면 Orca 알림이 사용자 입력란에 "
+                    "들어온다. Orca 를 부르는 일은 관제(orch drive)가 한다. 같은 일을 하는 `.orchestration/bin/orch` 명령을 쓴다.")
+    if command and role == "main" and ORCH_DRIVE_RE.search(command):
+        return deny("`orch drive` 는 관제 탭 셸에서만 돈다. 메인 터미널이 관제가 되면 Orca 알림이 사용자 입력란에 들어온다. "
+                    "관제를 띄우려면 `/orca-team:up` 을 쓴다.")
     return None
 
 
@@ -306,14 +287,13 @@ def session_start(p: Project, payload: dict):
     record_plugin_root(p.state, Path(__file__).resolve().parents[1])
     if role_of(p, payload.get("session_id")) != "main":
         return None
-    lines = ["orca-team 프로젝트다. 이 안내는 사용자와 대화하는 메인 세션에만 해당한다. 첫 지시가 `[orca-team:coordinator]` 로 "
-             "시작하거나 Orca 워커 작업 지시라면 이 안내를 무시한다.",
-             '- 메인은 사용자와 대화만 한다. 산출물 작업은 `.orchestration/bin/orch tell "<요청>"` 으로 코디네이터에게 넘긴다.']
+    lines = ["orca-team 프로젝트다. 이 안내는 사용자와 대화하는 메인 세션에만 해당한다. Orca 워커 작업 지시라면 이 안내를 무시한다.",
+             "- 메인은 사용자와 대화하고 판단한다. 산출물은 태스크로 맡기고, 관제가 올린 decide 를 처리한다(CLAUDE.md \"메인 규칙\")."]
     context = auto_up_context(p, force=True)
     lines.append(f"- {context}" if context else DEFAULT_UP_LINE)
     pending = len(unread(p))
     if pending:
-        lines.append(f"- 아직 전하지 않은 코디네이터 메시지가 {pending}건 있다. watcher 를 띄우면 바로 받는다.")
+        lines.append(f"- 아직 전하지 않은 관제·워커 메시지가 {pending}건 있다. watcher 를 띄우면 바로 받는다.")
     asked = open_question_count(p)
     if asked:
         lines.append(f"- 답하지 않은 질문이 {asked}건 있다. `/orca-team:up` 이 `orch reask` 로 다시 보여 준다.")
@@ -333,10 +313,10 @@ def open_question_count(p: Project) -> int:
 def stop(p: Project, payload: dict):
     if payload.get("stop_hook_active") or role_of(p, payload.get("session_id")) != "main":
         return None
-    if p.setup_mode.exists() or not load_run(p).get("coordinator_handle") or pid_alive(p.watch_pid):
+    if p.setup_mode.exists() or not load_run(p).get("run_id") or pid_alive(p.watch_pid):
         return None
     return {"decision": "block",
-            "reason": "orca-team: 코디네이터 메시지 watcher 가 꺼져 있다. Bash `run_in_background: true` 로 "
+            "reason": "orca-team: 관제·워커 메시지 watcher 가 꺼져 있다. Bash `run_in_background: true` 로 "
                       "`.orchestration/bin/orch watch` 를 띄우고 턴을 끝낸다. 이미 받은 메시지가 있으면 사용자에게 먼저 전한다."}
 
 
