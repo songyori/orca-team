@@ -82,6 +82,46 @@ class ViewerTest(ProjectCase):
         self.assertIn("새 기록", self.out.getvalue())
         self.assertNotIn("옛 기록", self.out.getvalue())
 
+    def test_switches_to_retry_run_dir_with_separator_once(self):
+        self.state(status="reviewing")
+        first = self.run_dir()
+        (first / "progress.log").write_text("첫 시도 기록\n", encoding="utf-8")
+        self.viewer.step()
+        second = self.tmp / "cache/orca-team/runs" / self.root.name / "T-001-r2-20261109-130000-a2"
+        second.mkdir(parents=True)
+        (second / "progress.log").write_text("재시도 기록\n", encoding="utf-8")
+        self.viewer.step()
+        self.viewer.step()
+        text = self.out.getvalue()
+        self.assertEqual(text.count("--- 다시 시도 (a2) ---"), 1)
+        self.assertLess(text.index("첫 시도 기록"), text.index("--- 다시 시도 (a2) ---"))
+        self.assertLess(text.index("--- 다시 시도 (a2) ---"), text.index("재시도 기록"))
+        self.assertEqual(text.count("재시도 기록"), 1)
+
+    def test_finish_shows_log_when_viewer_never_found_run_dir(self):
+        self.state(status="reviewing")
+        self.viewer.step()
+        run = self.run_dir()
+        (run / "progress.log").write_text("끝난 리뷰 기록\n", encoding="utf-8")
+        self.state(status="approved", history=[{"stage": "review", "round": 2, "verdict": "APPROVE"}])
+        self.viewer.step()
+        text = self.out.getvalue()
+        self.assertIn("끝난 리뷰 기록", text)
+        self.assertLess(text.index("끝난 리뷰 기록"), text.index("T-001 r2 APPROVE"))
+
+    def test_reports_error_again_after_a_good_iteration(self):
+        script = [RuntimeError("boom"), None, RuntimeError("boom"), KeyboardInterrupt()]
+
+        def fake_step():
+            item = script.pop(0)
+            if isinstance(item, BaseException):
+                raise item
+
+        self.viewer.step = fake_step
+        with mock.patch.object(reviewview.time, "sleep"):
+            self.viewer.loop()
+        self.assertEqual(self.out.getvalue().count("리뷰 보기 오류: RuntimeError: boom"), 2)
+
     def test_reports_abort_when_review_goes_back_to_working(self):
         self.state(status="reviewing")
         self.viewer.step()

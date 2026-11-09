@@ -71,10 +71,17 @@ class Viewer:
         key = (st.get("id", ""), round_of(st))
         if key != self.seen:
             self.start(st, key)
-        if self.run is None:
-            self.run = latest_run(self.p, *key, since=self.since)
-            self.offset = 0
+        self.follow_run(latest_run(self.p, *key, since=self.since))
         self.drain()
+
+    def follow_run(self, run: Path | None) -> None:
+        """리뷰가 다시 시도하면 새 run dir(aN)로 넘어간다. 옛 dir 의 남은 기록을 먼저 다 찍는다."""
+        if run is None or run == self.run:
+            return
+        if self.run is not None:
+            self.drain()
+            self.write(f"--- 다시 시도 ({run.name.rsplit('-', 1)[-1]}) ---\n")
+        self.run, self.offset = run, 0
 
     def start(self, st: dict, key: tuple[str, int]) -> None:
         self.write(f"\n{key[0]} r{key[1]} 리뷰 중{self.model_note(st)}\n")
@@ -112,6 +119,8 @@ class Viewer:
 
     def finish(self) -> None:
         task_id, rnd = self.seen
+        if self.run is None:
+            self.run = latest_run(self.p, task_id, rnd, since=self.since)
         self.drain()
         st = load_state(self.p, task_id) or {}
         verdict = next((h.get("verdict") for h in reversed(st.get("history") or [])
@@ -138,6 +147,7 @@ class Viewer:
             while True:
                 try:
                     self.step()
+                    self.last_error = None
                 except Exception as exc:
                     self.report_error(exc)
                 time.sleep(POLL_SECONDS)
