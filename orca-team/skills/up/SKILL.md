@@ -9,7 +9,7 @@ description: >
 
 이 세션은 메인이다.
 
-1. `.orchestration/bin/orch status` 를 실행한다.
+1. `.orchestration/bin/orch status` 를 실행한다. `[coordinator]` 설정 오류로 실패하면 0.6.x 프로젝트다. `.orchestration/bin/orch upgrade` 를 실행하고(진행 중 태스크 때문에 거부되면 README "0.6.0 이하 프로젝트를 올리기"의 0단계대로 한다) 커밋한 뒤 새 세션에서 다시 시작하도록 사용자에게 안내하고 멈춘다.
 2. `drive.alive` 가 true 가 아니면 `.orchestration/bin/orch up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다(Run 생성을 최대 180초 기다리므로 기본 2분 제한에 걸리지 않게 한다).
 3. `watch_alive` 가 false 면 Bash `run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다. `unread_outbox` 가 0 보다 크면 watch 가 바로 끝나며 밀린 메시지를 준다.
 4. `open_questions`(답하지 않은 질문과 decide)가 비어 있지 않으면 `.orchestration/bin/orch reask` 를 실행한다. 출력은 watch 와 같은 형식의 메시지 배열이다. CLAUDE.md 의 "메인 규칙" 대로 하나씩 처리한다.

@@ -47,8 +47,8 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 - 메인이 `render.context` 를 출력하지 않고 그 질문을 AskUserQuestion 으로 부르면 훅이 context 를 담아 한 번 거부한다. 메인 transcript 끝부분의 assistant 텍스트에서 context 앞부분(공백·마크다운 기호를 뺀 80자)을 찾는다. 같은 질문의 두 번째 호출과 판단할 수 없는 경우(transcript 없음·깨짐)는 통과시킨다.
 - 기획 워커는 마지막에 확정 질문을 하고 `docs/planning/` 에 spec.md(기능), contracts.md(인터페이스 약속), tasks.toml(태스크 그래프), interview.md(질문과 답)를 커밋한다. 확정 질문 전에 `orch plan check [--file <경로>]` 로 tasks.toml 을 검사한다. `plan apply` 와 같은 규칙이고 아무것도 쓰지 않는다(누구나 실행할 수 있다).
 - 기획 태스크를 accept 하면 `orch plan apply` 가 tasks.toml 을 검증해 태스크 spec 과 `pending` 상태를 만든다(증분 기획은 `--append`). `orch start-ready` 는 선행 태스크가 모두 done 이고 소유 경로가 겹치지 않는 태스크를 `max_parallel`(기본 4)까지 한 번에 띄운다. `max_parallel` 은 `orch start-ready` 만 지킨다. `orch fix`(수정 라운드)와 단건 `orch start` 는 상한을 세지 않고 바로 띄우므로 working 이 잠시 상한을 넘을 수 있다.
-- `user_approval_roles`(새 프로젝트는 designer) 태스크는 Codex APPROVE 뒤 `awaiting_user` 로 기다린다. 모두 모이면 `orch design-review` 가 디자인 링크를 모은 승인 질문 하나를 메인에 올린다. 승인하면 done, 수정을 요청하면 새 라운드다. 승인 대상 직무끼리 이어진 태스크(디자인 시스템 → 화면)는 선행이 `awaiting_user` 여도 시작해 한 번의 승인 질문에 함께 들어간다. 승인 대상이 아닌 후속 태스크(개발)는 사용자 승인(done)을 기다린다.
-- 메인이 질문에 답하기 전에 세션이 끝나도 질문은 남는다. `orch status` 의 `open_questions` 가 답하지 않은 질문을 보여 주고, `/orca-team:up` 이 `orch reask` 로 다시 받아 묻는다. `orch answer` 는 question·approval 에 한 번만 답한다(두 번째는 exit 3).
+- `user_approval_roles`(새 프로젝트는 designer) 태스크는 Codex APPROVE 뒤 `awaiting_user` 로 기다린다. 모두 모이면 관제가 디자인 링크를 모은 승인 질문 하나를 메인에 올린다. 승인하면 done, 수정을 요청하면 새 라운드다. 승인 대상 직무끼리 이어진 태스크(디자인 시스템 → 화면)는 선행이 `awaiting_user` 여도 시작해 한 번의 승인 질문에 함께 들어간다. 승인 대상이 아닌 후속 태스크(개발)는 사용자 승인(done)을 기다린다.
+- 메인이 질문에 답하기 전에 세션이 끝나도 질문은 남는다. `orch status` 의 `open_questions` 가 답하지 않은 질문을 보여 주고, `/orca-team:up` 이 `orch reask` 로 다시 받아 묻는다. `orch answer` 는 ask 와 decide 에 한 번만 답한다(두 번째는 exit 3). 디자인 승인 질문은 `orch design-decide` 로 답한다.
 - 설정은 `.orchestration/config.toml` 최상위 `max_parallel = 4`, `user_approval_roles = ["designer"]` 다. 새 프로젝트는 scaffold 가 이 두 줄을 적는다. `user_approval_roles` 에는 `[roles]` 에 있는 직무만 쓴다(없는 직무는 exit 2).
 - 0.7.0 부터는 `orch upgrade`("0.6.0 이하 프로젝트를 올리기" 참고)가 아래 수동 복사 단계를 대신한다. `coordinator.md` 는 더 이상 없다. 아래 버전별 안내는 그 버전 당시의 기록이다.
 - 0.2.0 으로 만든 프로젝트는 업그레이드해도 예전 흐름 그대로 돈다. `user_approval_roles` 키가 없으면 `[]`(사용자 승인 게이트 없음)이라 디자인도 Codex APPROVE 뒤 `orch accept` 하면 바로 done 이다. config.toml 을 아예 읽지 못할 때(파일 없음·TOML 오류) `orch accept` 도 같은 기본값 `[]` 을 쓴다. 읽히는데 `user_approval_roles` 가 틀리면 `orch accept` 는 승인 게이트를 건너뛰지 않고 exit 2 로 거부한다. 새 흐름(기획 인터뷰, 태스크 그래프, 디자인 일괄 승인)을 쓰려면 다음을 한다.
@@ -114,10 +114,12 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 - 코디네이터는 없다. 관제(`orch drive`, "orca-team 관제" 탭)가 절차를 돌리고 판단할 일만 메인에 decide 로 올린다.
 
 ### 0.6.0 이하 프로젝트를 올리기
-1. 진행 중인 태스크가 끝나기를 기다리고 코디네이터 탭을 닫는다.
-2. 메인에서 `.orchestration/bin/orch upgrade` 를 실행하고 출력의 바뀐 파일을 확인한다.
+0. 플러그인을 올리기 전에 진행 중인 태스크(working·reviewing)를 끝낸다. 이미 플러그인을 올렸다면 옛 코디네이터의 `orch` 명령이 설정 오류로 실패해 태스크를 끝낼 수 없다. 그때는 코디네이터 탭을 닫고 `.orchestration/bin/orch upgrade --force` 를 쓴다(진행 중 태스크 거부만 건너뛴다. 코디네이터가 떠 있으면 `--force` 도 거부한다. `run_id` 는 그대로라 새 관제가 같은 Run 을 이어받아 진행 중인 태스크를 다시 살핀다).
+1. 코디네이터 탭을 닫는다.
+2. 메인에서 `.orchestration/bin/orch upgrade` 를 실행하고 출력의 바뀐 파일을 확인한다. `config` 가 `skipped` 면 `.orchestration/config.toml` 을 출력 설명대로 직접 고치거나 커밋한 뒤 다시 실행한다.
 3. `.orchestration/` 과 `CLAUDE.md` 를 경로 지정 커밋한다.
-4. `/orca-team:up` 으로 관제를 띄운다.
+4. 메인 세션을 새로 연다(`/clear` 또는 새 세션). 새 `CLAUDE.md` 규칙은 세션을 시작할 때만 읽으므로, 이전 세션은 옛 코디네이터 규칙으로 동작한다.
+5. 새 세션에서 `/orca-team:up` 으로 관제를 띄운다.
 
 ## 보안 주의
 
@@ -129,7 +131,7 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
 
 ## 복구
 
-- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. 재시작한 관제(`orch drive`)는 이것을 따른다.
+- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. 재시작한 관제(`orch drive`)는 이것을 따른다. 아래 표의 `review`·`design-review` 는 관제만 실행하는 명령이고, 메인은 `start`·`fix`·`accept`·`drop` 처럼 큐를 거치는 명령만 쓴다.
 
   | status | next |
   |---|---|
@@ -139,12 +141,12 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
   | `approved` | `orch accept T-xxx` |
   | `awaiting_user` | 아직 묻지 않았으면 `orch design-review`. 물었으면 메인 답을 기다린 뒤 승인은 `orch accept T-xxx`, 수정 요청은 `orch fix T-xxx --note "<사용자 요청>"` |
   | `changes` | `orch fix T-xxx`. 최대 라운드면 메인에 묻고 `orch drop` |
-  | `launch_failed` | Orca 에 남은 워커를 확인한 뒤 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`. 행에 `launching: true` 가 있으면 아직 워커를 띄우는 중이라 끝날 때까지 기다린다(그동안 `--retry` 는 exit 2) |
+  | `launch_failed` | 관제가 Orca 에 남은 워커를 확인하고 escalation decide 를 한 번 올린다. 메인은 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`, 포기하면 `orch drop`. 행에 `launching: true` 가 있으면 아직 워커를 띄우는 중이라 끝날 때까지 기다린다(그동안 `--retry` 는 exit 2) |
   | `done`, `dropped` | 없음(`null`) |
 
-- `orch drop T-xxx --reason "<이유>"`(메인이 관제 큐로 보낸다): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. 메인에는 progress 로 알린다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.
-- 관제가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 관제 터미널을 확인하고, 닫힌 핸들이거나 Claude 가 끝난 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 그사이 보낸 요청은 관제 큐에 쌓였다가 새 관제가 처리한다. Orca 에 연결하지 못하면 띄우지 않고 확인을 부탁한다. 끄려면 `.orchestration/config.toml` 의 `[drive]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 자동으로 띄운 관제가 10분 안에 다시 꺼지면 그 10분 동안은 다시 띄우지 않고 /orca-team:up 을 안내한다. 같은 안내는 바뀔 때와 세션 시작 때만 한다. 살아 있지만 멈춘 관제(권한 창 대기 등)는 감지하지 못한다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
-- 수동 복구는 메인에서 `/orca-team:up` 을 실행한다. 관제가 살아 있으면 그대로 두고, 없으면 새로 띄운다. 새 관제는 `orch bind` 로 기존 Run 에 다시 붙고 `orch status` 의 `next` 로 이어 간다.
+- `orch drop T-xxx --reason "<이유>"`(메인이 관제 큐로 보낸다): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. progress 는 올리지 않는다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.
+- 관제가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 관제 pid 와 heartbeat 를 확인하고, 프로세스가 없는 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 관제가 꺼져 있는 동안 낸 요청(`start`, `fix` 등)은 큐에 쌓이지 않고 "관제가 꺼져 있다" 로 거부되므로, `/orca-team:up` 으로 관제를 띄운 뒤 다시 한다. 끄려면 `.orchestration/config.toml` 의 `[drive]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 자동으로 띄운 관제가 10분 안에 다시 꺼지면 그 10분 동안은 다시 띄우지 않고 /orca-team:up 을 안내한다. 같은 안내는 바뀔 때와 세션 시작 때만 한다. 프로세스는 살아 있는데 heartbeat 가 2분 넘게 멈춘 관제(권한 창 대기 등)는 `hung` 으로 감지해 띄우지 않고 관제 탭을 확인하라고 알린다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
+- 수동 복구는 메인에서 `/orca-team:up` 을 실행한다. 관제가 살아 있으면 그대로 두고, 없으면 새로 띄운다. 새 관제는 기존 Run 에 다시 붙고(`run-use`) `orch status` 의 `next` 로 이어 간다. 프로세스는 있는데 응답이 없으면(`hung`) `up` 도 띄우지 않고 관제 탭을 확인하라고 한다.
 
 ## 개발
 

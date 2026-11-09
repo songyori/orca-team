@@ -145,8 +145,10 @@ def scaffold(root: Path, description: str) -> dict:
 
 
 UPGRADE_KEEP = (".orchestration/config.toml",)  # 사용자 설정이라 덮어쓰지 않는다
-UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .orchestration CLAUDE.md) 커밋한다. 그다음 메인에서 /orca-team:up 으로 "
-                "관제를 띄운다. 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣는다(README \"묶음 검증\").")
+UPGRADE_CONFIG_NEXT = (".orchestration/config.toml 을 건너뛰었다(config 의 skipped 이유 참고). 이 파일을 위 설명대로 직접 "
+                       "고치거나 커밋한 뒤 `orch upgrade` 를 다시 한다. 설정이 옛 형식이면 다른 orch 명령이 모두 실패한다.")
+UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .orchestration CLAUDE.md) 커밋한다. 그다음 메인 세션을 새로 연다(/clear 또는 새 "
+                "세션. 새 CLAUDE.md 규칙은 세션 시작 때만 읽는다). 새 세션에서 /orca-team:up 으로 관제를 띄운다. 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣는다(README \"묶음 검증\").")
 # 0.6.0 템플릿의 codex_effort. 이 값 그대로인 표만 0.7.0 값(xhigh)으로 올린다(사용자가 바꾼 값은 둔다).
 OLD_CODEX_EFFORT = {"defaults": "high", "roles.planner": "high", "roles.director": "high", "roles.designer": "medium",
                     "roles.developer": "xhigh", "roles.tester": "high"}
@@ -167,11 +169,13 @@ def table_re(header: str) -> re.Pattern:
                       re.M | re.S)
 
 
-def refuse_busy(p: Project) -> None:
+def refuse_busy(p: Project, force: bool = False) -> None:
+    """force 는 working·reviewing 거부만 건너뛴다. 코디네이터가 살아 있는 거부는 건너뛰지 않는다."""
     busy = [f"{st['id']}({st.get('status')})" for st in all_states(p) if st.get("status") in ("working", "reviewing")]
-    if busy:
-        raise OrchError("진행 중인 태스크가 있다: " + ", ".join(busy) + ". 끝나기를 기다린 뒤 다시 한다"
-                        "(옛 Run 의 메일은 새 관제로 넘어가지 않는다)", 2)
+    if busy and not force:
+        raise OrchError("진행 중인 태스크가 있다: " + ", ".join(busy) + ". 업그레이드는 run_id 를 그대로 두므로 관제가 같은 Run 을 "
+                        "이어받아 진행 중인 태스크를 다시 살핀다. 그래도 끝나기를 기다린 뒤 다시 하는 것이 안전하다. 플러그인을 이미 "
+                        "올려 옛 코디네이터가 더는 orch 명령을 못 쓰면(설정 오류) 코디네이터 탭을 닫고 `orch upgrade --force` 를 쓴다", 2)
     handle = load_run(p).get("coordinator_handle")
     if handle and orca.terminal_state(handle) == "alive":
         raise OrchError(f"코디네이터가 아직 떠 있다({handle}). 코디네이터 탭을 닫은 뒤 다시 한다", 2)
@@ -199,7 +203,7 @@ def migrate_config(p: Project) -> dict:
         changed.append("[coordinator] 지움")
     for header, old in OLD_CODEX_EFFORT.items():
         table = data.get("defaults", {}) if header == "defaults" else data.get("roles", {}).get(header[6:], {})
-        if table.get("codex_effort") != old:
+        if table.get("codex_effort") != old or old == "xhigh":
             continue
         done = []
 
@@ -251,11 +255,11 @@ def replace_claude_section(p: Project) -> dict:
     return {"updated": True}
 
 
-def upgrade(p: Project) -> dict:
+def upgrade(p: Project, force: bool = False) -> dict:
     """프로젝트를 이 플러그인 버전으로 맞춘다. 복사된 규칙 파일(config.toml 제외)을 템플릿으로 바꾸고, 0.7.0 이전 프로젝트면
     코디네이터 문서를 지우고 config.toml·CLAUDE.md 를 옮긴다. git 에 커밋돼 있고 커밋 안 된 변경이 없는 파일만 고친다.
-    커밋하지 않는다. 진행 중인 태스크가 있거나 코디네이터가 떠 있으면 거부한다."""
-    refuse_busy(p)
+    커밋하지 않는다. 진행 중인 태스크가 있거나 코디네이터가 떠 있으면 거부한다(force 는 앞의 것만 건너뛴다)."""
+    refuse_busy(p, force)
     updated, created, skipped, removed = [], [], [], []
     for src, dst in [(s, d) for s, d in SCAFFOLD_FILES if d not in UPGRADE_KEEP]:
         target = p.root / dst
@@ -290,7 +294,8 @@ def upgrade(p: Project) -> dict:
                *(["CLAUDE.md"] if claude_md.get("updated") else [])]
     stat = git(p.root, "diff", "--stat", "--", *changed, check=False) if changed else ""
     return {"updated": updated, "created": created, "removed": removed, "skipped": skipped, "config": config,
-            "claude_md": claude_md, "diff_stat": stat.strip(), "next": UPGRADE_NEXT}
+            "claude_md": claude_md, "diff_stat": stat.strip(),
+            "next": UPGRADE_CONFIG_NEXT if config.get("skipped") else UPGRADE_NEXT}
 
 
 def setup_done(p: Project) -> dict:

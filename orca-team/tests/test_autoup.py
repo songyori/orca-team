@@ -87,8 +87,15 @@ class DecideTest(AutoUpCase):
         self.set_run()
         self.assertEqual(autoup.decide(self.p), (None, None))
         self.set_run(run_id="run_x")
-        (self.root / ".orchestration/config.toml").write_text("[coordinator]\n", encoding="utf-8")
+        (self.root / ".orchestration/config.toml").write_text("max_parallel = [\n", encoding="utf-8")
         self.assertEqual(autoup.decide(self.p), (None, None))
+
+    def test_old_coordinator_config_reports_upgrade(self):
+        self.set_run(run_id="run_x")
+        (self.root / ".orchestration/config.toml").write_text("[coordinator]\nauto_up = true\n", encoding="utf-8")
+        action, context = autoup.decide(self.p)
+        self.assertIsNone(action)
+        self.assertIn("orch upgrade", context)
 
 
 class CheckTest(AutoUpCase):

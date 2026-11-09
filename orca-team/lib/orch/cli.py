@@ -21,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("scaffold", help="프로젝트에 orca-team 파일 생성")
     s.add_argument("--description-file", required=True)
     sub.add_parser("setup-done", help="세팅 모드 해제")
-    sub.add_parser("upgrade", help="복사된 규칙 파일을 이 플러그인 버전 템플릿으로 바꾼다(config.toml 제외, 커밋 안 함)")
+    upg = sub.add_parser("upgrade", help="복사된 규칙 파일을 이 플러그인 버전 템플릿으로 바꾼다(config.toml 제외, 커밋 안 함)")
+    upg.add_argument("--force", action="store_true", help="진행 중인 태스크가 있어도 한다(옛 coordinator 탭이 떠 있으면 여전히 거부)")
     s = sub.add_parser("up", help="관제 확인·기동(메인)")
     s.add_argument("--wait-run", type=int, default=0, metavar="SECONDS")
     sub.add_parser("bind", help="Run 생성·재연결(관제)")
@@ -242,7 +243,7 @@ def run(args) -> int:
 
         handlers = {"setup-done": lambda: setup.setup_done(p), "up": lambda: setup.up(p, cfg, args.wait_run),
                     "bind": lambda: setup.bind(p), "status": lambda: setup.status(p, *soft_config(p)),
-                    "upgrade": lambda: setup.upgrade(p)}
+                    "upgrade": lambda: setup.upgrade(p, args.force)}
         emit(handlers[args.cmd]())
     elif args.cmd in ("watch", "notify"):
         from . import comm

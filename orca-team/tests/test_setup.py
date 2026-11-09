@@ -374,6 +374,43 @@ class Upgrade070Test(ProjectCase):
         self.assertEqual(proc.returncode, 2)
         self.assertIn("코디네이터 탭을 닫은 뒤", proc.stderr)
 
+    def test_force_upgrades_with_reviewing_task_but_not_with_live_coordinator(self):
+        state = self.root / ".orchestration/state/tasks/T-001.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"id": "T-001", "status": "reviewing"}), encoding="utf-8")
+        proc = self.upgrade(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("--force", proc.stderr)
+        self.assertIn("run_id", proc.stderr)
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}})
+        proc = self.orch("upgrade", "--force", check=False, env={"ORCA_TERMINAL_HANDLE": "term_main"})
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("코디네이터 탭을 닫은 뒤", proc.stderr)
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        out = json.loads(self.orch("upgrade", "--force", env={"ORCA_TERMINAL_HANDLE": "term_main"}).stdout)
+        self.assertIn(".orchestration/coordinator.md", out["removed"])
+        self.assertEqual(json.loads(state.read_text())["status"], "reviewing")
+        run = json.loads((self.root / ".orchestration/state/run.json").read_text())
+        self.assertEqual(run["run_id"], "run_old")
+
+    def test_next_says_new_session_before_up(self):
+        nxt = json.loads(self.upgrade().stdout)["next"]
+        self.assertIn("/clear", nxt)
+        self.assertLess(nxt.index("/clear"), nxt.index("/orca-team:up"))
+
+    def test_skipped_config_next_says_fix_config(self):
+        (self.root / ".orchestration/config.toml").write_text(OLD_CONFIG + "\n# 고치는 중\n", encoding="utf-8")
+        out = json.loads(self.upgrade().stdout)
+        self.assertIn("config.toml", out["next"])
+        self.assertIn("다시", out["next"])
+        self.assertNotIn("/orca-team:up", out["next"])
+
+    def test_no_op_effort_change_is_not_reported(self):
+        text = OLD_CONFIG.replace('codex_effort = "low"', 'codex_effort = "xhigh"')
+        self.commit_config(text)
+        out = json.loads(self.upgrade().stdout)
+        self.assertFalse([c for c in out["config"]["changed"] if "xhigh → xhigh" in c], out["config"])
+
     def test_dirty_config_is_skipped(self):
         path = self.root / ".orchestration/config.toml"
         path.write_text(OLD_CONFIG + "\n# 고치는 중\n", encoding="utf-8")

@@ -47,6 +47,17 @@
 9. `start_unknown` 은 시작 기록 뒤 60초가 지나도 그대로일 때 복구한다. 관제는 decide 를 올린 라운드를 재확인에서 다시 처리하지 않는다(`decide_round`).
 10. `orch upgrade` 는 CLAUDE.md 의 orca-team 절(`<!-- orca-team -->` 부터 끝까지)을 새 템플릿으로 바꾸고, `[agents.*]` 는 프로젝트에 있는 직무만 넣는다.
 11. 최대 라운드를 넘긴 뒤 "한 번 더" 를 실행할 방법이 없던 것을 `orch fix --extra-round` 로 메운다(§5.5).
+12. §10.3: 업그레이드는 새 Run 을 만들지 않는다. `run_id` 를 그대로 두고, 관제가 `run-use` 로 같은 Run 에 다시 붙어 reconcile 이 진행 중(working·reviewing) 태스크를 이어받는다. 그래서 진행 중 태스크는 업그레이드를 막는 절대 조건이 아니다. 기본은 기다리는 쪽이 안전해 거부하고, 플러그인을 이미 올려 옛 코디네이터가 설정 오류로 명령을 못 쓰는 경우를 위해 `orch upgrade --force` 가 이 거부만 건너뛴다(코디네이터가 떠 있는 거부는 건너뛰지 않는다). 업그레이드 뒤에는 새 CLAUDE.md 규칙을 읽도록 메인 세션을 새로 연다. 세션 시작 훅은 `[coordinator]` 설정 오류를 보면 `orch upgrade` 를 안내한다.
+13. §5.1: `agents.json` 에 `workspace` 필드는 없다. 워커는 항상 `--worktree current` 로 띄운다(§5.3 의 `<workspace>` 도 같다).
+14. §6.4: 메인 쪽 검증은 spec 형식과 상태 존재만 본다. 상태 전이·소유 경로 잠금은 관제가 요청을 실행할 때 검사한다. `orch status` 는 Orca 를 부르지 않는다고 적었으나 `next` 를 만들며 `worker-show` 를 읽기 전용으로 부른다(0.6.0 도 같았다). 이 호출이 메인을 Run 에 묶지 않는지는 실환경 검증에서 확인한다.
+15. 관제 상태 파일(`pid`, `heartbeat`, `queue/`, `drive.log`)은 `.orchestration/state/drive/` 아래에 둔다.
+16. `orch notify --type question` 을 없앴다. `comm.TYPES` 는 progress·done 이다(`orch answer` 가 닫을 수 없는 막다른 길이었다).
+17. 시작·수정 보완(코드 리뷰 뒤).
+    - `orch start T` 가 새 태스크를 지금 시작할 수 없으면(에이전트가 리셋 중이거나 바쁜데 overflow 가 꺼져 있음, 선행 미완) `pending` 상태로 저장하고 exit 0 과 `{"status": "waiting", "reason": "agent"|"deps"}` 를 돌려준다. 관제가 start-ready 로 나중에 시작한다.
+    - `orch fix T` 가 에이전트 자신의 현재 태스크면 자기 뒤에 줄 서지 않는다. 살아 있는 워커에 `--force` 를 주면 그 워커를 버리고 새로 띄운다.
+    - 선행 태스크가 dropped 인 pending 태스크는 `escalation` decide 를 한 번 올린다.
+    - `launch_failed` 태스크도 `escalation` decide 를 한 번 올린다. 남은 워커 확인은 관제가 한다.
+    - 메인에게 보이는 `next` 힌트는 메인이 실행할 수 있는 명령만 적고, 관제만 하는 단계는 "관제가 한다" 로 적는다.
 
 ## 3. 실험 결과 (2026-11-08)
 

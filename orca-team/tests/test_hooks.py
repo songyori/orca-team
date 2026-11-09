@@ -114,9 +114,16 @@ class GuardTest(HookCase):
             with self.subTest(command=command):
                 self.assertEqual(self.decision(self.tool("m", "Bash", {"command": command})), "deny")
 
+    def test_main_absolute_path_orca_orchestration_is_denied(self):
+        self.mark("m", "안녕")
+        for command in ("/opt/homebrew/bin/orca orchestration worker-list", "cd x && /usr/local/bin/orca orchestration check"):
+            with self.subTest(command=command):
+                self.assertEqual(self.decision(self.tool("m", "Bash", {"command": command})), "deny")
+
     def test_main_lookalike_commands_are_allowed(self):
         self.mark("m", "안녕")
-        for command in (".orchestration/bin/orch driver-status", ".orchestration/bin/orch status",
+        for command in (".orchestration/bin/orch drive-x", "/x/bin/orch drive-x", "/opt/bin/orca orchestrations",
+                        ".orchestration/bin/orch driver-status", ".orchestration/bin/orch status",
                         ".orchestration/bin/orch start T-001", 'echo orca orchestrations'):
             with self.subTest(command=command):
                 self.assertIsNone(self.tool("m", "Bash", {"command": command}))
@@ -210,6 +217,13 @@ class StopAndSessionStartTest(HookCase):
         self.assertIn("/orca-team:up", context)
         self.assertIn("1건", context)
         self.assertFalse((self.root / ".orchestration/state/auto-up.pid").exists())  # 관제가 살아 있으면 띄우지 않는다
+
+    def test_session_start_shows_old_config_needs_upgrade(self):
+        (self.root / ".orchestration/config.toml").write_text("[coordinator]\nauto_up = true\n", encoding="utf-8")
+        context = self.hook("session-start", {"session_id": "fresh", "source": "startup"})[
+            "hookSpecificOutput"]["additionalContext"]
+        self.assertIn("orch upgrade", context)
+        self.assertNotIn("자동으로 다시 띄운다", context)
 
     def test_session_start_mentions_open_questions(self):
         from orch import comm

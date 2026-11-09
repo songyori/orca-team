@@ -18,6 +18,7 @@
   3. `git add -- .orchestration/tasks/T-xxx.md && git commit -m "[T-xxx] spec: <제목>" -- .orchestration/tasks/T-xxx.md`. 워커와 인덱스를 같이 쓰므로 경로 없는 `git commit` 은 쓰지 않는다.
   4. `.orchestration/bin/orch start T-xxx` 하고 넘겼다고 한 줄로 알린다. 기획 워커는 `orch ask-user` 로 메인을 거쳐 사용자를 인터뷰한다.
 - 진행 중 태스크에 범위를 더할 때: spec 에 "추가 범위"를 적어 위와 같이 경로 지정 커밋한 뒤, 태스크가 working 이면 `.orchestration/bin/orch scope T-xxx "<내용>"`. 시작 전(pending)이면 커밋으로 끝이다.
+- 메인이 직접 만든 태스크(decide 처리나 증분 기획으로 만든 것)는 `orch task new` 만으로는 시작되지 않는다. spec 채우기 → 경로 지정 커밋 → `.orchestration/bin/orch start T-yyy` 를 모두 하고 나서 해당 decide 를 `orch answer` 로 닫는다. 시작할 수 없는 상태(에이전트 사용 중, 선행 미완)면 start 가 `{"status": "waiting"}` 을 돌려주고 `pending` 으로 저장되어 관제가 나중에 시작하니 그대로 닫는다.
 - Orca 를 부르는 `orch` 명령(`start`, `start-ready`, `fix`, `accept`, `drop`, `design-decide`, `scope`, `agent reset`)은 관제 큐를 거친다. "관제가 꺼져 있다" 면 `/orca-team:up` 뒤에 다시 한다. "관제가 처리 중" 이면 결과는 watch 의 `result` 메시지로 온다.
 - `orca orchestration` 을 직접 호출하지 않고 `orch drive` 를 메인에서 실행하지 않는다. 메인이 Run 에 묶이면 Orca 알림이 사용자 입력란에 들어온다.
 - 관제·기획·디자인 디렉터 워커 메시지는 `.orchestration/bin/orch watch` 로 받는다. 항상 Bash `run_in_background: true` 로 하나 띄워 둔다. 끝나면(메시지 도착) 출력의 메시지를 처리하고 바로 다시 띄운다.
@@ -40,10 +41,10 @@ decide 에 적힌 `files` 만 읽고 `commands` 중 하나로 처리한다. 사�
 | escalation | 내용을 정리해 지시로 풀거나 사용자에게 묻는다 |
 | max_rounds | 리뷰 요약과 함께 "한 번 더 / 중단"을 묻는다. 한 번 더면 `orch fix T-xxx --extra-round`, 중단이면 `orch drop` |
 | repeat_test_failure | 실패가 그 태스크 탓이 아닐 수 있다(소유 경로 밖 코드, 다른 워커의 커밋 안 된 파일). 리뷰 파일의 quick 출력 끝을 보고 사용자에게 묻는다 |
-| test_config | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크를 만든다 |
-| planning_gaps | 문서로 답할 수 있으면 묶음 정리 태스크 spec 에 넣는다(시작 전이면 spec 커밋, working 이면 `orch scope`). 제품 결정이 필요한 항목은 모아 한 번에 묻고, 넣기로 하면 증분 기획 태스크(`plan: append`)를 만든다 |
-| unknown_regression | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 developer 태스크를 만든다. front matter `owns:` 는 원인 태스크와 같게, Change 첫 줄은 decide 의 `source`(예: `출처: T-xxx followups`), Acceptance 는 "실패한 테스트 <이름>이 `orch test T-yyy` 에서 통과한다" |
-| token_update | 보강한 디자인 시스템의 토큰을 UI 기반 developer 태스크에 반영할지 정한다. 그 태스크가 done 이면 `orch task new developer "토큰 갱신 반영: <요약>"`(owns 는 UI 기반 태스크와 같게, `depends_on:` 에 보강 태스크), working 이면 `orch scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
+| test_config | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크를 만들어 시작한다(위 "직접 만든 태스크" 규칙) |
+| planning_gaps | 문서로 답할 수 있으면 묶음 정리 태스크 spec 에 넣는다(시작 전이면 spec 커밋, working 이면 `orch scope`). 제품 결정이 필요한 항목은 모아 한 번에 묻고, 넣기로 하면 증분 기획 태스크(`plan: append`)를 만들어 시작한다 |
+| unknown_regression | 원인 태스크를 정해(모르면 사용자에게 묻는다) 회귀 수정 developer 태스크를 만들어 시작한다. front matter `owns:` 는 원인 태스크와 같게, Change 첫 줄은 decide 의 `source`(예: `출처: T-xxx followups`), Acceptance 는 "실패한 테스트 <이름>이 `orch test T-yyy` 에서 통과한다". spec 을 커밋하고 `orch start T-yyy` 한 뒤 `orch answer` 로 닫는다 |
+| token_update | 보강한 디자인 시스템의 토큰을 UI 기반 developer 태스크에 반영할지 정한다. 그 태스크가 done 이면 `orch task new developer "토큰 갱신 반영: <요약>"`(owns 는 UI 기반 태스크와 같게, `depends_on:` 에 보강 태스크. 커밋하고 `orch start T-yyy`), working 이면 `orch scope`, 리뷰 중이면 결과를 기다린 뒤 정한다 |
 
 ### 질문 표시 규칙
 - `render.context` 가 있으면 그 내용을 먼저 사용자에게 평문으로 그대로 보여 준 뒤 AskUserQuestion 을 부른다(선택지가 없으면 평문 질문 앞에 둔다). 요약하거나 자기 설명을 덧붙이지 않는다. 보여 주지 않고 부르면 훅이 그 질문을 한 번 거부하고 context 를 돌려준다.

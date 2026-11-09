@@ -30,6 +30,9 @@ DISABLED = (PREFIX + "관제가 꺼져 있다(config.toml 의 [drive] auto_up = 
 FAILED = (PREFIX + "자동으로 다시 띄운 관제가 10분 안에 다시 꺼졌다(기록: .orchestration/state/auto-up.log). "
           "답변 첫 줄에 사용자에게 한 줄로 알리고, 원인을 확인한 뒤 /orca-team:up 을 실행하도록 안내한다. "
           "10분 동안은 자동으로 다시 띄우지 않는다.")
+OLD_CONFIG = (PREFIX + "config.toml 이 0.6.x 형식([coordinator])이라 orch 명령이 모두 실패한다. 답변 첫 줄에 사용자에게 한 줄로 알리고 "
+              "`.orchestration/bin/orch upgrade` 를 실행하게 한다(README \"0.6.0 이하 프로젝트를 올리기\"). 진행 중인 태스크 때문에 "
+              "거부되면 안내대로 기다리거나 `--force` 를 쓴다. 업그레이드를 커밋한 뒤에는 메인 세션을 새로 연다.")
 FAILED_SPAWN = (PREFIX + "관제를 자동으로 다시 띄우지 못했다(orch up 실행 실패). 답변 첫 줄에 사용자에게 한 줄로 알리고 "
                 "/orca-team:up 을 안내한다.")
 # sh 가 orch up 을 백그라운드로 띄우고 pid 를 출력한 뒤 바로 끝난다. 훅이 시간 제한으로 끊겨도 orch up 은 계속 돈다.
@@ -90,8 +93,8 @@ def decide(p: Project) -> tuple[str | None, str | None]:
         return None, None
     try:
         enabled = Config.load(p.config_path).auto_up
-    except OrchError:
-        return None, None
+    except OrchError as exc:
+        return None, (OLD_CONFIG if "[coordinator]" in str(exc) else None)
     if starting(load_run(p)) or spawn_running(p) or drive_alive(p):
         return None, None
     if pid_alive(p.drive_pid):

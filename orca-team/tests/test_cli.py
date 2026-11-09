@@ -45,5 +45,43 @@ class CliTest(ProjectCase):
         self.assertEqual(self.orch("nope", check=False).returncode, 2)
 
 
+class ParserTest(unittest.TestCase):
+    """spec §14: 0.7.0 새 명령의 인자 해석과 없앤 명령의 거부."""
+
+    def parse(self, *argv):
+        from orch.cli import build_parser
+        return build_parser().parse_args(list(argv))
+
+    def test_drive_and_review_view(self):
+        self.assertEqual(self.parse("drive").cmd, "drive")
+        args = self.parse("review-view", "production")
+        self.assertEqual((args.cmd, args.name), ("review-view", "production"))
+
+    def test_agent_reset(self):
+        args = self.parse("agent", "reset", "test")
+        self.assertEqual((args.cmd, args.agent_cmd, args.name), ("agent", "reset", "test"))
+
+    def test_design_decide_and_scope(self):
+        args = self.parse("design-decide", "out-0001", "--approve", "T-001,T-002", "--fix", "T-003=고쳐 줘")
+        self.assertEqual((args.id, args.approve, args.fix), ("out-0001", "T-001,T-002", ["T-003=고쳐 줘"]))
+        args = self.parse("scope", "T-001", "추가 범위")
+        self.assertEqual((args.id, args.body), ("T-001", "추가 범위"))
+
+    def test_fix_extra_round_and_upgrade_force(self):
+        self.assertTrue(self.parse("fix", "T-001", "--extra-round").extra_round)
+        self.assertFalse(self.parse("fix", "T-001").extra_round)
+        self.assertTrue(self.parse("upgrade", "--force").force)
+        self.assertFalse(self.parse("upgrade").force)
+
+    def test_tell_and_wait_are_removed(self):
+        import contextlib
+        import io
+        for name in ("tell", "wait"):
+            with self.subTest(name=name), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as cm:
+                    self.parse(name, "x")
+                self.assertEqual(cm.exception.code, 2)
+
+
 if __name__ == "__main__":
     unittest.main()

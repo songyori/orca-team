@@ -187,6 +187,31 @@ class TemplateTest(unittest.TestCase):
         self.assertNotIn("orch tell", text)
         self.assertNotIn("coordinator", text)
 
+    def test_main_started_tasks_rule_and_no_drive_only_commands(self):
+        text = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertIn("`orch task new` 만으로는 시작되지 않는다", text)
+        self.assertIn('"waiting"', text)
+        rows = {line.split("|")[1].strip(): line for line in text.splitlines() if line.startswith("| ") and "|" in line[2:]}
+        for kind in ("test_config", "planning_gaps", "unknown_regression", "token_update"):
+            self.assertRegex(rows[kind], "시작|orch start", kind)
+        for doc in (T / "CLAUDE.section.md", T.parent / "skills/up/SKILL.md", T.parent / "skills/init/SKILL.md"):
+            body = doc.read_text(encoding="utf-8")
+            for bad in ("orch review ", "orch design-review", "orch plan apply", "orch bind", "orca orchestration worker"):
+                self.assertNotIn(bad, body, f"{doc.name}: {bad}")
+
+    def test_readme_upgrade_steps(self):
+        text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        part = text.split("### 0.6.0 이하 프로젝트를 올리기")[1].split("## ")[0]
+        self.assertIn("orch upgrade --force", part)
+        self.assertLess(part.index("/clear"), part.index("/orca-team:up"))
+        self.assertNotIn("orch bind", text)
+        self.assertNotIn("메인에는 progress 로 알린다", text)
+        self.assertNotIn("question·approval", text)
+
+    def test_init_reads_claude_section_before_first_request(self):
+        text = (PLUGIN / "skills/init/SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("<!-- orca-team -->", text)
+
     def test_no_coordinator_left_in_templates_and_code(self):
         self.assertFalse((T / "coordinator.md").exists())
         roots = [T, T.parent / "skills", T.parent / "lib" / "orch", T.parent / "hooks"]
