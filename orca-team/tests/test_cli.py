@@ -32,6 +32,9 @@ class CliTest(ProjectCase):
         market = json.loads((PLUGIN.parent / ".claude-plugin/marketplace.json").read_text(encoding="utf-8"))
         entry = next(p for p in market["plugins"] if p["name"] == "orca-team")
         self.assertEqual((plugin["version"], entry["version"]), (VERSION, VERSION))
+        for text in (plugin["description"], entry["description"]):  # 0.7.0: 코디네이터 없이 관제·고정 에이전트
+            self.assertNotIn("코디네이터", text)
+            self.assertIn("관제", text)
 
     def test_outside_project_exits_2(self):
         proc = self.orch("status", check=False)
