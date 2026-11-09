@@ -49,65 +49,8 @@ class CommTest(ProjectCase):
         (self.root / ".orchestration/state/watch.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
         self.assertEqual(self.orch("watch", "--timeout", "0.5", check=False, env=MAIN).returncode, 3)
 
-    def test_tell_sends_to_run_mailbox(self):
-        self.orch("tell", "로그인 화면 만들어 줘", env=MAIN)
-        call = self.calls_for("orchestration send")[-1]
-        self.assertEqual(call[call.index("--to") + 1], "run:run_x")
-        self.assertEqual(call[call.index("--type") + 1], "status")
-        self.assertEqual(call[call.index("--subject") + 1], "[main] 로그인 화면 만들어 줘")
-        self.orch("tell", "--reply", "out-0003", "A안", env=MAIN)
-        call = self.calls_for("orchestration send")[-1]
-        self.assertEqual(call[call.index("--subject") + 1], "[main] reply out-0003")
-        self.assertIn("--body=A안", call)
-
-    def test_tell_body_with_leading_dashes_is_not_a_flag(self):
-        self.orch("tell", "--", "--help 를 본문으로 보낸다", env=MAIN)
-        call = self.calls_for("orchestration send")[-1]
-        self.assertIn("--body=--help 를 본문으로 보낸다", call)
-        self.assertNotIn("--body", call)
-        self.assertNotIn("--help", call)
-
-    def test_tell_without_run_fails(self):
-        (self.root / ".orchestration/state/run.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(self.orch("tell", "x", check=False, env=MAIN).returncode, 1)
-        self.assertEqual(self.calls_for("orchestration send"), [])
-
-    def test_wait_requires_coordinator_terminal(self):
-        self.assertEqual(self.orch("wait", check=False, env=MAIN).returncode, 2)
-        self.assertEqual(self.calls_for("orchestration check"), [])
-
-    def test_wait_uses_fixed_arguments(self):
-        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d1", "messages": []}})
-        out = json.loads(self.orch("wait", "--ack", "d0").stdout)
-        self.assertEqual(out["result"]["deliveryId"], "d1")
-        call = self.calls_for("orchestration check")[-1]
-        self.assertEqual(call[call.index("--ack") + 1], "d0")
-        self.assertEqual(call[call.index("--types") + 1], "worker_done,escalation,question,status")
-        self.assertEqual(call[call.index("--timeout-ms") + 1], "3600000")
-        self.assertIn("--wait", call)
-        self.assertFalse((self.root / ".orchestration/state/wait.pid").exists())
-
     def state(self, name):
         return self.root / ".orchestration/state" / name
-
-    def test_wait_records_main_message_ids(self):
-        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d1", "messages": [
-            {"id": "msg_a", "subject": "[main] 로그인 화면", "type": "status"},
-            {"id": "msg_w", "subject": "질문", "type": "question"},
-            {"id": "msg_b", "subject": "[main] reply out-0001", "type": "status"},
-            {"subject": "[main] id 없음", "type": "status"}]}})
-        self.orch("wait")
-        ids = self.state("main-msg-ids.json")
-        self.assertEqual(json.loads(ids.read_text(encoding="utf-8")), ["msg_a", "msg_b"])
-        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d2", "messages": [
-            {"id": "msg_b", "subject": "[main] reply out-0001"}, {"id": "msg_c", "subject": "[main] 다음"}]}})
-        self.orch("wait", "--ack", "d1")
-        self.assertEqual(json.loads(ids.read_text(encoding="utf-8")), ["msg_a", "msg_b", "msg_c"])
-
-    def test_wait_without_main_messages_writes_nothing(self):
-        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d1", "messages": []}})
-        self.orch("wait")
-        self.assertFalse(self.state("main-msg-ids.json").exists())
 
     def test_concurrent_notify_ids_unique(self):
         procs = [subprocess.Popen([sys.executable, str(ORCH), "notify", "--type", "progress", f"m{i}"],
@@ -150,11 +93,6 @@ class CommTest(ProjectCase):
         self.assertEqual(self.orch("watch", "--timeout", "0.5", env=MAIN).returncode, 0)
         self.assertFalse(self.state("watch.pid").exists())
 
-    def test_wait_refuses_second_instance(self):
-        self.state("wait.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-        self.assertEqual(self.orch("wait", check=False).returncode, 3)
-        self.assertEqual(self.calls_for("orchestration check"), [])
-
     def test_watch_exits_quietly_when_parent_dies(self):
         from unittest import mock
         from orch import comm
@@ -194,7 +132,6 @@ class CommTest(ProjectCase):
             comm.post(Project(self.root), "nope", "x")
 
 
-
 class BrokenConfigTest(ProjectCase):
     """config.toml 이 깨져도 소통·조회·정리 명령은 돈다. 설정이 필요한 명령만 exit 2."""
 
@@ -210,9 +147,6 @@ class BrokenConfigTest(ProjectCase):
     def test_comm_which_accept_and_drop_work(self):
         self.orch("notify", "--type", "progress", "x")
         self.assertEqual(len(json.loads(self.orch("watch", "--timeout", "0.5", env=MAIN).stdout)), 1)
-        self.orch("tell", "요청", env=MAIN)
-        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d1", "messages": []}})
-        self.orch("wait")
         self.assertEqual(json.loads(self.orch("which", "ctx_1").stdout)["id"], "T-001")
         self.assertEqual(json.loads(self.orch("accept", "T-001").stdout)["status"], "done")
         self.assertNotIn("[developer]", self.outbox_text())  # accept 는 outbox 에 쓰지 않는다

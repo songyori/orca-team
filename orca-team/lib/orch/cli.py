@@ -22,22 +22,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--description-file", required=True)
     sub.add_parser("setup-done", help="세팅 모드 해제")
     sub.add_parser("upgrade", help="복사된 규칙 파일을 이 플러그인 버전 템플릿으로 바꾼다(config.toml 제외, 커밋 안 함)")
-    s = sub.add_parser("up", help="코디네이터 확인·기동(메인)")
+    s = sub.add_parser("up", help="관제 확인·기동(메인)")
     s.add_argument("--wait-run", type=int, default=0, metavar="SECONDS")
-    sub.add_parser("bind", help="Run 생성·재연결(코디네이터)")
+    sub.add_parser("bind", help="Run 생성·재연결(관제)")
     sub.add_parser("status", help="상태")
-    s = sub.add_parser("tell", help="메인 → 코디네이터")
-    s.add_argument("body")
-    s.add_argument("--reply", metavar="OUT_ID")
-    s = sub.add_parser("watch", help="코디네이터 → 메인 메시지 대기(메인, 백그라운드)")
+    sub.add_parser("drive", help="관제 루프(관제 탭 셸에서만. 메인은 /orca-team:up)")
+    s = sub.add_parser("watch", help="관제 → 메인 메시지 대기(메인, 백그라운드)")
     s.add_argument("--timeout", type=float, metavar="SECONDS")
-    s = sub.add_parser("notify", help="코디네이터 → 메인")
+    s = sub.add_parser("notify", help="관제 → 메인")
     s.add_argument("--type", required=True, dest="kind")
     s.add_argument("body", nargs="?")
-    s.add_argument("--json", metavar="FILE", help="구조화 질문 JSON(--type question 만). - 면 표준 입력")
-    s = sub.add_parser("wait", help="코디네이터 메일함 대기(코디네이터, 백그라운드)")
-    s.add_argument("--ack")
-    s.add_argument("--timeout-ms", type=int, default=3600000)
     s = sub.add_parser("ask-user", help="기획·디자인 디렉터 워커 → 메인 직통 질문과 답 대기(그 워커)")
     s.add_argument("--task", required=True)
     g = s.add_mutually_exclusive_group(required=True)
@@ -107,6 +101,53 @@ def add_graph_commands(sub) -> None:
 
 GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # 태스크 그래프 명령(코디네이터). add_graph_commands·run_graph 가 처리한다
 CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
+# 메인에서 실행하면 관제 큐를 거치는 명령(Orca 를 부른다). 관제 터미널에서는 바로 실행한다.
+QUEUED = {"start", "start-ready", "fix", "accept", "drop", "design-decide", "scope", "agent"}
+CONFIG_COMMANDS.update({"agent", "drive"})
+
+
+def design_args(args) -> tuple[list[str], dict[str, str]]:
+    fixes = {}
+    for pair in args.fix:
+        task_id, sep, note = pair.partition("=")
+        if not sep:
+            raise OrchError(f"--fix 는 T-xxx=<요청> 형식이다: {pair}", 2)
+        task_id = task_id.strip()
+        if task_id in fixes:
+            raise OrchError(f"--fix 가 같은 태스크에 두 번 있다: {task_id}", 2)
+        fixes[task_id] = note.strip()
+    return [t.strip() for t in args.approve.split(",") if t.strip()], fixes
+
+
+def queued_request(p, cfg, args) -> tuple[str, dict]:
+    """메인에서 실행한 명령을 관제 큐 요청으로 바꾼다. 형식·대상 검사는 여기서 바로 한다."""
+    from . import tasks
+
+    if args.cmd == "start":
+        tasks.load_doc(p, cfg, args.id)
+        return "start", {"id": args.id, "retry": args.retry, "overrides": overrides(args)}
+    if args.cmd == "fix":
+        tasks.load_doc(p, cfg, args.id)
+        tasks.must_state(p, args.id)
+        return "fix", {"id": args.id, "note": args.note, "retry": args.retry, "overrides": overrides(args),
+                       "force": args.force, "supplement": args.supplement, "extra_round": args.extra_round}
+    if args.cmd == "accept":
+        tasks.must_state(p, args.id)
+        return "accept", {"id": args.id}
+    if args.cmd == "drop":
+        tasks.must_state(p, args.id)
+        return "drop", {"id": args.id, "reason": args.reason, "force": args.force}
+    if args.cmd == "scope":
+        tasks.must_state(p, args.id)
+        return "scope", {"id": args.id, "body": args.body}
+    if args.cmd == "design-decide":
+        approve, fixes = design_args(args)
+        return "design-decide", {"id": args.id, "approve": approve, "fixes": fixes}
+    if args.cmd == "agent":
+        if args.name not in cfg.agents:
+            raise OrchError(f"고정 에이전트가 아니다: {args.name}. 가능한 이름: {', '.join(cfg.agents) or '없음'}", 2)
+        return "agent-reset", {"name": args.name}
+    return "start-ready", {}
 
 
 def project(need_config: bool):
@@ -142,16 +183,7 @@ def run_graph(p, cfg, args) -> int:
     from . import plan
 
     if args.cmd == "design-decide":
-        fixes = {}
-        for pair in args.fix:
-            task_id, sep, note = pair.partition("=")
-            if not sep:
-                raise OrchError(f"--fix 는 T-xxx=<요청> 형식이다: {pair}", 2)
-            task_id = task_id.strip()
-            if task_id in fixes:
-                raise OrchError(f"--fix 가 같은 태스크에 두 번 있다: {task_id}", 2)
-            fixes[task_id] = note.strip()
-        approve = [t.strip() for t in args.approve.split(",") if t.strip()]
+        approve, fixes = design_args(args)
         emit(plan.design_decide(p, cfg, args.id, approve, fixes))
         return 0
     if args.cmd == "plan":
@@ -181,6 +213,18 @@ def run(args) -> int:
         emit(setup.scaffold(root, Path(args.description_file).read_text(encoding="utf-8")))
         return 0
     p, cfg = project(args.cmd in CONFIG_COMMANDS)
+    if args.cmd in QUEUED:
+        from . import queue
+        from .util import is_drive
+
+        if not is_drive(p):
+            command, payload = queued_request(p, cfg, args)
+            emit(queue.submit(p, command, payload))
+            return 0
+    if args.cmd == "drive":
+        from . import drive
+
+        return drive.main(p, cfg)
     if args.cmd in GRAPH_COMMANDS:
         return run_graph(p, cfg, args)
     if args.cmd in ("setup-done", "up", "bind", "status", "upgrade"):
@@ -190,33 +234,20 @@ def run(args) -> int:
                     "bind": lambda: setup.bind(p), "status": lambda: setup.status(p, *soft_config(p)),
                     "upgrade": lambda: setup.upgrade(p)}
         emit(handlers[args.cmd]())
-    elif args.cmd in ("tell", "watch", "notify", "wait"):
+    elif args.cmd in ("watch", "notify"):
         from . import comm
-        from .util import require_coordinator
 
-        if args.cmd == "tell":
-            emit(comm.tell(p, args.body, args.reply))
-        elif args.cmd == "watch":
+        if args.cmd == "watch":
             def deliver(lines):
                 emit(lines)
                 sys.stdout.flush()
 
             if not comm.watch(p, timeout=args.timeout, deliver=deliver):
                 emit([])
-        elif args.cmd == "notify":
-            if args.json is not None:
-                from . import ask
-
-                if args.kind != "question" or args.body is not None:
-                    raise OrchError("--json 은 --type question 에만 쓰고 본문 인자는 함께 쓰지 않는다", 2)
-                emit(ask.notify_question(p, args.json))
-            elif args.body is None:
-                raise OrchError("본문 또는 --json 이 필요하다", 2)
-            else:
-                emit(comm.notify(p, args.kind, args.body))
         else:
-            require_coordinator(p)
-            emit(comm.wait(p, args.ack, args.timeout_ms))
+            if args.body is None:
+                raise OrchError("본문이 필요하다", 2)
+            emit(comm.notify(p, args.kind, args.body))
     elif args.cmd in ("ask-user", "answer", "reask"):
         from . import ask
 

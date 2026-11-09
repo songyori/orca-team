@@ -11,8 +11,6 @@ from orch.paths import Project
 from orch.util import now, process_alive
 
 STALE = {"ok": False, "error": {"code": "terminal_handle_stale"}}
-LIVE = {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}}
-SHELL = {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}}
 
 
 class AutoUpCase(ProjectCase):
@@ -56,95 +54,58 @@ class AutoUpCase(ProjectCase):
 
 
 class DecideTest(AutoUpCase):
-    def test_dead_or_shell_only_spawns(self):
-        for body, code in ((STALE, 1), (SHELL, 0)):
-            with self.subTest(body=body):
-                self.respond("terminal show", body, code=code)
-                self.assertEqual(autoup.decide(self.p), ("spawn", autoup.REVIVED))
+    def test_dead_drive_spawns(self):
+        self.set_run(run_id="run_x")
+        self.assertEqual(autoup.decide(self.p), ("spawn", autoup.REVIVED))
 
     def test_alive_does_nothing(self):
-        self.respond("terminal show", LIVE)
+        self.set_run(run_id="run_x")
+        self.drive_alive()
         self.assertEqual(autoup.decide(self.p), (None, None))
 
-    def test_unknown_reports_without_spawn(self):
-        self.respond_raw("terminal show", "<<not json>>")
-        self.assertEqual(autoup.decide(self.p), (None, autoup.UNKNOWN))
-        self.respond("terminal show", {"ok": True, "result": {}})
-        self.assertEqual(autoup.decide(self.p), (None, autoup.UNKNOWN))
+    def test_hung_drive_reports_without_spawn(self):
+        self.set_run(run_id="run_x")
+        self.drive_alive()
+        (self.root / ".orchestration/state/drive/heartbeat").write_text("2000-01-01T00:00:00+00:00", encoding="utf-8")
+        self.assertEqual(autoup.decide(self.p), (None, autoup.HUNG))
 
     def test_disabled_reports_only(self):
+        self.set_run(run_id="run_x")
         self.set_auto_up("false")
-        self.respond("terminal show", STALE, code=1)
         self.assertEqual(autoup.decide(self.p), (None, autoup.DISABLED))
 
-    def test_missing_handle_reports_uncertain(self):
-        self.set_run(run_id="run_x")
-        self.assertEqual(autoup.decide(self.p), (None, autoup.NO_HANDLE))
-        self.assertEqual(self.calls_for("terminal show"), [])
-
-    def test_starting_or_running_spawn_skips(self):
-        self.respond("terminal show", STALE, code=1)
-        self.set_run(run_id="run_x", coordinator_handle="term_coord", launched_at=now())
+    def test_starting_or_spawn_running_skips(self):
+        self.set_run(run_id="run_x", launched_at=self.ago(10))
         self.assertEqual(autoup.decide(self.p), (None, None))
-        self.set_run(run_id="run_x", coordinator_handle="term_coord")
-        (self.p.state / "auto-up.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
-        self.assertEqual(autoup.decide(self.p), (None, None))
-
-    def test_stale_pid_file_is_ignored(self):
-        """pid 파일이 PID_STALE_SECONDS 보다 오래되면 살아 있는 pid 라도 다른 프로세스가 재사용한 것으로 본다."""
-        self.respond("terminal show", STALE, code=1)
-        pid = self.p.state / "auto-up.pid"
-        pid.write_text(f"{os.getpid()}\n", encoding="utf-8")
-        old = time.time() - 120
-        os.utime(pid, (old, old))
-        self.assertEqual(autoup.decide(self.p), ("spawn", autoup.REVIVED))
 
     def test_redead_within_retry_window_reports_failed(self):
-        """자동으로 띄운 뒤 RETRY_WINDOW_SECONDS 안에 다시 dead 면 auto_up 과 상관없이 띄우지 않고 알린다."""
-        self.respond("terminal show", STALE, code=1)
-        self.set_check(spawned_at=now())
-        self.assertEqual(autoup.decide(self.p), (None, autoup.FAILED))
-        self.respond("terminal show", LIVE)
-        self.assertEqual(autoup.decide(self.p), (None, None))
-        self.respond("terminal show", STALE, code=1)
-        self.set_check(spawned_at=self.ago(autoup.RETRY_WINDOW_SECONDS + 1))
-        self.assertEqual(autoup.decide(self.p), ("spawn", autoup.REVIVED))
-        self.set_check(spawned_at=now())
-        self.set_auto_up("false")
+        self.set_run(run_id="run_x")
+        self.set_check(spawned_at=self.ago(60))
         self.assertEqual(autoup.decide(self.p), (None, autoup.FAILED))
 
-    def test_not_eligible_skips_without_orca(self):
-        self.p.setup_mode.write_text("", encoding="utf-8")
+    def test_not_eligible_or_broken_config_skips(self):
+        self.set_run()
         self.assertEqual(autoup.decide(self.p), (None, None))
-        self.p.setup_mode.unlink()
-        self.set_run(coordinator_handle="term_coord")
-        self.assertEqual(autoup.decide(self.p), (None, None))
-        self.assertEqual(self.calls_for("terminal show"), [])
-
-    def test_broken_config_skips(self):
-        self.respond("terminal show", STALE, code=1)
-        self.set_auto_up('"yes"')
-        self.assertEqual(autoup.decide(self.p), (None, None))
-        self.p.config_path.write_text("[[[", encoding="utf-8")
+        self.set_run(run_id="run_x")
+        (self.root / ".orchestration/config.toml").write_text("[coordinator]\n", encoding="utf-8")
         self.assertEqual(autoup.decide(self.p), (None, None))
 
 
 class CheckTest(AutoUpCase):
     def test_interval_and_force(self):
-        self.respond("terminal show", STALE, code=1)
-        with patch.object(autoup, "spawn_up", return_value=True) as spawn:
+        with patch.object(autoup, "spawn_up", return_value=True) as spawn, \
+                patch.object(autoup, "decide", wraps=autoup.decide) as decide:
             self.assertEqual(autoup.check(self.p), autoup.REVIVED)
             self.assertIsNone(autoup.check(self.p))
-            self.assertEqual(len(self.calls_for("terminal show")), 1)
+            self.assertEqual(decide.call_count, 1)
             self.assertEqual(autoup.check(self.p, force=True), autoup.FAILED)
-            self.assertEqual(len(self.calls_for("terminal show")), 2)
+            self.assertEqual(decide.call_count, 2)
             self.set_check(checked_at=self.ago(autoup.CHECK_INTERVAL_SECONDS + 1))
             self.assertIsNone(autoup.check(self.p))  # 확인은 하지만 같은 안내는 다시 넘기지 않는다
-            self.assertEqual(len(self.calls_for("terminal show")), 3)
+            self.assertEqual(decide.call_count, 3)
         self.assertEqual(spawn.call_count, 1)
 
     def test_redead_within_retry_window_stops_spawning(self):
-        self.respond("terminal show", STALE, code=1)
         with patch.object(autoup, "spawn_up", return_value=True) as spawn:
             self.assertEqual(autoup.check(self.p), autoup.REVIVED)
             self.assertIn("spawned_at", self.check_record())
@@ -155,7 +116,6 @@ class CheckTest(AutoUpCase):
         self.assertEqual(spawn.call_count, 2)
 
     def test_real_spawn_is_always_announced(self):
-        self.respond("terminal show", STALE, code=1)
         with patch.object(autoup, "spawn_up", return_value=True) as spawn:
             self.assertEqual(autoup.check(self.p), autoup.REVIVED)
             self.set_check(
@@ -167,28 +127,25 @@ class CheckTest(AutoUpCase):
 
     def test_same_notice_once_until_changed_or_forced(self):
         self.set_auto_up("false")
-        self.respond("terminal show", STALE, code=1)
         self.assertEqual(autoup.check(self.p), autoup.DISABLED)
         self.set_check(checked_at=self.ago(autoup.CHECK_INTERVAL_SECONDS + 1))
         self.assertIsNone(autoup.check(self.p))
         self.assertEqual(autoup.check(self.p, force=True), autoup.DISABLED)
-        self.respond("terminal show", LIVE)
+        self.drive_alive()
         self.set_check(checked_at=self.ago(autoup.CHECK_INTERVAL_SECONDS + 1))
         self.assertIsNone(autoup.check(self.p))
         self.assertNotIn("notice", self.check_record())
-        self.respond("terminal show", STALE, code=1)
+        self.p.drive_pid.unlink()
         self.set_check(checked_at=self.ago(autoup.CHECK_INTERVAL_SECONDS + 1))
         self.assertEqual(autoup.check(self.p), autoup.DISABLED)
-        self.assertEqual(len(self.calls_for("terminal show")), 5)
 
     def test_corrupt_check_file_is_due(self):
         (self.p.state / "auto-up.json").write_text("garbage", encoding="utf-8")
         self.assertTrue(autoup.due(self.p))
 
     def test_spawn_failure_reports_unknown(self):
-        self.respond("terminal show", STALE, code=1)
         with patch.object(autoup, "spawn_up", return_value=False):
-            self.assertEqual(autoup.check(self.p), autoup.UNKNOWN)
+            self.assertEqual(autoup.check(self.p), autoup.FAILED_SPAWN)
         self.assertNotIn("spawned_at", self.check_record())
 
     def test_not_eligible_writes_nothing(self):
@@ -199,13 +156,13 @@ class CheckTest(AutoUpCase):
 
 class SpawnTest(AutoUpCase):
     def test_spawn_runs_orch_up_detached(self):
-        self.set_run(run_id="run_x", coordinator_handle="term_old")
+        self.set_run(run_id="run_x", drive_handle="term_old")
         self.respond("terminal show", STALE, code=1)
-        self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
+        self.respond("terminal create", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
         self.assertTrue(autoup.spawn_up(self.p))
         pid = int((self.p.state / "auto-up.pid").read_text(encoding="utf-8").split()[0])
         self.wait_exit(pid)
-        self.assertEqual(json.loads(self.p.run_json.read_text(encoding="utf-8"))["coordinator_handle"], "term_new")
+        self.assertEqual(json.loads(self.p.run_json.read_text(encoding="utf-8"))["drive_handle"], "term_new")
         log = (self.p.state / "auto-up.log").read_text(encoding="utf-8")
         self.assertIn("orch up (자동)", log)
         self.assertIn("launched", log)

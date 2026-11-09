@@ -281,6 +281,7 @@ class EnvAgentTest(HookCase):
         self.orch("setup-done")
 
     def test_session_start_main_context_has_main_session_only_disclaimer(self):
+        self.drive_alive()
         out = self.hook("session-start", {"session_id": "fresh"})
         context = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("메인 세션에만", context)
@@ -531,7 +532,7 @@ class MainContextGuardTest(HookCase):
 
 
 class AutoUpHookTest(HookCase):
-    """메인 세션 훅이 죽은 코디네이터를 다시 띄운다. 세팅이 끝난 프로젝트, 가짜 orca."""
+    """메인 세션 훅이 죽은 관제를 다시 띄운다. 세팅이 끝난 프로젝트, 가짜 orca."""
 
     def setUp(self):
         super().setUp()
@@ -549,50 +550,52 @@ class AutoUpHookTest(HookCase):
             time.sleep(0.1)
         self.assertFalse(process_alive(pid))
 
+    def p_drive_pid(self):
+        return self.root / ".orchestration/state/drive/drive.pid"
+
     def run_state(self):
         return json.loads((self.root / ".orchestration/state/run.json").read_text(encoding="utf-8"))
 
-    def test_prompt_revives_dead_coordinator(self):
-        self.respond("terminal show", STALE, code=1)
-        self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
+    def test_prompt_revives_dead_drive(self):
+        self.respond("terminal show", STALE, code=1)  # 옛 관제 터미널은 사라졌다
+        self.respond("terminal create", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
         out = self.hook("role-mark", {"session_id": "m", "prompt": "할 일 앱 만들어 줘"})
         self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "UserPromptSubmit")
         self.assertIn("자동으로 다시 띄우는 중", self.context(out))
         self.wait_spawned()
-        self.assertEqual(self.run_state()["coordinator_handle"], "term_new")
+        self.assertEqual(self.run_state()["drive_handle"], "term_new")
 
     def test_prompt_within_interval_skips(self):
+        self.drive_alive()
         self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "hi"}))
-        self.respond("terminal show", STALE, code=1)
+        self.p_drive_pid().unlink()
         self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "again"}))
-        self.assertEqual(len(self.calls_for("terminal show")), 1)
+        self.assertFalse((self.root / ".orchestration/state/auto-up.pid").exists())
 
     def test_session_start_checks_regardless_of_interval(self):
+        self.drive_alive()
         self.hook("role-mark", {"session_id": "m", "prompt": "hi"})
-        self.respond("terminal show", STALE, code=1)
-        self.respond("agent launch", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
+        self.p_drive_pid().unlink()
+        self.respond("terminal create", {"ok": True, "result": {"terminal": {"handle": "term_new"}}})
         context = self.context(self.hook("session-start", {"session_id": "fresh", "source": "startup"}))
         self.assertIn("자동으로 다시 띄우는 중", context)
         self.wait_spawned()
 
     def test_worker_sessions_skip(self):
-        self.respond("terminal show", STALE, code=1)
         self.assertIsNone(self.hook("role-mark", {"session_id": "w", "prompt": "Your task ID is: t"}))
-        self.assertEqual(self.calls_for("terminal show"), [])
-        self.assertEqual(self.calls_for("agent launch"), [])
+        self.assertEqual(self.calls_for("terminal create"), [])
+        self.assertFalse((self.root / ".orchestration/state/auto-up.pid").exists())
 
     def test_disabled_reports_without_launch(self):
         path = self.root / ".orchestration/config.toml"
         path.write_text(path.read_text(encoding="utf-8").replace("auto_up = true", "auto_up = false"), encoding="utf-8")
-        self.respond("terminal show", STALE, code=1)
         self.assertIn("auto_up = false", self.context(self.hook("role-mark", {"session_id": "m", "prompt": "hi"})))
-        self.assertEqual(self.calls_for("agent launch"), [])
+        self.assertEqual(self.calls_for("terminal create"), [])
 
     def test_setup_mode_skips(self):
         (self.root / ".orchestration/state/setup-mode").write_text("", encoding="utf-8")
-        self.respond("terminal show", STALE, code=1)
         self.assertIsNone(self.hook("role-mark", {"session_id": "m", "prompt": "hi"}))
-        self.assertEqual(self.calls_for("terminal show"), [])
+        self.assertEqual(self.calls_for("terminal create"), [])
 
     def test_auto_up_error_does_not_block(self):
         (self.root / ".orchestration/state/auto-up.json").mkdir()

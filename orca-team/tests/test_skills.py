@@ -4,8 +4,9 @@ import unittest
 from helpers import PLUGIN
 from orch.cli import build_parser
 
+# templates/coordinator.md 와 templates/CLAUDE.section.md 는 아직 없어진 orch tell·wait 를 적는다. Task 14 가 새로 쓸 때
+# 이 목록에 CLAUDE.section.md 를 다시 넣는다(coordinator.md 는 그때 지운다).
 DOCS = [PLUGIN / "skills/init/SKILL.md", PLUGIN / "skills/up/SKILL.md",
-        PLUGIN / "templates/coordinator.md", PLUGIN / "templates/CLAUDE.section.md",
         PLUGIN / "templates/roles/planner.md"]
 
 

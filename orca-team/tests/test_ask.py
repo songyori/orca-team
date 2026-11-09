@@ -252,40 +252,6 @@ class AskUserTest(AskCase):
         self.assertEqual(self.outbox()[0]["render"]["header"], "기획")
 
 
-class NotifyQuestionJsonTest(AskCase):
-    """코디네이터 질문도 ask-user 와 같은 스키마·render 를 쓴다."""
-
-    def notify_json(self, data, check=False):
-        return self.orch("notify", "--type", "question", "--json", self.question_file(data), check=check)
-
-    def test_json_question_posts_render_like_ask_user(self):
-        out = json.loads(self.notify_json(GOOD, check=True).stdout)
-        entry = self.outbox()[0]
-        self.assertEqual((out["id"], entry["type"], entry["body"]), ("out-0001", "question", GOOD["question"]))
-        self.assertEqual(entry["render"], ask.build_render(ask.validate_question(GOOD)))
-        self.assertEqual(entry["render"]["options"][0]["label"], "소셜 (추천)")
-        self.assertIn("추천 사유: 가입 화면이 줄어든다.", entry["render"]["options"][0]["description"])
-        self.assertTrue(entry["render"]["question"].endswith("예: 이메일이면 가입 화면이 필요하다"))
-
-    def test_json_schema_errors_exit_2_and_post_nothing(self):
-        proc = self.notify_json({"question": "x", "options": [{"label": "a"}]})
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("example: 필수", proc.stderr)
-        self.assertIn("options: 없거나 2~4개", proc.stderr)
-        self.assertEqual(self.outbox(), [])
-
-    def test_json_only_with_question_type_and_without_body(self):
-        for args in (("--type", "progress", "--json", self.question_file()),
-                     ("--type", "question", "--json", self.question_file(), "본문도")):
-            self.assertEqual(self.orch("notify", *args, check=False).returncode, 2, args)
-        self.assertEqual(self.orch("notify", "--type", "question", check=False).returncode, 2)
-        self.assertEqual(self.outbox(), [])
-
-    def test_plain_question_text_still_works_without_render(self):
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")
-        self.assertNotIn("render", self.outbox()[0])
-
-
 class AnswerTest(AskCase):
     def test_answer_to_ask_writes_file_once(self):
         self.ask("--json", self.question_file())

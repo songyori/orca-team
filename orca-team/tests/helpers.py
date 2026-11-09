@@ -21,7 +21,7 @@ os.environ.setdefault("ORCA_TEAM_ORCA", str(FAKES / "orca"))
 
 
 class ProjectCase(unittest.TestCase):
-    """임시 git 프로젝트. 기본 환경은 코디네이터 터미널(ORCA_TERMINAL_HANDLE=term_coord)이다."""
+    """임시 git 프로젝트. 기본 환경은 관제 터미널(ORCA_TERMINAL_HANDLE=term_drive)이다."""
 
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="orca-team-test-")).resolve()
@@ -39,13 +39,13 @@ class ProjectCase(unittest.TestCase):
             "ORCA_TEAM_PLUGIN_ROOT": str(PLUGIN),
             "FAKE_DIR": str(self.fake_dir),
             "XDG_CACHE_HOME": str(self.tmp / "cache"),
-            "ORCA_TERMINAL_HANDLE": "term_coord",
+            "ORCA_TERMINAL_HANDLE": "term_drive",
             "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
             "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
             # 사용자 git 설정(서명, hooksPath, diff.renames 등)이 테스트에 섞이지 않게 한다.
             "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1",
         }
-        for key in ("ORCA_CLI_COMMAND", "CLAUDE_PROJECT_DIR"):
+        for key in ("ORCA_CLI_COMMAND", "CLAUDE_PROJECT_DIR", "CLAUDECODE"):
             self.env.pop(key, None)
         self.git("init", "-q", "-b", "main")
         self.git("commit", "-q", "--allow-empty", "-m", "init")
@@ -102,11 +102,19 @@ class ProjectCase(unittest.TestCase):
         desc.write_text("테스트 프로젝트. 할 일 웹앱.", encoding="utf-8")
         self.orch("scaffold", "--description-file", str(desc))
         (self.root / ".orchestration/state/run.json").write_text(
-            json.dumps({"run_id": "run_x", "coordinator_handle": "term_coord"}), encoding="utf-8")
+            json.dumps({"run_id": "run_x", "drive_handle": "term_drive"}), encoding="utf-8")
         if not agents:
             path = self.root / ".orchestration/config.toml"
             text = path.read_text(encoding="utf-8")
             path.write_text(re.sub(r"(?m)^\[agents\.[a-z0-9-]+\]\n(?:[^\[\n].*\n|\n)*", "", text), encoding="utf-8")
+
+    def drive_alive(self) -> None:
+        """관제가 살아 있는 것으로 보이게 한다(이 테스트 프로세스 pid 와 지금 heartbeat)."""
+        drive_dir = self.root / ".orchestration/state/drive"
+        drive_dir.mkdir(parents=True, exist_ok=True)
+        (drive_dir / "drive.pid").write_text(f"{os.getpid()}\n", encoding="utf-8")
+        from orch.util import now
+        (drive_dir / "heartbeat").write_text(now(), encoding="utf-8")
 
     def remove_role(self, role: str) -> None:
         """config.toml 에서 [roles.<role>] 표를 지운다(그 직무가 없던 이전 버전 프로젝트)."""

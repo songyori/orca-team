@@ -67,8 +67,6 @@ class Project:
         self.outbox = self.state / "outbox.jsonl"
         self.outbox_cursor = self.state / "outbox.cursor"
         self.watch_pid = self.state / "watch.pid"
-        self.wait_pid = self.state / "wait.pid"
-        self.main_msg_ids = self.state / "main-msg-ids.json"
         self.setup_mode = self.state / "setup-mode"
         self.answers_dir = self.state / "answers"  # orch answer 가 쓰는 ask 답 파일과 읽음 표시
         self.plan_json = self.state / "plan.json"  # plan apply 의 key → T-id 와 지문

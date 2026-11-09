@@ -1,4 +1,4 @@
-"""공용 함수: 시간, JSON 파일, 템플릿 치환, git, pid, Run 상태, 코디네이터 확인."""
+"""공용 함수: 시간, JSON 파일, 템플릿 치환, git, pid, Run 상태, 관제 확인."""
 from __future__ import annotations
 
 import fcntl
@@ -186,9 +186,14 @@ def update_run(p: Project, fn) -> dict:
         return run
 
 
-def require_coordinator(p: Project) -> None:
-    """코디네이터 터미널에서만 도는 명령을 보호한다. 메인이 Run 에 묶이는 사고를 막는다."""
+def is_drive(p: Project) -> bool:
+    """이 프로세스가 관제(orch drive) 터미널에서 도는가: ORCA_TERMINAL_HANDLE 이 run.json 의 drive_handle 이다."""
     handle = os.environ.get("ORCA_TERMINAL_HANDLE")
-    if not handle or handle != load_run(p).get("coordinator_handle"):
-        raise OrchError("코디네이터 터미널에서만 실행한다(ORCA_TERMINAL_HANDLE 이 run.json 의 coordinator_handle 과 다르다). "
-                        "메인은 orch tell 을 쓴다", 2)
+    return bool(handle) and handle == load_run(p).get("drive_handle")
+
+
+def require_drive(p: Project) -> None:
+    """관제에서만 도는 명령을 보호한다. 메인이 Run 에 묶이는 사고를 막는다."""
+    if not is_drive(p):
+        raise OrchError("관제(orch drive) 터미널에서만 실행한다(ORCA_TERMINAL_HANDLE 이 run.json 의 drive_handle 과 다르다). "
+                        "메인은 같은 orch 명령을 쓰면 관제 큐를 거친다", 2)

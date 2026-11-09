@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -10,17 +11,15 @@ from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import orca
+from . import agents, orca
 from .ask import open_questions
 from .comm import unread
-from .config import Config, Launch
+from .config import Config
 from .paths import PLUGIN_ROOT, TEMPLATES, OrchError, Project, codex_bin, codex_runner, git_toplevel
 from .tasks import all_states, launch_in_progress, next_action
-from .util import git, git_ok, load_run, now, pid_alive, record_plugin_root, require_coordinator, update_run, write_json
+from .util import drive_alive, git, git_ok, load_run, now, pid_alive, record_plugin_root, require_drive, update_run, write_json
 
 MARK = "<!-- orca-team -->"
-COORDINATOR_PROMPT = ("[orca-team:coordinator] 너는 이 프로젝트의 orca-team 코디네이터다. "
-                      ".orchestration/coordinator.md 를 읽고 '시작' 절차부터 따른다.")
 SCAFFOLD_FILES = [
     ("config.toml", ".orchestration/config.toml"),
     ("coordinator.md", ".orchestration/coordinator.md"),
@@ -35,8 +34,9 @@ SCAFFOLD_FILES = [
 ]
 APPEND_FILES = [("CLAUDE.section.md", "CLAUDE.md"), ("AGENTS.md", "AGENTS.md")]
 LAUNCH_GRACE_SECONDS = 180
-STARTING_MESSAGE = (f"코디네이터가 아직 시작 중이다({LAUNCH_GRACE_SECONDS}초 안에 다시 띄우지 않는다). "
+STARTING_MESSAGE = (f"관제가 아직 시작 중이다({LAUNCH_GRACE_SECONDS}초 안에 다시 띄우지 않는다). "
                     "`orch status` 로 확인한다.")
+DRIVE_TITLE = "orca-team 관제"
 GITIGNORE_LINE = ".orchestration/state/"
 
 
@@ -194,77 +194,74 @@ def starting(run: dict) -> bool:
     return age is not None and 0 <= age < LAUNCH_GRACE_SECONDS
 
 
-def launch_handle(receipt: dict):
-    result = receipt.get("result") if isinstance(receipt.get("result"), dict) else {}
-    terminal = result.get("terminal") if isinstance(result.get("terminal"), dict) else {}
-    for found in (terminal.get("handle"), result.get("terminalHandle"),
-                  result.get("agentTerminalHandle"), result.get("handle")):
-        if isinstance(found, str) and found:
-            return found
-    return orca.find_key(receipt, ("terminalHandle", "agentTerminalHandle", "handle"))
+def drive_command(p: Project) -> str:
+    return f"{shlex.quote(str(p.orch / 'bin' / 'orch'))} drive"
 
 
 def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
-    """코디네이터가 살아 있으면 그대로 두고, 없으면 고정 플래그로 띄운다(메인이 호출)."""
-    handle = load_run(p).get("coordinator_handle")
-    alive = orca.terminal_alive(handle)
-    if alive:
+    """관제가 살아 있으면 그대로 두고, 없으면 관제 탭을 띄운다(메인과 자동 부활이 호출)."""
+    run = load_run(p)
+    if drive_alive(p):
         update_run(p, lambda r: r.pop("launched_at", None))
-        result = {"status": "running", "handle": handle}
-    elif starting(load_run(p)):
-        result = {"status": "starting", "handle": load_run(p).get("coordinator_handle"), "message": STARTING_MESSAGE}
+        result = {"status": "running", "handle": run.get("drive_handle")}
+    elif starting(run):
+        result = {"status": "starting", "handle": run.get("drive_handle"), "message": STARTING_MESSAGE}
     else:
-        result = launch_coordinator(p, Launch("opus", "xhigh"), handle)
+        result = launch_drive(p)
     deadline = time.monotonic() + wait_run
     while not load_run(p).get("run_id") and time.monotonic() < deadline:
         time.sleep(1)
     result["run_id"] = load_run(p).get("run_id")
     if wait_run and not result["run_id"]:
-        raise OrchError(f"코디네이터가 {wait_run}초 안에 Run 을 만들지 않았다. "
-                         + (f"코디네이터 터미널({result['handle']})을 확인한다" if result["handle"]
-                            else "`orch status` 로 코디네이터를 확인한다"))
+        raise OrchError(f"관제가 {wait_run}초 안에 Run 을 만들지 않았다. 관제 탭({DRIVE_TITLE})을 확인한다")
     return result
 
 
-def launch_coordinator(p: Project, launch: Launch, checked_handle: str | None = None) -> dict:
-    """run.json 잠금 안에서 기동을 선점한 뒤 코디네이터를 띄운다. 선점은 시작 유예를 잠금 안에서 다시 확인해
-    동시에 돈 `orch up` 이 코디네이터를 둘 띄우지 않게 한다. 선점에 지면 띄우지 않고 starting 을 돌려준다."""
+def launch_drive(p: Project) -> dict:
+    """run.json 잠금 안에서 기동을 선점한 뒤 관제를 띄운다. 셸만 남은 옛 관제 터미널이 있으면 거기서 다시 실행하고,
+    없으면 관제 탭을 새로 만든다. 선점에 지면 띄우지 않고 starting 을 돌려준다."""
     p.ensure_state()
-    receipt_path = p.state / "coordinator-launch.json"
+    p.drive_dir.mkdir(parents=True, exist_ok=True)
+    receipt_path = p.drive_dir / "launch.json"
     launched_at = now()
     claimed = []
 
     def claim(r: dict) -> None:
-        if starting(r) or r.get("coordinator_handle") != checked_handle:
+        if starting(r):
             return
-        r.pop("coordinator_handle", None)
         r.update(launched_at=launched_at)
         claimed.append(True)
 
     run = update_run(p, claim)
     if not claimed:
-        return {"status": "starting", "handle": run.get("coordinator_handle"), "message": STARTING_MESSAGE}
+        return {"status": "starting", "handle": run.get("drive_handle"), "message": STARTING_MESSAGE}
+    old = run.get("drive_handle")
+    if old and orca.shell_alive(old) == "alive":
+        try:
+            code, data = orca.call(["terminal", "send", "--terminal", old, "--text", drive_command(p), "--enter"],
+                                   check=False)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+            code, data = 1, {}
+        if code == 0 and data.get("ok"):
+            return {"status": "relaunched", "handle": old}
     try:
-        code, receipt = orca.call(["agent", "launch", "--agent", "claude", "--surface", "terminal",
-                                   "--worktree", f"path:{p.root}", "--model", launch.model,
-                                   "--effort", launch.effort, "--prompt", COORDINATOR_PROMPT], check=False)
+        code, receipt = orca.call(["terminal", "create", "--worktree", f"path:{p.root}", "--title", DRIVE_TITLE,
+                                   "--command", drive_command(p)], check=False)
     except OrchError as exc:
         if exc.code != 12:
             write_json(receipt_path, {"ok": False, "parse_error": str(exc), "launched_at": launched_at})
         raise
     write_json(receipt_path, receipt)
-    handle = launch_handle(receipt)
-    if code != 0 or not receipt.get("ok"):
+    handle = orca.find_key(receipt, ("handle",))
+    if code != 0 or not receipt.get("ok") or not handle:
         update_run(p, lambda r: r.pop("launched_at", None))
-        raise OrchError(f"코디네이터 실행 실패. 영수증: {receipt_path}")
-    own = os.environ.get("ORCA_TERMINAL_HANDLE")
-    if handle and handle == own:
-        # 영수증 깊은 곳의 호출자(메인) 핸들을 코디네이터로 기록하면 메인이 코디네이터 권한을 얻는다.
-        raise OrchError(f"코디네이터 실행 결과가 불확실하다(영수증에서 찾은 핸들 {handle} 이 메인 자신의 터미널이다). "
+        raise OrchError(f"관제 탭을 만들지 못했다. 영수증: {receipt_path}")
+    if handle == os.environ.get("ORCA_TERMINAL_HANDLE"):
+        raise OrchError(f"관제 실행 결과가 불확실하다(영수증의 handle {handle} 이 메인 자신의 터미널이다). "
                         f"다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
-    if not handle:
-        raise OrchError(f"코디네이터 실행 결과가 불확실하다(핸들 없음). 다시 띄우기 전에 영수증과 `orch status` 를 확인한다: {receipt_path}")
-    update_run(p, lambda r: r.update(coordinator_handle=handle))
+    update_run(p, lambda r: r.update(drive_handle=handle))
     return {"status": "launched", "handle": handle}
 
 
@@ -277,7 +274,7 @@ def project_objective(p: Project) -> str:
 
 def bind(p: Project) -> dict:
     """코디네이터 터미널을 Run 에 묶는다. 처음이면 만들고, 있으면 다시 붙는다."""
-    require_coordinator(p)
+    require_drive(p)
     run = load_run(p)
     if run.get("run_id"):
         orca.call(["orchestration", "run-use", "--id", run["run_id"]])
@@ -292,22 +289,15 @@ def bind(p: Project) -> dict:
 
 
 def status(p: Project, cfg: Config | None, config_error: str | None = None) -> dict:
-    """현황. 태스크마다 다음 행동(next)을 붙인다. 코디네이터가 살아 있으면 run.json 의 launched_at(기동 유예 표시)을 지운다.
+    """현황. 태스크마다 다음 행동(next)을 붙인다. 관제가 살아 있으면 run.json 의 launched_at(기동 유예 표시)을 지운다.
     open_questions 는 메인이 아직 답하지 않은 질문이다(재시작한 메인은 orch reask 로 다시 보여 준다).
 
     config.toml 이 깨져도(cfg None) 복구 안내는 나와야 하므로 config_error 를 싣고 최대 라운드 검사 없이 next 를 만든다."""
-    handle = load_run(p).get("coordinator_handle")
-    try:
-        alive = orca.terminal_alive(handle)
-    except OrchError:
-        alive = None
-    if alive:
-        run = update_run(p, lambda r: r.pop("launched_at", None))
-    else:
-        run = load_run(p)
+    alive = drive_alive(p)
+    run = update_run(p, lambda r: r.pop("launched_at", None)) if alive else load_run(p)
     return {"run_id": run.get("run_id"),
-            "coordinator": {"handle": run.get("coordinator_handle"), "alive": alive,
-                            "starting": alive is False and starting(run)},
+            "drive": {"handle": run.get("drive_handle"), "alive": alive, "starting": not alive and starting(run)},
+            "agents": agents.summary(p, cfg) if cfg is not None else [],
             "watch_alive": pid_alive(p.watch_pid), "unread_outbox": len(unread(p)),
             "open_questions": open_questions(p),
             "setup_mode": p.setup_mode.exists(), "config_error": config_error,

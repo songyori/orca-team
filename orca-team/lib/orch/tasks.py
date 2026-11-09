@@ -12,7 +12,7 @@ from . import agents, orca, testgate
 from .config import DEFAULT_APPROVAL_ROLES, Config
 from .globs import any_overlap
 from .paths import TEMPLATES, OrchError, Project
-from .util import (acquire_pid, git, now, pid_alive, process_alive, read_json, release_pid, render, require_coordinator,
+from .util import (acquire_pid, git, now, pid_alive, process_alive, read_json, release_pid, render, require_drive,
                    write_json)
 
 TASK_ID_RE = re.compile(r"^T-\d{3,}$")
@@ -251,7 +251,6 @@ def max_task_number(p: Project) -> int:
 
 
 def new_task(p: Project, cfg: Config, role: str, title: str) -> dict:
-    require_coordinator(p)
     cfg.role(role)
     if not title.strip():
         raise OrchError("제목이 비었다", 2)
@@ -378,7 +377,7 @@ def start_refusal(st: dict) -> str:
 
 
 def start(p: Project, cfg: Config, task_id: str, retry: bool = False, overrides: dict | None = None) -> dict:
-    require_coordinator(p)
+    require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = load_state(p, task_id)
     if st is not None and launch_in_progress(st):
@@ -429,7 +428,7 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
     고정 에이전트가 한 태스크는 같은 에이전트가 고친다(해제하지 않는다). 그 에이전트가 일하는 중이거나 앞선 수정이
     기다리면 대기열에 넣고 {"status": "queued"} 를 돌려준다. 에이전트가 비면 drain_fix_queues 가 from_queue 로 띄운다.
     extra_round 는 최대 라운드를 넘긴 태스크를 사용자가 한 번 더 고치기로 했을 때만 쓴다."""
-    require_coordinator(p)
+    require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
     status = st.get("status")
@@ -546,7 +545,7 @@ def load_design_reviews(p: Project) -> list[dict]:
 def accept(p: Project, task_id: str) -> dict:
     """APPROVE 된 태스크를 끝낸다. 사용자 승인 대상 직무는 먼저 awaiting_user 로 두고(잠금 유지),
     awaiting_user 에서 다시 accept 하면 사용자 승인으로 보고 done 이 된다. 임시 워커만 해제한다."""
-    require_coordinator(p)
+    require_drive(p)
     st = must_state(p, task_id)
     status = st.get("status")
     if status == "awaiting_user":
@@ -578,7 +577,7 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
 
     working 태스크는 워커가 확실히 끝났을 때만 중단한다. worker-release 가 도는 워커를 멈춘다는 보장이 없어
     잠금을 풀면 다음 태스크와 같은 경로를 동시에 고칠 수 있다. --force 는 이 확인을 건너뛰고 이력에 남긴다."""
-    require_coordinator(p)
+    require_drive(p)
     if not TASK_ID_RE.match(task_id):
         raise OrchError(f"태스크 ID 형식이 아니다: {task_id}", 2)
     reason = reason.strip()
@@ -634,7 +633,7 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     작업 터미널을 잊고 새로 띄운다. 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다.
     worker-abandon / worker-release 가 하나라도 실패하면(종료 코드 또는 ok 가 거짓) 이전 터미널이 닫혔다고 볼 수 없으므로
     다시 띄우지 않고 release_error 와 함께 메인에 올린다(escalate)."""
-    require_coordinator(p)
+    require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
     dispatch = st.get("dispatch_id")
@@ -732,7 +731,7 @@ def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:
 def scope(p: Project, task_id: str, body: str) -> dict:
     """일하는 중인 태스크에 추가 범위를 알린다. 메인이 spec 에 "추가 범위"를 먼저 커밋한다.
     pending 태스크는 spec 을 고쳐 커밋하면 되므로 받지 않는다."""
-    require_coordinator(p)
+    require_drive(p)
     st = must_state(p, task_id)
     if st.get("status") != "working" or not st.get("dispatch_id"):
         raise OrchError(f"{task_id}: 일하는 중(working)인 태스크에만 범위를 더한다(status={st.get('status')}). "

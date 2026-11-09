@@ -1,8 +1,8 @@
-"""메인 ⇄ 코디네이터·기획·디자인 디렉터 워커 소통.
+"""메인 ⇄ 관제·기획·디자인 디렉터 워커 소통.
 
-코디네이터 → 메인: outbox.jsonl(파일). 메인은 Run 에 묶이지 않으므로 Orca 알림이 메인 입력란에 들어오지 않는다.
-메인 → 코디네이터: 코디네이터 Run 메일함(orca orchestration send --to run:<id>).
-기획·디자인 디렉터 워커 → 메인: outbox 의 ask 줄(orch ask-user). 메인 → 그 워커: state/answers/ 답 파일(orch answer). ask.py 참고.
+관제 → 메인: outbox.jsonl(파일). 메인은 Run 에 묶이지 않으므로 Orca 알림이 메인 입력란에 들어오지 않는다.
+메인 → 관제: 요청 큐(queue.py). 기획·디자인 디렉터 워커 → 메인: outbox 의 ask 줄(orch ask-user).
+메인 → 그 워커: state/answers/ 답 파일(orch answer). ask.py 참고.
 """
 from __future__ import annotations
 
@@ -23,9 +23,6 @@ POST_TYPES = (*TYPES, "ask", "approval", "decide", "result")  # outbox 에 쓰�
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure",
                 "test_config", "planning_gaps", "unknown_regression", "token_update")
 REPLY_TYPES = ("approval", "decide")  # 메인이 답해 닫는 타입. 답한 id 는 state/answered.json 에 남긴다
-WAIT_TYPES = "worker_done,escalation,question,status"
-MAIN_SUBJECT = "[main]"
-MAIN_IDS_KEEP = 1000
 
 
 def read_outbox(p: Project) -> list[dict]:
@@ -203,52 +200,3 @@ def watch(p: Project, poll: float = 2.0, timeout: float | None = None,
                     time.sleep(min(poll, remaining))
     finally:
         release_pid(p.watch_pid)
-
-
-def tell(p: Project, body: str, reply_to: str | None = None) -> dict:
-    run_id = load_run(p).get("run_id")
-    if not run_id:
-        raise OrchError("코디네이터가 아직 Run 을 만들지 않았다. /orca-team:up 으로 확인한다", 1)
-    if not body.strip():
-        raise OrchError("메시지 본문이 비었다", 2)
-    subject = f"[main] reply {reply_to}" if reply_to else f"[main] {body.strip().splitlines()[0][:60]}"
-    _, data = orca.call(["orchestration", "send", "--to", f"run:{run_id}", "--type", "status",
-                         "--subject", subject, f"--body={body.strip()}"])  # '-' 로 시작하는 본문이 플래그로 읽히지 않게
-    return {"sent": True, "subject": subject, "receipt": data.get("result")}
-
-
-def main_message_ids(p: Project) -> list[str]:
-    ids = read_json(p.main_msg_ids, [])
-    return [str(i) for i in ids] if isinstance(ids, list) else []
-
-
-def remember_main_messages(p: Project, data: dict) -> None:
-    """받은 `[main]` 메시지 id 를 기록한다. 훅이 이 id 로의 reply(메인 입력란을 깨움)를 막는다."""
-    result = data.get("result")
-    messages = result.get("messages") if isinstance(result, dict) else None
-    found = []
-    for message in messages if isinstance(messages, list) else []:
-        if isinstance(message, dict) and str(message.get("subject") or "").startswith(MAIN_SUBJECT):
-            msg_id = orca.find_key(message, ("id",))
-            if msg_id is not None:
-                found.append(str(msg_id))
-    if found:
-        known = main_message_ids(p)
-        write_json(p.main_msg_ids, list(dict.fromkeys(known + found))[-MAIN_IDS_KEEP:])
-
-
-def wait(p: Project, ack: str | None, timeout_ms: int) -> dict:
-    """코디네이터 메일함 대기. 한 번에 하나만 돈다. 호출 전 require_coordinator 를 확인한다."""
-    p.ensure_state()
-    acquire_pid(p.wait_pid, "wait")
-    try:
-        with _sigterm_exits():
-            args = ["orchestration", "check"]
-            if ack:
-                args += ["--ack", ack]
-            args += ["--wait", "--types", WAIT_TYPES, "--timeout-ms", str(timeout_ms)]
-            _, data = orca.call(args)
-            remember_main_messages(p, data)
-            return data
-    finally:
-        release_pid(p.wait_pid)

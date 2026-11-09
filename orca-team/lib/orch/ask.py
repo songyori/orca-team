@@ -23,7 +23,7 @@ WAITING_EXIT = 4
 POLL_SECONDS = 2.0
 WAIT_SECONDS = 540.0
 DEFAULT_HEADERS = {"planner": "기획", "director": "디자인"}  # 질문한 직무별 header 기본값
-DEFAULT_HEADER = "기획"  # 그 밖의 직무(코디네이터의 notify --json 등)
+DEFAULT_HEADER = "기획"  # 그 밖의 직무
 EXAMPLE_PREFIX_RE = re.compile(r"\A(?:(?:예시:|예:|예\)|e\.g\.)\s*)+", re.I)  # build_render 가 "예: " 를 붙이므로 모두 뺀다
 MAX_TEXT = 300
 MAX_LABEL = 30
@@ -124,12 +124,6 @@ def load_question(source: str):
         return json.loads(text)
     except json.JSONDecodeError as exc:
         raise OrchError(f"질문 JSON 파싱 실패: {exc}", 2) from exc
-
-
-def notify_question(p: Project, source: str) -> dict:
-    """코디네이터의 구조화 질문. ask-user 와 같은 검증·render 로 outbox `question` 줄을 쓴다."""
-    q = validate_question(load_question(source))
-    return comm.post(p, "question", q["question"], {"render": build_render(q)})
 
 
 def require_ask_role(p: Project, task_id: str) -> dict:

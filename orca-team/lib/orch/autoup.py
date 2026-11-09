@@ -1,7 +1,7 @@
-"""코디네이터 자동 부활. 메인 세션의 SessionStart·UserPromptSubmit 훅이 check() 를 부른다.
+"""관제 자동 부활. 메인 세션의 SessionStart·UserPromptSubmit 훅이 check() 를 부른다.
 
-확실히 죽은(dead) 코디네이터만 `orch up` 을 분리된 프로세스로 다시 띄운다. 확인할 수 없으면(unknown) 띄우지 않고
-메인에게 알린다. 요청은 Run 메일함에 쌓이므로 새 코디네이터가 붙을 때까지 기다리지 않는다."""
+확실히 죽은(pid 없음) 관제만 `orch up` 을 분리된 프로세스로 다시 띄운다. pid 는 살아 있는데 heartbeat 가 오래됐으면
+띄우지 않고 메인에게 알린다. 요청은 큐에 넣기 전에 관제가 살아 있는지 확인하므로 메인은 부활을 기다린 뒤 다시 한다."""
 from __future__ import annotations
 
 import os
@@ -11,28 +11,27 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import orca
 from .config import Config
 from .paths import OrchError, Project
 from .setup import starting
-from .util import load_run, now, pid_alive, read_json, write_json
+from .util import drive_alive, load_run, now, pid_alive, read_json, write_json
 
 CHECK_INTERVAL_SECONDS = 60  # 프롬프트 때 확인 간격. 세션 시작 때는 force 로 항상 확인한다
 RETRY_WINDOW_SECONDS = 600  # 자동으로 띄운 뒤 이 안에 다시 꺼지면 더 띄우지 않는다(시작 실패 반복 방지)
 PID_STALE_SECONDS = 60  # orch up 은 대기 없이 몇 초 안에 끝난다. 더 오래된 pid 파일은 진행 중으로 보지 않는다
 PREFIX = "orca-team: "
-REVIVED = (PREFIX + "코디네이터가 꺼져 있어 자동으로 다시 띄우는 중이다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 알린다. "
-           "요청은 평소대로 orch tell 로 넘긴다(Run 메일함에 쌓였다가 코디네이터가 붙으면 처리된다). "
+REVIVED = (PREFIX + "관제(orch drive)가 꺼져 있어 자동으로 다시 띄우는 중이다. 답변 첫 줄에 사용자에게 이 사실을 한 줄로 알린다. "
+           "관제가 뜨기 전에 낸 orch 명령은 '관제가 꺼져 있다'로 거부되므로 잠시 뒤 다시 한다. "
            "메시지 watcher 가 꺼져 있으면 띄우고, 답하지 않은 질문이 있으면 orch reask 로 다시 보여 준다.")
-UNKNOWN = (PREFIX + "Orca 에 연결하지 못해 코디네이터가 살아 있는지 확인하지 못했다. 답변 첫 줄에 사용자에게 "
-           "Orca 가 켜져 있는지 확인해 달라고 한 줄로 알린다. 확인되면 /orca-team:up 을 실행한다.")
-NO_HANDLE = (PREFIX + "코디네이터 실행 기록이 불확실하다(run.json 에 코디네이터 터미널이 없다). 답변 첫 줄에 "
-             "사용자에게 한 줄로 알리고 /orca-team:up 결과를 확인한다.")
-DISABLED = (PREFIX + "코디네이터가 꺼져 있다(config.toml 의 auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 "
+HUNG = (PREFIX + "관제 프로세스는 살아 있지만 2분 넘게 응답이 없다. 답변 첫 줄에 사용자에게 한 줄로 알리고, "
+        "관제 탭(orca-team 관제)의 출력을 확인하게 한다.")
+DISABLED = (PREFIX + "관제가 꺼져 있다(config.toml 의 [drive] auto_up = false). 답변 첫 줄에 사용자에게 한 줄로 "
             "알리고 /orca-team:up 을 안내한다.")
-FAILED = (PREFIX + "자동으로 다시 띄운 코디네이터가 10분 안에 다시 꺼졌다(기록: .orchestration/state/auto-up.log). "
+FAILED = (PREFIX + "자동으로 다시 띄운 관제가 10분 안에 다시 꺼졌다(기록: .orchestration/state/auto-up.log). "
           "답변 첫 줄에 사용자에게 한 줄로 알리고, 원인을 확인한 뒤 /orca-team:up 을 실행하도록 안내한다. "
           "10분 동안은 자동으로 다시 띄우지 않는다.")
+FAILED_SPAWN = (PREFIX + "관제를 자동으로 다시 띄우지 못했다(orch up 실행 실패). 답변 첫 줄에 사용자에게 한 줄로 알리고 "
+                "/orca-team:up 을 안내한다.")
 # sh 가 orch up 을 백그라운드로 띄우고 pid 를 출력한 뒤 바로 끝난다. 훅이 시간 제한으로 끊겨도 orch up 은 계속 돈다.
 LAUNCHER = '"$0" "$@" </dev/null >>"$ORCA_TEAM_AUTO_UP_LOG" 2>&1 & echo $!'
 
@@ -86,24 +85,17 @@ def spawn_running(p: Project) -> bool:
 
 def decide(p: Project) -> tuple[str | None, str | None]:
     """(action, context). action 은 "spawn" 또는 None, context 는 메인에게 넘길 문구 또는 None.
-    파일은 쓰지 않는다(orca 조회만 한 번 한다). 판정 순서는 설계 §4.1 을 따른다."""
+    파일은 쓰지 않고 Orca 도 부르지 않는다(관제 pid·heartbeat 로 판정한다)."""
     if not eligible(p):
         return None, None
     try:
         enabled = Config.load(p.config_path).auto_up
     except OrchError:
         return None, None
-    run = load_run(p)
-    if starting(run) or spawn_running(p):
+    if starting(load_run(p)) or spawn_running(p) or drive_alive(p):
         return None, None
-    handle = run.get("coordinator_handle")
-    if not handle:
-        return None, NO_HANDLE
-    state = orca.terminal_state(handle)
-    if state == "alive":
-        return None, None
-    if state == "unknown":
-        return None, UNKNOWN
+    if pid_alive(p.drive_pid):
+        return None, HUNG
     if within(check_record(p).get("spawned_at"), RETRY_WINDOW_SECONDS):
         return None, FAILED
     return ("spawn", REVIVED) if enabled else (None, DISABLED)
@@ -111,7 +103,7 @@ def decide(p: Project) -> tuple[str | None, str | None]:
 
 def spawn_up(p: Project) -> bool:
     """`orch up` 을 분리된 프로세스로 띄우고 pid 를 auto-up.pid 에 남긴다. 기다리지 않는다. 띄우지 못하면 False.
-    환경을 그대로 물려줘 orch up 이 메인 자신의 터미널(ORCA_TERMINAL_HANDLE)을 코디네이터로 기록하지 않게 한다."""
+    환경을 그대로 물려줘 orch up 이 관제로 기록하지 않게 한다."""
     orch_bin = Path(__file__).resolve().parents[2] / "bin" / "orch"
     p.ensure_state()
     log = log_file(p)
@@ -142,7 +134,7 @@ def check(p: Project, force: bool = False) -> str | None:
             spawned = True
             record["spawned_at"] = now()
         else:
-            context = UNKNOWN
+            context = FAILED_SPAWN
     repeated = not spawned and context is not None and context == record.get("notice")
     if context is None:
         record.pop("notice", None)

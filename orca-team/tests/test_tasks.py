@@ -131,10 +131,11 @@ class StartTest(TaskCase):
         self.orch("start", "T-001", "--retry")
         self.assertEqual(self.state("T-001")["status"], "working")
 
-    def test_coordinator_only(self):
+    def test_main_without_drive_is_refused(self):
         self.write_spec("T-001")
         proc = self.orch("start", "T-001", check=False, env={"ORCA_TERMINAL_HANDLE": "term_main"})
-        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("/orca-team:up", proc.stderr)
         self.assertEqual(self.calls_for("orchestration worker-start"), [])
 
 
@@ -688,9 +689,10 @@ class DropTest(TaskCase):
         self.orch("start", "T-002")
         self.assertEqual(self.state("T-002")["status"], "working")
 
-    def test_drop_refused_for_non_coordinator(self):
+    def test_drop_from_main_without_drive_is_refused(self):
         proc = self.drop(check=False, env={"ORCA_TERMINAL_HANDLE": "term_main"})
-        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("/orca-team:up", proc.stderr)
         self.assertEqual(self.state("T-001")["status"], "working")
         self.assertEqual(self.calls_for("orchestration worker-release"), [])
 

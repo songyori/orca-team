@@ -17,7 +17,7 @@ from .paths import TEMPLATES, OrchError, Project, codex_runner
 from .tasks import (ACTIVE, TaskDoc, all_states, deps_of, load_doc, load_state, must_state, owns_of, review_pid,
                     save_state)
 from .textlint import RULES_FILE, text_lint, text_targets
-from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_coordinator
+from .util import acquire_pid, git, git_commit_paths, git_ok, now, read_json, release_pid, render, require_drive
 
 VERDICT_RE = re.compile(r"^VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$", re.M)
 FINDINGS_RE = re.compile(r"^## 지적 사항[ \t]*\n(.*?)(?=^## |^VERDICT:|\Z)", re.M | re.S)
@@ -432,7 +432,7 @@ def plan_problem(p: Project, cfg: Config, files: list[str]) -> str | None:
 
 def review(p: Project, cfg: Config, task_id: str) -> dict:
     """리뷰는 태스크마다 하나만 돈다(review.pid). reviewing 이 남았는데 리뷰 프로세스가 없으면 다시 리뷰한다."""
-    require_coordinator(p)
+    require_drive(p)
     doc = load_doc(p, cfg, task_id)
     pid = review_pid(p, task_id)
     acquire_pid(pid, f"orch review {task_id}")

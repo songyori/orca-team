@@ -16,7 +16,7 @@ from .paths import OrchError, Project
 from .tasks import (ACTIVE, FINISHED, accept, fix, all_states, check_lock, deps_of, drain_fix_queues, format_unmet,
                     load_design_reviews, load_doc, load_state, max_task_number, owns_of, parse_text, save_state, start,
                     task_path, unmet_deps, validate)
-from .util import git, git_commit_paths, now, read_json, require_coordinator, write_json
+from .util import git, git_commit_paths, now, read_json, require_drive, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -366,7 +366,7 @@ def refuse_lost_plan_state(p: Project) -> None:
 def apply(p: Project, cfg: Config, append: bool = False) -> dict:
     """tasks.toml 의 새 태스크를 spec 과 pending 상태로 만든다. 검증에 하나라도 실패하면 아무것도 만들지 않는다.
     spec 은 경로 지정 커밋 하나(`[plan] apply: N tasks`)로 묶는다. 잠금은 잡지 않는다(pending 은 ACTIVE 가 아니다)."""
-    require_coordinator(p)
+    require_drive(p)
     refuse_lost_plan_state(p)
     _, new = check(p, cfg, append)
     if not new:
@@ -413,7 +413,7 @@ def start_ready(p: Project, cfg: Config) -> dict:
     """pending 태스크 중 선행 태스크가 모두 충족되고(deps. done, 승인 대상 직무끼리는 awaiting_user 도), 잠금이 겹치지 않고
     (lock), working 수가 max_parallel 보다 적은(limit) 것을 tasks.toml 순서로 띄운다. 한 태스크의 실행 실패는 나머지를 막지 않는다.
     waiting reason: spec, deps, lock, agent(고정 에이전트 대기), limit."""
-    require_coordinator(p)
+    require_drive(p)
     fixes = drain_fix_queues(p, cfg)
     limit = cfg.max_parallel
     approval = cfg.user_approval_roles
@@ -497,7 +497,7 @@ def design_review(p: Project, cfg: Config) -> dict:
 
     진행 중(REVIEW_WAIT_STATUSES)이거나 곧 시작할 pending(will_start) 승인 대상 태스크가 있으면 기다린다. 선행 태스크가
     충족되지 않은 pending 태스크(예: 아직 끝나지 않은 개발 태스크를 기다리는 디자인)는 기다리지 않는다."""
-    require_coordinator(p)
+    require_drive(p)
     roles = cfg.user_approval_roles
     everything = all_states(p)
     states = [st for st in everything if st.get("role") in roles]
@@ -543,7 +543,7 @@ def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixe
     남기고 drive 가 리뷰 뒤에 고친다. 끝나면 질문을 닫고 start-ready."""
     from .ask import find_entry
 
-    require_coordinator(p)
+    require_drive(p)
     entry = find_entry(p, out_id)
     if not entry or entry.get("type") != "approval":
         raise OrchError(f"{out_id} 는 디자인 승인 질문(approval)이 아니다", 2)

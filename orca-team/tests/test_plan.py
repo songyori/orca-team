@@ -531,8 +531,10 @@ class StartReadyTest(PlanCase):
         self.assertEqual([(s["id"], s["status"]) for s in out["started"]],
                          [("T-001", "launch_failed"), ("T-002", "launch_failed")])
 
-    def test_coordinator_only(self):
-        self.assertEqual(self.ready(check=False, env=MAIN).returncode, 2)
+    def test_main_without_drive_is_refused(self):
+        proc = self.ready(check=False, env=MAIN)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("/orca-team:up", proc.stderr)
         self.assertEqual(self.calls_for("orchestration worker-start"), [])
 
 
