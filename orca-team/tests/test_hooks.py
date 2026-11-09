@@ -16,6 +16,7 @@ class HookCase(ProjectCase):
     def setUp(self):
         super().setUp()
         self.scaffold()
+        self.drive_alive()  # 관제가 살아 있어야 메인 훅이 orch up 을 분리 프로세스로 띄우지 않는다
         self.respond("terminal show", LIVE)
 
     def hook(self, event, payload, cwd=None, env=None):
@@ -208,6 +209,7 @@ class StopAndSessionStartTest(HookCase):
         context = out["hookSpecificOutput"]["additionalContext"]
         self.assertIn("/orca-team:up", context)
         self.assertIn("1건", context)
+        self.assertFalse((self.root / ".orchestration/state/auto-up.pid").exists())  # 관제가 살아 있으면 띄우지 않는다
 
     def test_session_start_mentions_open_questions(self):
         from orch import comm
@@ -536,6 +538,7 @@ class AutoUpHookTest(HookCase):
 
     def setUp(self):
         super().setUp()
+        self.p_drive_pid().unlink()  # 이 클래스는 죽은 관제에서 시작한다
         self.orch("setup-done")
 
     def context(self, out):

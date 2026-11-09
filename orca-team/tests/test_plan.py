@@ -255,7 +255,7 @@ class PlanApplyTest(PlanCase):
                     self.assertEqual(proc.returncode, 2, extra)
                     self.assertIn("plan.json", proc.stderr)
                     self.assertIn("T-001", proc.stderr)
-                    self.assertIn("orch notify --type question --json -", proc.stderr)
+                    self.assertIn("메인에 decide 로 올려", proc.stderr)
                 self.assertEqual(self.spec_files(), ["T-001.md", "T-002.md", "T-003.md"])
                 self.assertEqual(len(list((self.root / ".orchestration/state/tasks").glob("T-*.json"))), 3)
 

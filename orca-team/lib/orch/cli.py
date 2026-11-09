@@ -147,7 +147,9 @@ def queued_request(p, cfg, args) -> tuple[str, dict]:
         if args.name not in cfg.agents:
             raise OrchError(f"고정 에이전트가 아니다: {args.name}. 가능한 이름: {', '.join(cfg.agents) or '없음'}", 2)
         return "agent-reset", {"name": args.name}
-    return "start-ready", {}
+    if args.cmd == "start-ready":
+        return "start-ready", {}
+    raise OrchError(f"관제 큐로 보낼 수 없는 명령: {args.cmd}", 2)
 
 
 def project(need_config: bool):
@@ -219,7 +221,10 @@ def run(args) -> int:
 
         if not is_drive(p):
             command, payload = queued_request(p, cfg, args)
-            emit(queue.submit(p, command, payload))
+            out = queue.submit(p, command, payload)
+            emit(out)
+            if command == "start-ready" and any(s.get("status") == "launch_failed" for s in out.get("started") or []):
+                return 1
             return 0
     if args.cmd == "drive":
         from . import drive

@@ -14,9 +14,8 @@ import time
 from collections.abc import Callable
 from contextlib import contextmanager
 
-from . import orca
 from .paths import OrchError, Project
-from .util import acquire_pid, load_run, now, read_json, release_pid, write_json, write_text_atomic
+from .util import acquire_pid, now, read_json, release_pid, write_json, write_text_atomic
 
 TYPES = ("progress", "question", "done")  # orch notify 가 받는 타입
 POST_TYPES = (*TYPES, "ask", "approval", "decide", "result")  # outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다
@@ -156,18 +155,19 @@ def post_decide(p: Project, kind: str, task: str | None, summary: str, files=(),
 
 @contextmanager
 def _sigterm_exits():
-    """SIGTERM 을 SystemExit 으로 바꿔 finally(pid 정리)가 돌게 한다."""
+    """SIGTERM·SIGHUP(탭 닫힘)을 SystemExit 으로 바꿔 finally(pid 정리)가 돌게 한다."""
     def handler(signum, frame):
-        raise SystemExit(143)
+        raise SystemExit(128 + signum)
     try:
-        old = signal.signal(signal.SIGTERM, handler)
+        olds = {sig: signal.signal(sig, handler) for sig in (signal.SIGTERM, signal.SIGHUP)}
     except ValueError:  # 메인 스레드가 아니면 설치하지 않는다
         yield
         return
     try:
         yield
     finally:
-        signal.signal(signal.SIGTERM, old)
+        for sig, old in olds.items():
+            signal.signal(sig, old)
 
 
 def watch(p: Project, poll: float = 2.0, timeout: float | None = None,

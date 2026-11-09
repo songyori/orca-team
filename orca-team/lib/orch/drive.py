@@ -7,7 +7,7 @@ from __future__ import annotations
 import os
 import time
 
-from . import agents, orca, plan, queue, setup, tasks
+from . import agents, comm, orca, plan, queue, setup, tasks
 from .config import Config
 from .paths import OrchError, Project
 from .util import acquire_pid, now, read_json, release_pid, update_run, write_text_atomic
@@ -47,6 +47,8 @@ class Drive:
                 if exc.code == 12:
                     raise
                 result = {"ok": False, "error": str(exc), "code": exc.code}
+            except Exception as exc:  # 잘못된 요청 하나가 관제를 죽이거나 큐에 남지 않게 한다
+                result = {"ok": False, "error": f"관제 요청 처리 실패: {type(exc).__name__}: {exc}", "code": 1}
             queue.complete(self.p, path, request, result)
             self.log(f"요청 {request.get('id')} {request.get('command')}: {'완료' if result['ok'] else result['error']}")
             done += 1
@@ -105,8 +107,9 @@ def main(p: Project, cfg: Config) -> int:
         update_run(p, lambda r: (r.update(drive_handle=handle), r.pop("launched_at", None)))
         drive = Drive(p, cfg)
         drive.beat()
-        drive.log(f"관제 시작({handle}): {drive.bind()['status']}")
-        drive.run_forever()
+        with comm._sigterm_exits():
+            drive.log(f"관제 시작({handle}): {drive.bind()['status']}")
+            drive.run_forever()
     finally:
         release_pid(p.drive_pid)
     return 0

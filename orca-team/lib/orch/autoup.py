@@ -103,7 +103,8 @@ def decide(p: Project) -> tuple[str | None, str | None]:
 
 def spawn_up(p: Project) -> bool:
     """`orch up` 을 분리된 프로세스로 띄우고 pid 를 auto-up.pid 에 남긴다. 기다리지 않는다. 띄우지 못하면 False.
-    환경을 그대로 물려줘 orch up 이 관제로 기록하지 않게 한다."""
+    메인 자신의 터미널(ORCA_TERMINAL_HANDLE)을 관제로 기록하지 않게
+    환경을 그대로 물려준다."""
     orch_bin = Path(__file__).resolve().parents[2] / "bin" / "orch"
     p.ensure_state()
     log = log_file(p)

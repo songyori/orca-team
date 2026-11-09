@@ -360,7 +360,7 @@ def refuse_lost_plan_state(p: Project) -> None:
     if made:
         raise OrchError(f"state/plan.json 이 없거나 깨졌는데 plan apply 로 만든 태스크가 있다({', '.join(made)}). "
                         "다시 적용하면 같은 태스크가 새 번호로 중복되므로 plan apply 를 하지 않는다. "
-                        "orch notify --type question --json - 으로 메인에 알려 plan.json 을 복구하게 한다", 2)
+                        "메인에 decide 로 올려 plan.json 을 복구하게 한다", 2)
 
 
 def apply(p: Project, cfg: Config, append: bool = False) -> dict:

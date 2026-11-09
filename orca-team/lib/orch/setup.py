@@ -204,6 +204,9 @@ def up(p: Project, cfg: Config, wait_run: int = 0) -> dict:
     if drive_alive(p):
         update_run(p, lambda r: r.pop("launched_at", None))
         result = {"status": "running", "handle": run.get("drive_handle")}
+    elif pid_alive(p.drive_pid):  # 프로세스는 살아 있는데 heartbeat 가 멈췄다. 같은 터미널에 다시 치지 않는다
+        result = {"status": "hung", "handle": run.get("drive_handle"),
+                  "message": "관제 프로세스가 살아 있지만 응답이 없다. 관제 탭을 확인한다"}
     elif starting(run):
         result = {"status": "starting", "handle": run.get("drive_handle"), "message": STARTING_MESSAGE}
     else:
@@ -227,13 +230,15 @@ def launch_drive(p: Project) -> dict:
     claimed = []
 
     def claim(r: dict) -> None:
-        if starting(r):
+        if drive_alive(p) or starting(r):  # 다른 up 이 이미 띄웠다
             return
         r.update(launched_at=launched_at)
         claimed.append(True)
 
     run = update_run(p, claim)
     if not claimed:
+        if drive_alive(p):
+            return {"status": "running", "handle": run.get("drive_handle")}
         return {"status": "starting", "handle": run.get("drive_handle"), "message": STARTING_MESSAGE}
     old = run.get("drive_handle")
     if old and orca.shell_alive(old) == "alive":
