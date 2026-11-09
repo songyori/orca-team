@@ -501,6 +501,173 @@ class FinishedTaskMailTest(DriveCase):
         self.assertEqual(self.outbox("decide"), [])
 
 
+class LaunchFailedReconcileTest(DriveCase):
+    WORKERS = {"ok": True, "result": {"workers": [
+        {"dispatchId": "ctx_9", "state": "running", "task": {"title": "T-001 work r1 [developer] 로그인"}},
+        {"dispatchId": "ctx_8", "state": "running", "task": {"title": "T-002 work r1 [developer] 가입"}}]}}
+
+    def test_crashed_launch_is_escalated_once_with_leftover_workers(self):
+        self.write_spec("T-001")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "[T-001] spec")
+        tasks.save_state(self.p, {"id": "T-001", "role": "developer", "title": "로그인", "status": "launch_failed",
+                                  "stage": "work", "round": 1, "base": "x", "owns": ["src/**"], "depends_on": [],
+                                  "task_id": None, "dispatch_id": None, "verdicts": {}, "agent": "temp",
+                                  "history": [{"stage": "work", "round": 1, "at": "2026-01-01T00:00:00+00:00",
+                                               "ok": None, "pending": True, "pid": 0}]})
+        self.respond("orchestration worker-list", self.WORKERS)
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
+        self.assertIn("ctx_9", entry["summary"])
+        self.assertNotIn("ctx_8", entry["summary"])
+        self.assertEqual(entry["commands"], ["orch start T-001 --retry", 'orch drop T-001 --reason "<이유>"'])
+        self.drive.reconcile()
+        ask.answer(self.p, entry["id"], "확인")
+        self.drive.reconcile()
+        self.assertEqual(len(self.outbox("decide")), 1)
+
+    def test_start_ready_launch_failure_is_escalated_once(self):
+        self.write_spec("T-001")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "[T-001] spec")
+        tasks.save_state(self.p, {"id": "T-001", "role": "developer", "title": "로그인", "status": "pending",
+                                  "stage": "work", "round": 1, "base": None, "owns": ["src/**"], "depends_on": [],
+                                  "task_id": None, "dispatch_id": None, "history": [], "verdicts": {}})
+        self.respond("orchestration worker-start", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.respond("orchestration worker-list", {"ok": True, "result": {"workers": []}})
+        self.drive.start_ready()
+        [entry] = self.outbox("decide")
+        self.assertIn("worker-start 실패", entry["summary"])
+        self.assertIn("남은 워커 없음", entry["summary"])
+        ask.answer(self.p, entry["id"], "확인")
+        self.drive.reconcile()
+        self.assertEqual(len(self.outbox("decide")), 1)
+
+
+class PlanRecoveryTest(DriveCase):
+    def test_planner_accept_recovers_after_crash_before_apply(self):
+        self.started("T-001", role="planner")
+        self.set_state("T-001", status="approved")
+        with mock.patch.object(drive.Drive, "apply_plan", side_effect=RuntimeError("관제가 죽었다")):
+            with self.assertRaises(RuntimeError):
+                self.drive.accepted("T-001", tasks.accept(self.p, "T-001"))
+        self.assertIs(self.state("T-001")["plan_applied"], False)
+        tasks.save_state(self.p, {**self.state("T-001"), "id": "T-002"})  # 예전에 끝난 기획 태스크(표시 없음)
+        self.set_state("T-002", plan_applied=None)
+        with mock.patch.object(plan, "apply", return_value={"tasks": []}) as apply:
+            self.drive.reconcile()
+            self.drive.reconcile()
+        apply.assert_called_once()
+        self.assertIs(self.state("T-001")["plan_applied"], True)
+
+
+class LivenessTest(AgentDriveCase):
+    UNKNOWN = {"ok": False, "error": {"code": "x"}}
+    STALE = {"ok": False, "error": {"code": "terminal_handle_stale"}}
+
+    def test_unknown_liveness_with_dead_agent_terminal_is_treated_as_finished(self):
+        self.started("T-001")
+        self.respond("orchestration worker-show", self.UNKNOWN, code=1)
+        self.respond("terminal show", self.STALE, code=1)
+        self.drive.reconcile()
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 2))
+        self.assertIn("이전 작업자가 중간에 끝났다", st["history"][-1]["note"])
+
+    def test_unknown_liveness_escalates_once_after_cap_and_never_kills(self):
+        self.started("T-001")
+        self.respond("orchestration worker-show", self.UNKNOWN, code=1)
+        self.drive.reconcile()
+        self.assertEqual(self.outbox("decide"), [])
+        self.assertTrue(self.state("T-001")["liveness_unknown_since"])
+        self.set_state("T-001", liveness_unknown_since="2026-01-01T00:00:00+00:00")
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
+        self.assertIn("확인하지 못했다", entry["summary"])
+        ask.answer(self.p, entry["id"], "기다린다")
+        self.drive.reconcile()
+        self.assertEqual(len(self.outbox("decide")), 1)
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["round"]), ("working", 1))
+
+
+class TempLivenessTest(DriveCase):
+    def test_unknown_verdict_with_dead_worker_terminal_is_treated_as_finished(self):
+        self.started()
+        self.respond("orchestration worker-show", {"ok": True, "result": {"worker": {
+            "agentTerminalHandle": "term_w1", "stage": "running"}}})
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        self.drive.reconcile()
+        self.assertEqual(self.state("T-001")["round"], 2)
+
+
+class MaxRoundCommandTest(DriveCase):
+    def test_failed_worker_at_max_round_suggests_extra_round(self):
+        self.started()
+        self.set_state("T-001", round=3)
+        self.drive.handle_message(self.done_msg(outcome="failed"))
+        [entry] = self.outbox("decide")
+        self.assertIn('orch fix T-001 --extra-round --note "<원인과 지시>"', entry["commands"])
+
+    def test_repeat_test_failure_at_max_round_suggests_extra_round(self):
+        self.started()
+        failed = {"stage": "review", "round": 2, "verdict": "REQUEST_CHANGES", "source": "orch", "tests": {"quick": "failed"}}
+        self.set_state("T-001", history=self.state("T-001")["history"] + [failed, {**failed, "round": 3}], round=3)
+        self.drive.start_review("T-001")
+        self.finish_review("REQUEST_CHANGES")
+        entry = self.outbox("decide")[-1]
+        self.assertEqual(entry["kind"], "repeat_test_failure")
+        self.assertIn('orch fix T-001 --extra-round --note "<지시>"', entry["commands"])
+
+
+class HeartbeatTest(DriveCase):
+    def test_start_ready_and_design_decide_get_heartbeat(self):
+        with mock.patch.object(plan, "start_ready", return_value={"started": [], "waiting": [], "fixes": []}) as ready:
+            self.drive.start_ready()
+            self.drive.execute({"command": "start-ready", "args": {}})
+        for call in ready.call_args_list:
+            self.assertEqual(call.kwargs.get("beat"), self.drive.beat)
+        with mock.patch.object(plan, "design_decide", return_value={}) as decide:
+            self.drive.execute({"command": "design-decide", "args": {"id": "out-0001", "approve": [], "fixes": {}}})
+        self.assertEqual(decide.call_args.kwargs.get("beat"), self.drive.beat)
+
+    def test_finish_reset_gets_heartbeat(self):
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(path.read_text(encoding="utf-8") + '\n[agents.test]\ntitle = "테스트"\nroles = ["tester"]\n',
+                        encoding="utf-8")
+        self.drive = drive.Drive(self.p, Config.load(path), spawn=self.fake_spawn)
+        agents.update(self.p, "test", lambda e: e.update(resetting={"dispatch_id": "ctx_h", "at": "x"}))
+        with mock.patch.object(agents, "finish_reset", return_value={"status": "reset"}) as finish:
+            self.drive.handle_message({"id": "m", "type": "worker_done", "body": "",
+                                       "payload": {"dispatchId": "ctx_h", "outcome": "succeeded"}})
+        self.assertEqual(finish.call_args.kwargs.get("beat"), self.drive.beat)
+
+
+class BindTest(DriveCase):
+    def test_bind_retries_transient_failure_with_heartbeat(self):
+        beats = []
+        with mock.patch.object(self.drive, "bind", side_effect=[OrchError("run-use 실패", 1), {"status": "attached"}]), \
+                mock.patch.object(self.drive, "beat", side_effect=lambda: beats.append(1)):
+            self.assertEqual(self.drive.bind_retry(sleep=lambda s: None), {"status": "attached"})
+        self.assertTrue(beats)
+        self.assertIn("Run 연결 실패(1/", self.p.drive_log.read_text(encoding="utf-8"))
+
+    def test_fatal_error_goes_to_drive_log(self):
+        cfg = self.drive.cfg
+        with mock.patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_drive"}), \
+                mock.patch.object(drive.Drive, "bind", side_effect=OrchError("run-use 실패", 1)), \
+                mock.patch.object(drive.time, "sleep"):
+            os.environ.pop("CLAUDECODE", None)
+            with self.assertRaises(OrchError):
+                drive.main(self.p, cfg)
+        log = self.p.drive_log.read_text(encoding="utf-8")
+        self.assertIn("관제 종료", log)
+        self.assertIn("run-use 실패", log)
+        self.assertFalse(self.p.drive_pid.exists())
+
+
 class ResetTest(DriveCase):
     def setUp(self):
         super().setUp()

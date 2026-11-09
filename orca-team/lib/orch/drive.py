@@ -24,6 +24,9 @@ IDLE_SECONDS = 1.0
 ORCH_BIN = PLUGIN_ROOT / "bin" / "orch"
 CHECK_TYPES = "worker_done,escalation,question,status"
 RESET_STUCK_SECONDS = 30 * 60  # 인수인계가 이만큼 지나도 안 끝나면 정리한다
+LIVENESS_UNKNOWN_SECONDS = 30 * 60  # 작업자 생존을 이만큼 확인하지 못하면 메인에 한 번 올린다(죽었다고 보지는 않는다)
+BIND_TRIES = 3  # Orca 를 막 다시 띄운 뒤의 일시 실패(run-use)를 이만큼 시도한다
+BIND_RETRY_SECONDS = 5.0
 RECONCILE_SECONDS = 60  # 메일 없이 끝난 일(죽은 워커, 끊긴 리뷰)을 찾는 간격
 UNKNOWN_GRACE_SECONDS = 60  # start_unknown 이 이만큼 지나도 그대로면 복구한다
 LOCK_WAIT_TEXT = "테스트 잠금"
@@ -50,6 +53,7 @@ class Drive:
         self.failures: dict[str, str] = {}  # 단위별 마지막 실패 문구. 문구가 바뀔 때만 메인에 올린다
         self.check_failed = False
         self.pending_marks: dict[str, tuple[str, object]] = {}  # 리뷰 중 올린 decide 표시(리뷰가 끝난 뒤 쓴다)
+        self.dead_agents: set[str] = set()  # 이번 재확인에서 작업 터미널이 죽은(forget_dead) 에이전트
 
     def _spawn(self, args: list[str]):
         """orch 하위 명령을 자식 프로세스로 띄운다. 환경(ORCA_TERMINAL_HANDLE=관제)을 그대로 물려준다."""
@@ -57,14 +61,7 @@ class Drive:
                                 stderr=subprocess.PIPE, text=True, errors="replace")
 
     def log(self, text: str) -> None:
-        line = f"{now()} {text}"
-        print(line, flush=True)
-        try:
-            self.p.drive_dir.mkdir(parents=True, exist_ok=True)
-            with self.p.drive_log.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            pass
+        log_line(self.p, text)
 
     def fail(self, key: str, where: str, exc: Exception, task_id: str | None = None, summary: str | None = None,
              commands=(), extra=None) -> None:
@@ -101,6 +98,22 @@ class Drive:
     def bind(self) -> dict:
         return setup.bind(self.p)
 
+    def bind_retry(self, sleep=None) -> dict:
+        """Run 에 붙는다. Orca 를 막 다시 띄운 뒤의 일시 실패는 BIND_TRIES 번까지 다시 한다(기다리는 동안 heartbeat).
+        orca 없음(12)은 바로 올린다."""
+        sleep = sleep or time.sleep
+        for attempt in range(1, BIND_TRIES + 1):
+            try:
+                return self.bind()
+            except OrchError as exc:
+                if exc.code == 12 or attempt == BIND_TRIES:
+                    raise
+                self.log(f"Run 연결 실패({attempt}/{BIND_TRIES}): {exc}. {BIND_RETRY_SECONDS:g}초 뒤 다시 한다")
+                self.beat()
+                sleep(BIND_RETRY_SECONDS)
+                self.beat()
+        raise OrchError("Run 연결 실패")  # 닿지 않는다(마지막 시도는 위에서 올린다)
+
     def run_queue(self) -> int:
         """메인 요청을 넣은 순서로 실행한다. 실행한 수."""
         done = 0
@@ -126,7 +139,7 @@ class Drive:
         if command == "start":
             return tasks.start(p, cfg, a["id"], bool(a.get("retry")), a.get("overrides") or {})
         if command == "start-ready":
-            return plan.start_ready(p, cfg)
+            return plan.start_ready(p, cfg, beat=self.beat)
         if command == "fix":
             return self.fix_with_pending(a["id"], a.get("note"), retry=bool(a.get("retry")),
                                          overrides=a.get("overrides") or {}, force=bool(a.get("force")),
@@ -139,7 +152,8 @@ class Drive:
             orca.call(["orchestration", "reply", "--id", str(a["message_id"]), f"--body={a['body']}"])
             return {"replied": a["message_id"]}
         if command == "design-decide":
-            return plan.design_decide(p, cfg, a["id"], list(a.get("approve") or []), dict(a.get("fixes") or {}))
+            return plan.design_decide(p, cfg, a["id"], list(a.get("approve") or []), dict(a.get("fixes") or {}),
+                                      beat=self.beat)
         if command == "scope":
             return tasks.scope(p, a["id"], a["body"])
         if command == "agent-reset":
@@ -189,7 +203,7 @@ class Drive:
         if kind == "worker_done":
             owner = agents.reset_owner(self.p, dispatch)
             if owner:
-                out = agents.finish_reset(self.p, owner, payload.get("outcome") == "succeeded")
+                out = agents.finish_reset(self.p, owner, payload.get("outcome") == "succeeded", beat=self.beat)
                 self.log(f"{owner} 리셋: {out['status']}")
                 if out["status"] == "handoff_failed":
                     self.decide("escalation", None, f"{owner} 에이전트가 인수인계를 쓰지 못했다: {body[:200]}",
@@ -213,7 +227,7 @@ class Drive:
             else:
                 self.decide("worker_failed", task_id, body[:300] or "워커가 실패를 보고했다",
                             files=[f"docs/tasks/{task_id}/report.md"],
-                            commands=[f'orch fix {task_id} --note "<원인과 지시>"', f'orch drop {task_id} --reason "<이유>"'])
+                            commands=[self.fix_command(st, "<원인과 지시>"), f'orch drop {task_id} --reason "<이유>"'])
         elif kind == "question":
             task_id = self.task_of(dispatch, orca_task)
             if task_id and self.stale_dispatch(tasks.load_state(self.p, task_id) or {}, dispatch):
@@ -248,6 +262,13 @@ class Drive:
             out["extra"] = {"question": body, "message_id": msg.get("id")}
             out["commands"] = ['orch answer <이 decide 의 id> "<답>"']
         return out
+
+    def fix_command(self, st: dict, note: str = "<지시>", force: bool = False) -> str:
+        """메인에 줄 fix 명령. 최대 라운드면 --extra-round 를 붙인다(없으면 fix 가 거부된다)."""
+        flags = " --force" if force else ""
+        if int(st.get("round") or 1) >= self.cfg.max_rounds:
+            flags += " --extra-round"
+        return f'orch fix {st["id"]}{flags} --note "{note}"'
 
     @staticmethod
     def stale_dispatch(st: dict, dispatch) -> bool:
@@ -369,7 +390,7 @@ class Drive:
         stop = [f'orch drop {task_id} --reason "<이유>"']
         if self.repeated_test_failure(st):
             self.decide("repeat_test_failure", task_id, "같은 quick 테스트 실패로 orch 사전 검사가 두 라운드 연속 반려했다",
-                        files=[review], commands=[f'orch fix {task_id} --note "<지시>"', *stop])
+                        files=[review], commands=[self.fix_command(st), *stop])
             return
         if int(st.get("round") or 1) >= self.cfg.max_rounds:
             summary = f"최대 {self.cfg.max_rounds} 라운드에도 승인되지 않았다"
@@ -393,7 +414,7 @@ class Drive:
     def accepted(self, task_id: str, result: dict) -> dict:
         st = tasks.load_state(self.p, task_id) or {}
         role, status = st.get("role"), result.get("status")
-        if status == "done" and role == "planner":
+        if status == "done" and role == tasks.PLANNER_ROLE:
             self.apply_plan(task_id)
         elif status == "done" and role == testgate.TESTER_ROLE:
             self.batch_done(task_id)
@@ -413,15 +434,25 @@ class Drive:
                 raise
             if "새 key 가 없다" in str(exc):
                 comm.post(self.p, "progress", f"기획 적용: {task_id} 가 새 태스크를 더하지 않았다")
+                self.plan_applied(task_id)
                 return
             self.create_task("planner", "tasks.toml 고치기", "docs/planning/tasks.toml",
                              f"orch plan apply{' --append' if append else ''} 가 거부했다. 오류 원문:\n{exc}\n\n"
                              "기존 `docs/planning/` 을 읽고 이 오류만 고친다.",
                              "`orch plan check` 가 통과한다", front={"plan": "append"} if append else None)
+            self.plan_applied(task_id)
             return
+        self.plan_applied(task_id)
         lines = [f"{t['id']} [{t['role']}] {t['title']}" + (f" ← {', '.join(t['depends_on'])}" if t["depends_on"] else "")
                  for t in out["tasks"]]
         comm.post(self.p, "progress", "기획 적용: " + "; ".join(lines))
+
+    def plan_applied(self, task_id: str) -> None:
+        """이 기획 태스크의 plan apply 를 마쳤다(재확인이 다시 적용하지 않는다)."""
+        st = tasks.load_state(self.p, task_id)
+        if st is not None and st.get("plan_applied") is not True:
+            st["plan_applied"] = True
+            tasks.save_state(self.p, st)
 
     # --- 묶음 후속
     def already_made(self, source_line: str) -> bool:
@@ -495,8 +526,12 @@ class Drive:
             return  # 메인의 판단(기획 누락·원인 모를 회귀·토큰 갱신)이 열려 있다
         ids = sorted(st["id"] for st in states)
         record = self.finish_state()
-        if record.get("reported") == ids or record.get("final_failed") == ids:
+        if record.get("reported") == ids:
             return
+        if record.get("final_failed") == ids:
+            if record.get("final_decide") not in comm.load_answered(self.p)["ids"]:
+                return  # 메인이 전체 테스트 실패를 판단하는 중이다
+            self.save_finish(final_failed=None, final_decide=None)  # 답했는데 태스크가 그대로면 다시 돌린다
         if not record.get("rest_done") and not self.already_made("출처: rest followups"):
             self.save_finish(rest_done=True)
             self.make_followups(followups.followups(self.p, rest=True), "출처: rest followups", "rest")
@@ -521,17 +556,17 @@ class Drive:
         if code == 0:
             self.report_done(ids, data)
         elif code == 1:
-            self.save_finish(final_failed=ids)
-            self.decide("unknown_regression", None, "마지막 전체 테스트가 실패했다. 원인 태스크를 정해 회귀 수정 태스크를 만든다",
-                        files=[data["log"]] if data.get("log") else [],
-                        commands=['orch task new developer "회귀 수정: <요약>"'],
-                        extra={"tail": data.get("tail"), "source": "출처: final followups"})
+            entry = self.decide("unknown_regression", None, "마지막 전체 테스트가 실패했다. 원인 태스크를 정해 회귀 수정 태스크를 만든다",
+                                files=[data["log"]] if data.get("log") else [],
+                                commands=['orch task new developer "회귀 수정: <요약>"'],
+                                extra={"tail": data.get("tail"), "source": "출처: final followups"})
+            self.save_finish(final_failed=ids, final_decide=entry["id"])
         elif code == 2 and LOCK_WAIT_TEXT in err:
             self.log("전체 테스트 잠금 대기 초과. 다음 확인 때 다시 한다")
         else:
-            self.save_finish(final_failed=ids)
-            self.decide("test_config", None, f"전체 테스트를 돌리지 못했다(exit {code}): {err.strip()[-300:]}",
-                        files=["docs/planning/tasks.toml"], commands=['orch task new planner "[test] 고치기"'])
+            entry = self.decide("test_config", None, f"전체 테스트를 돌리지 못했다(exit {code}): {err.strip()[-300:]}",
+                                files=["docs/planning/tasks.toml"], commands=['orch task new planner "[test] 고치기"'])
+            self.save_finish(final_failed=ids, final_decide=entry["id"])
 
     def report_done(self, ids: list[str], final: dict | None = None) -> None:
         states = tasks.all_states(self.p)
@@ -674,14 +709,17 @@ class Drive:
 
     def start_ready(self) -> None:
         try:
-            out = plan.start_ready(self.p, self.cfg)
+            out = plan.start_ready(self.p, self.cfg, beat=self.beat)
         except OrchError as exc:
             if exc.code == 12:
                 raise
             self.log(f"start-ready 실패: {exc}")
             return
         for row in [*out.get("fixes", []), *out["started"]]:
-            if row.get("status") in ("launch_failed", "error"):
+            st = tasks.load_state(self.p, row["id"]) or {}
+            if row.get("status") == "launch_failed" or (row.get("status") == "error" and st.get("status") == "launch_failed"):
+                self.launch_failed_decide(st, row.get("error"), row.get("note"))
+            elif row.get("status") == "error":
                 summary = f"작업자를 띄우지 못했다: {row.get('error')}"[:300]
                 if row.get("note"):
                     summary += f" (아직 전하지 못한 지시: {row['note']})"
@@ -720,10 +758,18 @@ class Drive:
                 if out.get("release_error"):
                     summary += f". 이전 작업자 터미널 정리 실패: {json.dumps(out['release_error'], ensure_ascii=False)}"
                 self.decide("escalation", task_id, summary[:300], files=self.task_files(task_id),
-                            commands=[f'orch fix {task_id} --force --note "<지시>"', f'orch drop {task_id} --reason "<이유>"'])
+                            commands=[self.fix_command(st, force=True), f'orch drop {task_id} --reason "<이유>"'])
             return
+        forced = False
         if busy is not False:
-            return
+            if busy and info.get("verdict") == "live":
+                self.liveness_known(task_id)
+                return
+            if not self.worker_terminal_dead(info, agent):
+                self.liveness_unknown(st, desc)
+                return
+            forced = True  # 생존은 모르지만 작업 터미널이 확실히 죽었다: 끝난 것으로 본다(fix 의 생존 검사를 건너뛴다)
+        self.liveness_known(task_id)
         if info.get("stage") == "settled" and info.get("state") == "succeeded":
             if agent:
                 agents.release_task(self.p, agent, task_id)
@@ -736,7 +782,73 @@ class Drive:
                         files=self.task_files(task_id),
                         commands=[f"orch fix {task_id} --extra-round", f'orch drop {task_id} --reason "<이유>"'])
             return
-        self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, tasks.DIED_NOTE.format(task_id=task_id)), task_id)
+        self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, tasks.DIED_NOTE.format(task_id=task_id), force=forced),
+                   task_id)
+
+    def worker_terminal_dead(self, info: dict, agent: str | None) -> bool:
+        """생존을 모르는 작업자의 터미널이 확실히 죽었나: 에이전트 터미널이 이번 재확인에서 죽었거나(forget_dead),
+        worker-show 가 준 터미널이 dead 다. unknown 은 죽은 것이 아니다."""
+        if agent and agent in self.dead_agents:
+            return True
+        handle = info.get("handle") or (agents.entry(self.p, agent).get("handle") if agent else None)
+        return bool(handle) and orca.terminal_state(handle, wait=True) == "dead"
+
+    def liveness_known(self, task_id: str) -> None:
+        st = tasks.load_state(self.p, task_id) or {}
+        if st.pop("liveness_unknown_since", None) is not None:
+            st.pop("liveness_escalated", None)
+            tasks.save_state(self.p, st)
+
+    def liveness_unknown(self, st: dict, desc: str) -> None:
+        """작업자 생존을 알 수 없다. 처음 본 시각을 적고, LIVENESS_UNKNOWN_SECONDS 가 지나면 한 번 메인에 올린다."""
+        task_id = st["id"]
+        current = tasks.load_state(self.p, task_id) or st
+        since = current.get("liveness_unknown_since")
+        if not since:
+            current["liveness_unknown_since"] = now()
+            tasks.save_state(self.p, current)
+            return
+        try:
+            age = (datetime.now().astimezone() - datetime.fromisoformat(since)).total_seconds()
+        except (TypeError, ValueError):
+            age = 0
+        if age < LIVENESS_UNKNOWN_SECONDS or current.get("liveness_escalated") == since:
+            return
+        self.decide("escalation", task_id, f"작업자 생존을 {int(age // 60)}분 넘게 확인하지 못했다({desc}). 끝났는지 알 수 없어 "
+                    "그대로 둔다. 작업자 탭이 멈췄으면 다시 보내거나 중단한다", files=self.task_files(task_id),
+                    commands=[self.fix_command(current, force=True), f'orch drop {task_id} --reason "<이유>" --force'])
+        current = tasks.load_state(self.p, task_id) or current
+        current["liveness_escalated"] = since
+        tasks.save_state(self.p, current)
+
+    def launch_failed_decide(self, st: dict, error: str | None = None, note: str | None = None) -> None:
+        """실행이 실패했거나 도중에 끊긴(launch_failed) 태스크를 한 번 올린다. 메인은 Orca 를 부르지 못하므로 남은 워커
+        (worker-list)는 관제가 확인해 요약에 싣는다. 같은 실패(단계·라운드·이력 길이)로는 다시 올리지 않는다."""
+        task_id = st["id"]
+        marker = f"{st.get('stage')} r{st.get('round')} #{len(st.get('history') or [])}"
+        if st.get("launch_failed_asked") == marker:
+            return
+        stage, rnd = st.get("stage"), st.get("round")
+        refs = [ref for h in st.get("history") or [] if h.get("stage") == stage and h.get("round") == rnd
+                for ref in (h.get("task_id"), h.get("dispatch_id"))]
+        workers, list_error = orca.task_workers(f"{task_id} {stage} r{rnd} ", refs)  # launch 의 --task-title 앞부분
+        if list_error:
+            left = f"남은 워커를 확인하지 못했다(worker-list: {list_error[:150]})"
+        elif workers:
+            left = ("Orca 에 이 태스크 워커가 남아 있다: " + ", ".join(json.dumps(w, ensure_ascii=False) for w in workers)
+                    + ". 같은 일을 두 워커가 하지 않게 사용자에게 그 탭을 닫아 달라고 한 뒤 다시 한다")
+        else:
+            left = "남은 워커 없음(worker-list)"
+        summary = f"{task_id} {stage} r{rnd} 실행이 실패했거나 도중에 끊겼다(launch_failed). {left}."
+        if error:
+            summary += f" 오류: {error[:200]}"
+        if note:
+            summary += f" (아직 전하지 못한 지시: {note})"
+        self.decide("escalation", task_id, summary[:600], files=self.task_files(task_id),
+                    commands=[tasks.retry_command(st), f'orch drop {task_id} --reason "<이유>"'])
+        current = tasks.load_state(self.p, task_id) or st
+        current["launch_failed_asked"] = marker
+        tasks.save_state(self.p, current)
 
     def settle_resets(self) -> None:
         """끝나지 않은 인수인계(resetting)를 정리한다: 디스패치가 끝났거나 워커가 없거나 너무 오래됐을 때."""
@@ -755,7 +867,7 @@ class Drive:
         if not (info.get("stage") == "settled" or info.get("verdict") in ("exited", "dead") or age > RESET_STUCK_SECONDS):
             return
         ok = info.get("state") == "succeeded"
-        out = agents.finish_reset(self.p, name, ok=ok)
+        out = agents.finish_reset(self.p, name, ok=ok, beat=self.beat)
         self.log(f"{name} 리셋 정리: {out['status']}")
         if not ok:
             self.decide("escalation", None, f"{name} 에이전트 인수인계가 끝나지 않았다", commands=[f"orch agent reset {name}"])
@@ -778,6 +890,10 @@ class Drive:
             self.check_worker(st)
         elif status == "pending":
             self.check_dropped_deps(st)
+        elif status == "launch_failed" and not tasks.launch_in_progress(st):
+            self.launch_failed_decide(st)  # 예: worker-start 도중 관제가 죽었다
+        elif status == "done" and st.get("plan_applied") is False:
+            self.apply_plan(task_id)  # accept 뒤 plan apply 전에 관제가 죽었다
 
     def check_dropped_deps(self, st: dict) -> None:
         """선행 태스크가 중단(dropped)돼 시작할 수 없는 pending 태스크를 메인에 한 번 올린다(같은 선행 태스크로 다시 묻지 않는다)."""
@@ -808,7 +924,8 @@ class Drive:
     def reconcile(self) -> None:
         """메일 없이 끝난 일을 찾는다: 끊긴 리뷰, 잠금으로 미룬 리뷰, accept 전에 멈춘 승인, 죽은 워커, 끝나지 않은 인수인계."""
         self.last_reconcile = self.clock()
-        self.isolated("reconcile:setup", "재확인 준비", lambda: agents.forget_dead(self.p, self.cfg))
+        self.dead_agents = set(self.isolated("reconcile:setup", "재확인 준비",
+                                             lambda: agents.forget_dead(self.p, self.cfg)) or [])
         self.isolated("reconcile:reset", "인수인계 정리", self.settle_resets)
         for task_id in sorted(self.retry_reviews):
             self.retry_reviews.discard(task_id)
@@ -866,9 +983,25 @@ def main(p: Project, cfg: Config) -> int:
         drive = Drive(p, cfg)
         drive.beat()
         with comm._sigterm_exits():
-            drive.log(f"관제 시작({handle}): {drive.bind()['status']}")
-            drive.isolated("reconcile", "시작 재확인", drive.reconcile)
-            drive.run_forever()
+            try:
+                drive.log(f"관제 시작({handle}): {drive.bind_retry()['status']}")
+                drive.isolated("reconcile", "시작 재확인", drive.reconcile)
+                drive.run_forever()
+            except BaseException as exc:  # 관제를 끝낸 오류는 탭뿐 아니라 drive.log 에도 남긴다(FAILED 안내가 로그를 가리킨다)
+                drive.log(f"관제 종료: {type(exc).__name__}: {exc}")
+                raise
     finally:
         release_pid(p.drive_pid)
     return 0
+
+
+def log_line(p: Project, text: str) -> None:
+    """관제 탭과 state/drive/drive.log 에 한 줄 쓴다."""
+    line = f"{now()} {text}"
+    print(line, flush=True)
+    try:
+        p.drive_dir.mkdir(parents=True, exist_ok=True)
+        with p.drive_log.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass

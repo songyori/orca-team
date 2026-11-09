@@ -523,6 +523,15 @@ class StartReadyTest(PlanCase):
         self.assertEqual(self.state("T-001")["status"], "launch_failed")
         self.assertEqual(out["running"], 1)
 
+    def test_heartbeat_before_each_launch(self):
+        """여러 워커를 띄우는 동안 관제 heartbeat 를 쓴다(큐가 관제를 꺼진 것으로 보지 않게)."""
+        p = Project(self.root)
+        beats = []
+        with mock.patch.dict(os.environ, self.env):
+            out = plan.start_ready(p, Config.load(p.config_path), beat=lambda: beats.append(1))
+        self.assertEqual(len(out["started"]), 2)
+        self.assertGreaterEqual(len(beats), 2)
+
     def test_cli_exits_1_when_a_launch_fails(self):
         self.respond("orchestration worker-start", {"ok": False, "error": {"code": "x"}}, code=1)
         proc = self.ready(check=False)

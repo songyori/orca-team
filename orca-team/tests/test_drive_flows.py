@@ -111,6 +111,25 @@ class FinishTest(DriveCase):
         self.drive.finish_step()
         self.assertEqual(len(self.spawned), 1)  # 같은 태스크 묶음으로는 다시 돌리지 않는다
 
+    def test_final_failure_reruns_after_its_decide_is_answered(self):
+        """메인이 전체 테스트 실패를 일시적인 것으로 보고 답하면 전체 테스트를 다시 돌린다(done 보고가 막히지 않는다)."""
+        self.all_done()
+        quick, full = fake_test_commands(self)
+        write_test_config(self.root, quick, full)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "test config")
+        empty = {"tasks": [], "regressions": [], "followups": [], "planning_gaps": []}
+        with mock.patch.object(followups, "followups", return_value=empty):
+            self.drive.finish_step()
+            self.spawned[-1][1].finish(1, json.dumps({"status": "failed", "tail": "FAIL a"}))
+            self.drive.poll_jobs()
+            ask.answer(self.p, self.outbox("decide")[-1]["id"], "일시적인 실패다")
+            self.drive.finish_step()
+            self.assertEqual(len(self.spawned), 2)
+            self.spawned[-1][1].finish(0, json.dumps({"status": "passed", "seconds": 1}))
+            self.drive.poll_jobs()
+        self.assertEqual(len(self.outbox("done")), 1)
+
 
 class DesignFlowTest(DriveCase):
     def awaiting_screen(self, task_id, proposal="없음"):

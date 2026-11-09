@@ -27,6 +27,7 @@ FINISHED = ("done", "dropped")  # 소유 경로 잠금을 잡지 않는다
 RECOVERY_REF = "orca skills get orchestration --reference references/recovery-and-cleanup.md"
 LAUNCH_STALE_SECONDS = 600  # 이보다 오래된 pending 기록은 pid 가 재사용됐을 수 있어 진행 중으로 보지 않는다
 LAUNCHING_NEXT = "워커를 띄우는 중이다. 끝날 때까지 기다린 뒤 orch status 로 다시 본다"
+PLANNER_ROLE = "planner"  # accept 뒤 관제가 plan apply 하는 직무
 UNKNOWN_START_LIMIT = 3  # 같은 태스크에서 start_unknown 이 이만큼이면 다시 띄우지 않고 메인에 올린다
 DIED_NOTE = "이전 작업자가 중간에 끝났다. 리포트와 [{task_id}] 커밋을 확인하고 남은 일을 이어서 한다"
 FIX_BLOCK = """## 수정 라운드
@@ -582,13 +583,16 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
     return launch(p, cfg, doc, st, "fix", rnd, owns, note, overrides, extra, agent=agent)
 
 
-def drain_fix_queues(p: Project, cfg: Config) -> list[dict]:
-    """비어 있는 고정 에이전트마다 대기열 맨 앞의 수정 라운드를 띄운다(start_ready 가 먼저 부른다)."""
+def drain_fix_queues(p: Project, cfg: Config, beat=None) -> list[dict]:
+    """비어 있는 고정 에이전트마다 대기열 맨 앞의 수정 라운드를 띄운다(start_ready 가 먼저 부른다).
+    beat 는 관제 heartbeat(띄우기 전마다 부른다)."""
     out = []
     for name in cfg.agents:
         e = agents.entry(p, name)
         if e.get("task") or e.get("resetting") or not e.get("queue"):
             continue
+        if beat:
+            beat()
         task_id = e["queue"][0]
         agents.dequeue(p, name, task_id)
         queued = (load_state(p, task_id) or {}).get("queued_fix")
@@ -644,6 +648,13 @@ def load_design_reviews(p: Project) -> list[dict]:
     return [a for a in asks if isinstance(a, dict)] if isinstance(asks, list) else []
 
 
+def mark_plan_pending(st: dict) -> None:
+    """끝난(done) 기획 태스크는 관제가 plan apply 를 마칠 때까지 plan_applied=False 로 둔다. done 과 같은 저장에 적어
+    apply 전에 관제가 죽어도 재확인이 다시 적용한다."""
+    if st.get("role") == PLANNER_ROLE:
+        st["plan_applied"] = False
+
+
 def accept(p: Project, task_id: str) -> dict:
     """APPROVE 된 태스크를 끝낸다. 사용자 승인 대상 직무는 먼저 awaiting_user 로 두고(잠금 유지),
     awaiting_user 에서 다시 accept 하면 사용자 승인으로 보고 done 이 된다. 임시 워커만 해제한다."""
@@ -653,6 +664,7 @@ def accept(p: Project, task_id: str) -> dict:
     if status == "awaiting_user":
         st.update(status="done", done_at=now(), user_approved_at=now())
         st["history"].append({"stage": "user_approval", "round": st.get("round"), "at": now()})
+        mark_plan_pending(st)
         clear_queued_fix(p, st)
         save_state(p, st)
         return {"id": task_id, "status": "done", "user_approved": True}
@@ -668,6 +680,7 @@ def accept(p: Project, task_id: str) -> dict:
         st.update(status="awaiting_user", released=released, awaiting_since=now())
     else:
         st.update(status="done", released=released, done_at=now())
+        mark_plan_pending(st)
     clear_queued_fix(p, st)
     save_state(p, st)
     result = {"id": task_id, "status": st["status"], "released": released}

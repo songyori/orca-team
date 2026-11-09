@@ -83,11 +83,17 @@ def _best_effort(args: list[str]) -> dict | None:
     return data if code == 0 and data.get("ok") else None
 
 
-def start(p: Project, agent: Agent, spec: str, title: str) -> tuple[int, dict, bool]:
+def start(p: Project, agent: Agent, spec: str, title: str, allow_fresh: bool = True) -> tuple[int, dict, bool]:
     """태스크를 고정 에이전트에 넣는다 → (종료 코드, 영수증, 새로 띄웠는가).
-    작업 터미널이 살아 있으면 Orca 태스크를 만들어 그 터미널에 넣고, 아니면 --keep-open 으로 새로 띄운다."""
+    작업 터미널이 살아 있으면 Orca 태스크를 만들어 그 터미널에 넣고, 확실히 죽었으면(dead) --keep-open 으로 새로 띄운다.
+    상태를 알 수 없으면(unknown) 살아 있는 세션을 남기지 않게 띄우지 않고 OrchError. allow_fresh=False(인수인계)면
+    새로 띄우지 않고 실패를 돌려준다."""
     handle = entry(p, agent.name).get("handle")
-    if handle and orca.terminal_alive(handle):
+    state = orca.terminal_state(handle, wait=True) if handle else "dead"
+    if state == "unknown":
+        raise OrchError(f"{agent.title} 에이전트 작업 터미널({handle}) 상태를 알 수 없다(orca terminal show). 새 세션을 띄우면 "
+                        "살아 있는 세션이 남을 수 있어 띄우지 않았다. 잠시 뒤 다시 한다")
+    if state == "alive":
         code, created = orca.call(["orchestration", "task-create", "--spec", spec, "--task-title", title], check=False)
         orca_task = orca.find_key(created, ("taskId",))
         if code != 0 or not created.get("ok") or not orca_task:
@@ -95,6 +101,8 @@ def start(p: Project, agent: Agent, spec: str, title: str) -> tuple[int, dict, b
         code, receipt = orca.call(["orchestration", "worker-start", "--task", str(orca_task), "--terminal", handle,
                                    "--worktree", "current"], check=False)
         return code, receipt, False
+    if not allow_fresh:
+        return 1, {"ok": False, "error": {"code": "terminal_not_alive", "message": f"작업 터미널({handle})이 죽었다"}}, False
     code, receipt = orca.call(["orchestration", "worker-start", "--spec", spec, "--task-title", title, "--keep-open",
                                "--worktree", "current", "--agent", "claude", "--model", agent.launch.model,
                                "--effort", agent.launch.effort], check=False)
@@ -118,25 +126,43 @@ def make_layout(p: Project, agent: Agent, handle: str) -> dict:
 
 
 def record_start(p: Project, agent: Agent, receipt: dict, fresh: bool, task_id: str) -> dict:
-    """start 가 성공한 뒤 상태와 화면을 맞춘다. 새로 띄웠으면 리뷰 pane 을 만든다.
-    디스패치가 탭 이름을 spec 첫 줄로 바꾸므로 매번 되돌린다."""
-    handle = entry(p, agent.name).get("handle")
-    layout: dict = {}
-    if fresh:
-        handle = orca.find_key(receipt, ("terminal", "agentTerminalHandle", "terminalHandle"))
-        layout = make_layout(p, agent, str(handle)) if handle else {"error": "영수증에 작업 터미널 handle 이 없다"}
-    if handle:
-        _best_effort(["terminal", "rename", "--terminal", str(handle), "--title", TAB_PREFIX + agent.title])
+    """start 가 성공한 뒤 상태와 화면을 맞춘다. 맡은 태스크와 작업 터미널을 먼저 적는다(화면 배치 도중 죽어도 에이전트를
+    잃지 않는다). 리뷰 pane 은 새로 띄웠을 때, 리뷰 pane 이 죽었을 때(shell_alive dead), 지난 배치가 실패했을 때(한 번만
+    다시) 만든다. 디스패치가 탭 이름을 spec 첫 줄로 바꾸므로 매번 되돌린다."""
+    before = entry(p, agent.name)
+    handle = orca.find_key(receipt, ("terminal", "agentTerminalHandle", "terminalHandle")) if fresh else before.get("handle")
 
-    def write(e: dict) -> None:
+    def claim(e: dict) -> None:
         e.update(task=task_id, model=agent.launch.model, effort=agent.launch.effort)
         if fresh:
-            e.update(handle=handle, review_handle=layout.get("review_handle"), tab_id=layout.get("tab_id"),
-                     launched_at=now(), since_reset=0)
-            if layout.get("error"):
-                e["layout_error"] = layout["error"]
-            else:
-                e.pop("layout_error", None)
+            e.update(handle=handle, review_handle=None, tab_id=None, launched_at=now(), since_reset=0)
+            e.pop("layout_error", None)
+            e.pop("layout_retried", None)
+
+    recorded = update(p, agent.name, claim)
+    retry = False
+    if fresh:
+        layout = make_layout(p, agent, str(handle)) if handle else {"error": "영수증에 작업 터미널 handle 이 없다"}
+    elif handle and before.get("layout_error") and not before.get("layout_retried"):
+        layout, retry = make_layout(p, agent, str(handle)), True
+    elif handle and before.get("review_handle") and orca.shell_alive(before["review_handle"]) == "dead":
+        layout = make_layout(p, agent, str(handle))
+    else:
+        layout = None
+    if handle:
+        _best_effort(["terminal", "rename", "--terminal", str(handle), "--title", TAB_PREFIX + agent.title])
+    if layout is None:
+        return recorded
+
+    def write(e: dict) -> None:
+        if layout.get("error"):
+            e["layout_error"] = layout["error"]
+            if retry:
+                e["layout_retried"] = True
+        else:
+            e.update(review_handle=layout.get("review_handle"), tab_id=layout.get("tab_id"))
+            e.pop("layout_error", None)
+            e.pop("layout_retried", None)
 
     return update(p, agent.name, write)
 
@@ -237,12 +263,16 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     if not e.get("reset_pending") or e.get("task") or e.get("resetting") or e.get("queue"):
         return None
     handle = e.get("handle")
-    if not handle or not orca.terminal_alive(handle):
+    state = orca.terminal_state(handle, wait=True) if handle else "dead"
+    if state == "unknown":
+        return None  # 터미널 상태를 알 수 없다. 다음에 다시 본다
+    if state == "dead":
         update(p, name, lambda x: x.update(reset_pending=False, since_reset=0, handle=None))
         return {"name": name, "status": "skipped"}
     spec = render((TEMPLATES / "handoff.md").read_text(encoding="utf-8"),
                   {"agent": name, "agent_title": agent.title, "path": handoff_rel(name)})
-    code, receipt, _ = start(p, agent, spec, f"[handoff] {agent.title} 인수인계")
+    # 인수인계는 지금 세션의 맥락을 적는 일이다. 터미널이 그새 죽었으면 새 세션을 띄우지 않는다(맥락 없는 인수인계가 된다).
+    code, receipt, _ = start(p, agent, spec, f"[handoff] {agent.title} 인수인계", allow_fresh=False)
     dispatch = orca.find_key(receipt, ("dispatchId",))
     if code != 0 or not receipt.get("ok") or not dispatch:
         return {"name": name, "status": "failed", "receipt": receipt}
@@ -262,16 +292,21 @@ def reset_owner(p: Project, dispatch_id: str | None) -> str | None:
     return None
 
 
-def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep) -> dict:
+def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep, beat=None) -> dict:
     """인수인계 worker_done 뒤. 성공이면 /clear 로 세션을 비우고 입력 준비를 기다린다. 실패면 세션을 그대로 둔다.
-    새 세션 화면을 그리는 동안 넣은 입력은 사라질 수 있어(실험 E4) tui-idle 뒤 RESET_SETTLE_SECONDS 를 더 기다린다."""
+    새 세션 화면을 그리는 동안 넣은 입력은 사라질 수 있어(실험 E4) tui-idle 뒤 RESET_SETTLE_SECONDS 를 더 기다린다.
+    beat 는 관제 heartbeat(기다리는 동안 관제가 꺼진 것으로 보이지 않게 단계마다 부른다)."""
+    beat = beat or (lambda: None)
     handle = entry(p, name).get("handle")
     if not ok:
         update(p, name, lambda e: e.update(resetting=None, reset_pending=False))
         return {"name": name, "status": "handoff_failed"}
     if handle:
         _best_effort(["terminal", "send", "--terminal", handle, "--text", "/clear", "--enter", "--wait-submit", "10"])
+        beat()
         _best_effort(["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", "30000"])
+        beat()
         sleep(RESET_SETTLE_SECONDS)
+        beat()
     update(p, name, lambda e: e.update(resetting=None, reset_pending=False, since_reset=0, last_reset_at=now()))
     return {"name": name, "status": "reset"}

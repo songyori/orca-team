@@ -5,7 +5,7 @@ from unittest import mock
 
 from helpers import FAKES, ProjectCase
 from test_tasks import TaskCase, show_worker
-from orch import agents, tasks
+from orch import agents, orca, tasks
 from orch.config import Config
 from orch.paths import Project
 
@@ -150,6 +150,61 @@ class AgentStartTest(AgentCase):
         self.assertNotIn("enabled = false", out["message"])
         self.assertEqual(self.state("T-001")["status"], "pending")
         self.assertEqual(self.calls_for("orchestration worker-start"), [])
+
+    def test_task_and_handle_are_recorded_before_layout_calls(self):
+        """화면 배치(split·이름) 도중 관제가 죽어도 에이전트가 맡은 태스크와 작업 터미널을 잃지 않는다."""
+        self.commit_spec("T-001")
+        with mock.patch.dict(os.environ, {"ORCA_TERMINAL_HANDLE": "term_drive"}), \
+                mock.patch.object(agents, "make_layout", side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                tasks.start(self.p, self.cfg(), "T-001")
+        state = self.agents_state()["production"]
+        self.assertEqual((state["task"], state["handle"]), ("T-001", "term_a1"))
+
+    def test_dead_review_pane_is_split_again(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        agents.release_task(self.p, "production", "T-001")
+        self.respond_seq("terminal show", LIVE, (STALE, 1))  # 작업 터미널은 살아 있고 리뷰 pane 은 죽었다
+        self.respond("terminal split", {"ok": True, "result": {"split": {"handle": "term_r2", "tabId": "tab_1"}}})
+        self.respond("orchestration worker-start", NEXT)
+        self.commit_spec("T-002", role="planner")
+        self.orch("start", "T-002")
+        self.assertEqual(len(self.calls_for("terminal split")), 2)
+        self.assertEqual(self.agents_state()["production"]["review_handle"], "term_r2")
+
+    def test_failed_layout_is_retried_once(self):
+        self.respond("terminal split", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.assertIn("layout_error", self.agents_state()["production"])
+        for task_id in ("T-002", "T-003"):
+            previous = self.agents_state()["production"]["task"]
+            agents.release_task(self.p, "production", previous)
+            self.set_state(previous, status="done")  # 같은 소유 경로의 다음 기획 태스크가 시작할 수 있게
+            self.respond("orchestration worker-start", NEXT)
+            self.commit_spec(task_id, role="planner")
+            self.orch("start", task_id)
+        self.assertEqual(len(self.calls_for("terminal split")), 2)  # 처음 + 한 번 다시
+        self.respond("terminal split", SPLIT)
+        agents.release_task(self.p, "production", "T-003")
+        self.set_state("T-003", status="done")
+        self.commit_spec("T-004", role="planner")
+        self.orch("start", "T-004")
+        self.assertEqual(len(self.calls_for("terminal split")), 2)
+
+    def test_unknown_terminal_state_does_not_launch_fresh_session(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        agents.release_task(self.p, "production", "T-001")
+        self.respond("terminal show", {"ok": True, "result": {}})  # 터미널 모양을 알 수 없다(unknown)
+        self.commit_spec("T-002", role="planner")
+        starts = len(self.calls_for("orchestration worker-start"))
+        proc = self.orch("start", "T-002", check=False)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("상태를 알 수 없다", proc.stderr)
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.agents_state()["production"]["handle"], "term_a1")
 
     def test_front_matter_model_is_ignored_for_agent(self):
         self.commit_spec("T-001", extra="claude_model: haiku\n")
@@ -395,6 +450,31 @@ class ResetTest(AgentCase):
         self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "skipped")
         self.assertEqual((self.agents_state()["production"]["reset_pending"], self.agents_state()["production"]["handle"]),
                          (False, None))
+
+    def test_finish_reset_beats_between_steps(self):
+        self.started()
+        beats = []
+        agents.finish_reset(self.p, "production", True, sleep=lambda _: None, beat=lambda: beats.append(1))
+        self.assertGreaterEqual(len(beats), 2)
+
+    def test_begin_reset_waits_on_unknown_terminal_state(self):
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("terminal show", {"ok": True, "result": {}})
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        state = self.agents_state()["production"]
+        self.assertEqual((state["reset_pending"], state["handle"]), (True, "term_a1"))
+        self.assertEqual(self.calls_for("orchestration task-create"), [])
+
+    def test_handoff_never_launches_fresh_session(self):
+        """인수인계 직전에 터미널이 죽어도 새 세션에 인수인계를 쓰게 하지 않는다(새 세션은 맥락이 없다)."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        starts = len(self.calls_for("orchestration worker-start"))
+        with mock.patch.object(orca, "terminal_state", side_effect=["alive", "dead"]):
+            out = agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertEqual(out["status"], "failed")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
 
     def test_orch_agent_reset(self):
         self.orch("agent", "reset", "production")

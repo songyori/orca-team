@@ -442,6 +442,17 @@ def review(p: Project, cfg: Config, task_id: str) -> dict:
         release_pid(pid)
 
 
+DRIVE_FIELDS = ("pending_dep_fix",)  # 리뷰 동안 관제가 쓸 수 있는 필드(design-decide 가 선행 변경 note 를 남긴다)
+
+
+def keep_drive_fields(p: Project, st: dict) -> None:
+    """리뷰는 처음 읽은 상태를 끝에 쓴다. 그동안 관제가 적은 DRIVE_FIELDS 를 지우지 않게 다시 읽어 합친다."""
+    latest = load_state(p, st["id"]) or {}
+    for key in DRIVE_FIELDS:
+        if latest.get(key) is not None:
+            st[key] = latest[key]
+
+
 def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
     task_id = doc.id
     st = must_state(p, task_id)
@@ -496,6 +507,7 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
         git_commit_paths(p.root, [review_rel], message)
     except BaseException as exc:
         st["status"] = "working"
+        keep_drive_fields(p, st)
         save_state(p, st)
         if isinstance(exc, (OSError, UnicodeDecodeError)):
             raise OrchError(f"리뷰 중 입출력 오류: {exc}") from exc
@@ -512,5 +524,6 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
     if untracked:
         entry["untracked"] = result["untracked"] = untracked
     st["history"].append(entry)
+    keep_drive_fields(p, st)
     save_state(p, st)
     return result

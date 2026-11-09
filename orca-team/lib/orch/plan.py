@@ -409,12 +409,12 @@ def plan_order(p: Project) -> list[str]:
     return ordered + extra
 
 
-def start_ready(p: Project, cfg: Config) -> dict:
+def start_ready(p: Project, cfg: Config, beat=None) -> dict:
     """pending 태스크 중 선행 태스크가 모두 충족되고(deps. done, 승인 대상 직무끼리는 awaiting_user 도), 잠금이 겹치지 않고
     (lock), working 수가 max_parallel 보다 적은(limit) 것을 tasks.toml 순서로 띄운다. 한 태스크의 실행 실패는 나머지를 막지 않는다.
-    waiting reason: spec, deps, lock, agent(고정 에이전트 대기), limit."""
+    waiting reason: spec, deps, lock, agent(고정 에이전트 대기), limit. beat 는 관제 heartbeat(띄우기 전마다 부른다)."""
     require_drive(p)
-    fixes = drain_fix_queues(p, cfg)
+    fixes = drain_fix_queues(p, cfg, beat)
     limit = cfg.max_parallel
     approval = cfg.user_approval_roles
     running = sum(1 for st in all_states(p) if st.get("status") == "working")
@@ -443,6 +443,8 @@ def start_ready(p: Project, cfg: Config) -> dict:
         if running >= limit:
             waiting.append({"id": task_id, "reason": "limit"})
             continue
+        if beat:
+            beat()
         try:
             entry = start(p, cfg, task_id)
         except OrchError as exc:
@@ -546,12 +548,12 @@ def design_review(p: Project, cfg: Config) -> dict:
     return {"id": entry["id"], "tasks": list(rounds), "links": links}
 
 
-def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixes: dict[str, str]) -> dict:
+def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixes: dict[str, str], beat=None) -> dict:
     """디자인 승인 질문(approval out_id)에 대한 사용자 답을 화면별 결정으로 적용한다.
 
     물은 화면마다 승인(approve) 또는 수정(fixes: T-id → 사용자 요청 원문)이 하나씩 있어야 한다. 고치는 화면을 선행으로 둔
     승인 대상 태스크는 승인했더라도 accept 하지 않고 함께 고친다. 그 태스크가 아직 일하는 중이면 pending_dep_fix 로
-    남기고 drive 가 리뷰 뒤에 고친다. 끝나면 질문을 닫고 start-ready."""
+    남기고 drive 가 리뷰 뒤에 고친다. 끝나면 질문을 닫고 start-ready. beat 는 관제 heartbeat(단계마다 부른다)."""
     from .ask import find_entry
 
     require_drive(p)
@@ -616,6 +618,8 @@ def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixe
     steps += [("dep", t, f"선행 디자인 {src} 가 바뀐다: {request_of(t)}. 바뀐 선행 디자인에 맞춘다") for t, src in via.items()]
     applied = []
     for kind, task_id, note in steps:
+        if beat:
+            beat()
         try:
             if kind == "approve":
                 if (load_state(p, task_id) or {}).get("status") != "done":
@@ -651,5 +655,5 @@ def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixe
     with comm.answered_lock(p):
         if out_id not in comm.load_answered(p)["ids"]:  # 그 사이 다른 쪽이 답했으면 다시 쓰지 않는다
             comm.record_answered(p, out_id)
-    out["start_ready"] = start_ready(p, cfg)
+    out["start_ready"] = start_ready(p, cfg, beat)
     return out

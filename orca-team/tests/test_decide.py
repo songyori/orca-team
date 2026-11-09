@@ -91,6 +91,14 @@ class DesignDecideTest(DecideCase):
         self.assertEqual(out["deferred"], ["T-002"])
         self.assertIn("T-001", self.state("T-002")["pending_dep_fix"])
 
+    def test_design_decide_beats_per_step(self):
+        self.awaiting("T-001")
+        self.awaiting("T-002")
+        entry = comm.post(self.p, "approval", "디자인 2개", {"tasks": ["T-001", "T-002"]})
+        beats = []
+        plan.design_decide(self.p, self.cfg(), entry["id"], ["T-002"], {"T-001": "여백"}, beat=lambda: beats.append(1))
+        self.assertGreaterEqual(len(beats), 2)
+
     def test_cli_parses_fix_pairs(self):
         self.awaiting("T-001")
         entry = comm.post(self.p, "approval", "디자인 1개", {"tasks": ["T-001"]})

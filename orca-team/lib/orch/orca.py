@@ -79,13 +79,14 @@ def _terminal_verdict(code: int, data: dict) -> str:
     return "unknown"
 
 
-def terminal_state(handle: str | None) -> str:
-    """관제 자동 부활용 생존 판정. 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
-    훅(10초 제한) 안에서 돌므로 TERMINAL_STATE_TIMEOUT 초만 기다린다."""
+def terminal_state(handle: str | None, wait: bool = False) -> str:
+    """생존 판정 "alive" | "dead" | "unknown". 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
+    훅(10초 제한) 안에서도 돌므로 기본은 TERMINAL_STATE_TIMEOUT 초만 기다린다. 관제는 wait=True 로 끝까지 기다린다."""
     if not handle:
         return "unknown"
     try:
-        code, data = call(["terminal", "show", "--terminal", handle], check=False, timeout=TERMINAL_STATE_TIMEOUT)
+        code, data = call(["terminal", "show", "--terminal", handle], check=False,
+                          timeout=None if wait else TERMINAL_STATE_TIMEOUT)
     except (OrchError, OSError, ValueError):
         return "unknown"
     return _terminal_verdict(code, data)
@@ -147,6 +148,45 @@ def worker_info(dispatch_id: str) -> dict | None:
             "verdict": liveness.get("verdict") or concise("liveness"),
             "stage": worker.get("stage") or concise("stage"),
             "state": worker.get("state") or concise("state")}
+
+
+def _strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for value in node.values():
+            yield from _strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from _strings(value)
+
+
+def task_workers(title_prefix: str, refs=()) -> tuple[list[dict], str | None]:
+    """worker-list 에서 한 실행의 워커 → (워커 요약 목록, 조회 오류). 제목이 title_prefix(예: `T-001 work r1 `)로
+    시작하거나 refs(그 실행의 taskId·dispatchId) 중 하나를 담은 워커다. orca 없음(12)은 올린다."""
+    try:
+        code, data = call(["orchestration", "worker-list"], check=False)
+    except OrchError as exc:
+        if exc.code == 12:
+            raise
+        return [], str(exc)
+    if code != 0 or not data.get("ok"):
+        return [], json.dumps(data, ensure_ascii=False)[:300]
+    wanted = {str(r) for r in refs if r}
+    found: list[dict] = []
+
+    def walk(node) -> None:
+        if isinstance(node, dict):
+            if "dispatchId" in node and any(s.startswith(title_prefix) or s in wanted for s in _strings(node)):
+                found.append({k: node[k] for k in ("dispatchId", "taskId", "state", "stage", "status") if k in node})
+                return
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    walk(data.get("result"))
+    return found, None
 
 
 def worker_terminal(dispatch_id: str) -> tuple[str | None, str | None]:

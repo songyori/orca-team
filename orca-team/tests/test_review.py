@@ -874,5 +874,39 @@ class ReviewRoundTest(ReviewCase):
         self.assertIn("`## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다", spec)
 
 
+class ReviewKeepsDriveFieldsTest(ReviewCase):
+    """리뷰 자식이 처음 읽은 상태를 끝에 쓰더라도 그동안 관제가 적은 pending_dep_fix(design-decide)를 지우지 않는다."""
+
+    def run_review_with(self, side_effect):
+        from orch import tasks
+        p = Project(self.root)
+        env = {"ORCA_TEAM_ORCA": self.env["ORCA_TEAM_ORCA"], "FAKE_DIR": str(self.fake_dir),
+               "ORCA_TERMINAL_HANDLE": "term_drive", "XDG_CACHE_HOME": str(self.tmp / "cache")}
+        real = review.auto_review
+
+        def during(*args, **kw):
+            st = tasks.load_state(p, "T-001")
+            st["pending_dep_fix"] = "선행 디자인 T-000 가 바뀐다: 색"
+            tasks.save_state(p, st)
+            if side_effect:
+                raise side_effect
+            return real(*args, **kw)
+        with mock.patch.dict(os.environ, env), mock.patch.object(review, "auto_review", side_effect=during):
+            return review.review(p, Config.load(p.config_path), "T-001")
+
+    def test_pending_dep_fix_written_during_review_survives(self):
+        out = self.run_review_with(None)
+        self.assertEqual(out["verdict"], "REQUEST_CHANGES")
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["pending_dep_fix"]), ("changes", "선행 디자인 T-000 가 바뀐다: 색"))
+
+    def test_pending_dep_fix_survives_failed_review(self):
+        from orch.paths import OrchError
+        with self.assertRaises(OrchError):
+            self.run_review_with(OrchError("리뷰 실패", 1))
+        st = self.state("T-001")
+        self.assertEqual((st["status"], st["pending_dep_fix"]), ("working", "선행 디자인 T-000 가 바뀐다: 색"))
+
+
 if __name__ == "__main__":
     unittest.main()
