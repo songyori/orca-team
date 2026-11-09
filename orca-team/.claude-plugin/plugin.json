@@ -1,6 +1,6 @@
 {
   "name": "orca-team",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "Orca 3계층 오케스트레이션(메인/코디네이터/직무 워커) + Codex 리뷰 세팅. 배치·모델·리뷰 규칙을 결정적 CLI(orch)로 고정한다.",
   "author": { "name": "SeongYul Lim" },
   "license": "MIT",

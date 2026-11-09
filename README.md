@@ -6,7 +6,7 @@
 
 `/orca-team:init <프로젝트 설명>` 한 번으로 다음을 세팅한다.
 
-- 3계층: 메인(사용자 대화 전담) / 코디네이터(별도 Orca 터미널, Run 소유) / 직무 워커(planner·director·designer·developer·tester)
+- 구조: 메인(사용자와 대화하고 `decide` 를 판단) / 관제("orca-team 관제" 탭의 셸에서 도는 `orch drive`, 절차를 돌리고 Run 소유) / 고정 에이전트 3개(생산·조사·테스트) / 임시 워커(바쁠 때) / Codex 리뷰(리뷰마다 새 실행). 자세한 것은 "고정 에이전트 (0.7.0)"
 - 직무별 Claude 모델·effort, Codex 리뷰 모델·reasoning(`.orchestration/config.toml`)
 - 워커 결과물 → Codex 리뷰(내장 Codex 래퍼, yolo, 훅 신뢰 자동) → APPROVE / REQUEST_CHANGES 루프(최대 3라운드)
 - 디자인: 앱·웹 화면은 Claude Design, 래스터 에셋만 Codex `/orca-team:image`
@@ -43,14 +43,14 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 
 ## 그릴링 기획과 병렬 실행
 
-- 요청을 받으면 코디네이터가 기획(planner) 태스크부터 띄운다. 기획 워커는 `orch ask-user` 로 메인을 거쳐 사용자를 직접 인터뷰한다. 질문은 한 번에 하나이고, 예시·추천 선택지·추천 사유가 붙는다. 메인은 질문의 `render` 를 그대로 AskUserQuestion 에 넘기고(긴 요약 `render.context` 가 있으면 먼저 평문으로 그대로 보여 준다) 답을 `orch answer <id> "<답>"` 으로 돌려준다. 답을 9분 안에 받지 못하면 `ask-user` 는 exit 4 로 끝나고 기획 워커가 `--wait` 로 이어서 기다린다.
+- 요청을 받으면 메인이 기획(planner) 태스크부터 띄운다. 기획 워커는 `orch ask-user` 로 메인을 거쳐 사용자를 직접 인터뷰한다. 질문은 한 번에 하나이고, 예시·추천 선택지·추천 사유가 붙는다. 메인은 질문의 `render` 를 그대로 AskUserQuestion 에 넘기고(긴 요약 `render.context` 가 있으면 먼저 평문으로 그대로 보여 준다) 답을 `orch answer <id> "<답>"` 으로 돌려준다. 답을 9분 안에 받지 못하면 `ask-user` 는 exit 4 로 끝나고 기획 워커가 `--wait` 로 이어서 기다린다.
 - 메인이 `render.context` 를 출력하지 않고 그 질문을 AskUserQuestion 으로 부르면 훅이 context 를 담아 한 번 거부한다. 메인 transcript 끝부분의 assistant 텍스트에서 context 앞부분(공백·마크다운 기호를 뺀 80자)을 찾는다. 같은 질문의 두 번째 호출과 판단할 수 없는 경우(transcript 없음·깨짐)는 통과시킨다.
 - 기획 워커는 마지막에 확정 질문을 하고 `docs/planning/` 에 spec.md(기능), contracts.md(인터페이스 약속), tasks.toml(태스크 그래프), interview.md(질문과 답)를 커밋한다. 확정 질문 전에 `orch plan check [--file <경로>]` 로 tasks.toml 을 검사한다. `plan apply` 와 같은 규칙이고 아무것도 쓰지 않는다(누구나 실행할 수 있다).
 - 기획 태스크를 accept 하면 `orch plan apply` 가 tasks.toml 을 검증해 태스크 spec 과 `pending` 상태를 만든다(증분 기획은 `--append`). `orch start-ready` 는 선행 태스크가 모두 done 이고 소유 경로가 겹치지 않는 태스크를 `max_parallel`(기본 4)까지 한 번에 띄운다. `max_parallel` 은 `orch start-ready` 만 지킨다. `orch fix`(수정 라운드)와 단건 `orch start` 는 상한을 세지 않고 바로 띄우므로 working 이 잠시 상한을 넘을 수 있다.
 - `user_approval_roles`(새 프로젝트는 designer) 태스크는 Codex APPROVE 뒤 `awaiting_user` 로 기다린다. 모두 모이면 `orch design-review` 가 디자인 링크를 모은 승인 질문 하나를 메인에 올린다. 승인하면 done, 수정을 요청하면 새 라운드다. 승인 대상 직무끼리 이어진 태스크(디자인 시스템 → 화면)는 선행이 `awaiting_user` 여도 시작해 한 번의 승인 질문에 함께 들어간다. 승인 대상이 아닌 후속 태스크(개발)는 사용자 승인(done)을 기다린다.
-- 코디네이터가 사용자에게 묻는 질문은 `orch notify --type question --json -`(질문·예시·선택지·추천·추천 사유 JSON)로 올린다. ask-user 와 같은 검증을 거쳐 같은 `render` 가 붙는다.
 - 메인이 질문에 답하기 전에 세션이 끝나도 질문은 남는다. `orch status` 의 `open_questions` 가 답하지 않은 질문을 보여 주고, `/orca-team:up` 이 `orch reask` 로 다시 받아 묻는다. `orch answer` 는 question·approval 에 한 번만 답한다(두 번째는 exit 3).
 - 설정은 `.orchestration/config.toml` 최상위 `max_parallel = 4`, `user_approval_roles = ["designer"]` 다. 새 프로젝트는 scaffold 가 이 두 줄을 적는다. `user_approval_roles` 에는 `[roles]` 에 있는 직무만 쓴다(없는 직무는 exit 2).
+- 0.7.0 부터는 `orch upgrade`("0.6.0 이하 프로젝트를 올리기" 참고)가 아래 수동 복사 단계를 대신한다. `coordinator.md` 는 더 이상 없다. 아래 버전별 안내는 그 버전 당시의 기록이다.
 - 0.2.0 으로 만든 프로젝트는 업그레이드해도 예전 흐름 그대로 돈다. `user_approval_roles` 키가 없으면 `[]`(사용자 승인 게이트 없음)이라 디자인도 Codex APPROVE 뒤 `orch accept` 하면 바로 done 이다. config.toml 을 아예 읽지 못할 때(파일 없음·TOML 오류) `orch accept` 도 같은 기본값 `[]` 을 쓴다. 읽히는데 `user_approval_roles` 가 틀리면 `orch accept` 는 승인 게이트를 건너뛰지 않고 exit 2 로 거부한다. 새 흐름(기획 인터뷰, 태스크 그래프, 디자인 일괄 승인)을 쓰려면 다음을 한다.
   1. `.orchestration/config.toml` 최상위(첫 `[표]` 위)에 `user_approval_roles = ["designer"]` 를 넣는다. `max_parallel` 은 없으면 4 다.
   2. scaffold 는 있는 파일을 덮어쓰지 않는다. `.orchestration/coordinator.md` 와 `.orchestration/roles/planner.md` 를 이 저장소 `orca-team/templates/` 의 `coordinator.md`, `roles/planner.md` 로 바꾸고, `CLAUDE.md` 의 `<!-- orca-team -->` 절을 `orca-team/templates/CLAUDE.section.md` 로 바꾼다.
@@ -62,7 +62,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
   1. 레퍼런스: 같은 분야·인접 분야 상용 서비스 6–9개를 조사하고 Orca 내장 브라우저로 실제 화면을 캡처한다(저장소 밖 `~/.cache/orca-team/refs/<프로젝트>/`). Claude Design 레퍼런스 보드에 스타일 묶음 3–4개로 정리하고 사용자가 묶음을 고른다.
   2. 톤 시안: 시안 화면 3개(대표 화면, 정보가 빽빽한 화면, 입력 화면)를 톤 3가지로 그린 9장을 보여 준다. 세부 수정 피드백이면 수정안 1개, 방향을 바꾸는 피드백이면 새 3안으로 확정할 때까지 반복한다.
   3. 디자인 시스템: 확정한 톤으로 Claude Design Design System 문서(토큰, 상태별 컴포넌트 미리보기, 사용 규칙)를 만들어 확인받는다. 원본은 `docs/design/system/`, URL 은 `docs/design/direction.md` 의 `design_system_url:` 줄이다.
-- 화면 디자이너는 이 프로젝트 디자인 시스템만 쓴다. 시스템에 없는 값이 필요하면 리포트에 "시스템 추가 제안"을 적고, 코디네이터가 디자인 일괄 승인 전에 모아 director 보강 태스크로 처리한다. 개발은 `tokens.json` 을 CSS 변수·테마로 옮긴 UI 기반 태스크의 토큰과 공통 컴포넌트만 쓴다.
+- 화면 디자이너는 이 프로젝트 디자인 시스템만 쓴다. 시스템에 없는 값이 필요하면 리포트에 "시스템 추가 제안"을 적고, 관제가 디자인 일괄 승인 전에 모아 director 보강 태스크로 처리한다. 개발은 `tokens.json` 을 CSS 변수·테마로 옮긴 UI 기반 태스크의 토큰과 공통 컴포넌트만 쓴다.
 - 디자인 규칙 `.orchestration/design-rules.md` 를 director·designer·developer 가 지키고 리포트 `### 디자인 점검` 에 점검 결과를 적는다. §1 은 AI 티 금지 목록(고정 이모지, 왼쪽 줄 카드, 파랑·보라 그라디언트 등 10개), §2–§7 은 접근성(WCAG 2.2 AA), 색, 글자(한글 어절 줄바꿈 포함), 레이아웃, 표면·동작, 상태 규칙이다. 품질 규칙은 [jakubkrehel/skills](https://github.com/jakubkrehel/skills)(MIT)에서 필요한 것만 가져와 압축하고 한국어·앱 플랫폼 내용을 더했다. developer 는 구현한 상태(빈 상태·로딩·오류·좁은 폭 등)를 실제로 렌더해 확인한다.
 - Codex 디자인 리뷰는 이 태스크가 만든 문제만 `(새로 생김)`·`(회귀)`·`(기존)` 으로 나눠 지적하고, diff 의 지운 줄을 읽어 회귀를 찾는다. 접근 가능한 이름이 없는 컨트롤, 포커스 표시 없음, 동작 줄이기 무시, 320px·200% 확대에서 잘림, 대비 미달 같은 즉시 차단 항목은 P1 이다. 고칠 방향은 지우기 → 플랫폼 기본 → 기존 토큰 재사용 → 값 교정 → 새로 추가 순으로 고른다.
 - `orch review` 는 Codex 를 부르기 전에 바뀐 파일에서 이모지·왼쪽 줄 강조·파랑·보라 그라디언트 의심 위치를, 태스크 diff 에서 지운 줄로 줄어든 접근성 신호(`aria-label`, 포커스, `prefers-reduced-motion`, `keep-all` 등)와 추가한 줄의 확대 막기·포커스 표시 제거를 찾아 리뷰 프롬프트에 경고로 넣는다(자동 불합격은 아니다).
@@ -96,7 +96,7 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
 - developer 워커는 작업을 커밋한 뒤 `orch test T-xxx`(quick)를 돌리고 worker_done 전에 통과시킨다(커밋 전에 돌리면 orch 가 거부한다). 테스트가 소유 경로에 만드는 산출물(`__pycache__`, 스냅숏 등)은 `.gitignore` 에 넣는다. 무시되지 않은 새 파일이 있으면 orch test 가 거부한다. `orch review` 는 developer 태스크의 Codex 리뷰 전에 quick 을 확인하고(같은 코드면 워커 결과를 다시 쓴다), 실패하면 Codex 없이 REQUEST_CHANGES 를 낸다.
 - tester 워커는 묶음 통합 테스트를 커밋한 뒤 `orch test T-xxx --full` 을 한 번 돌리고, 실패를 테스트 코드의 잘못(고친다)과 제품 회귀(QA 리포트에 적는다)로 나눈다. 테스트를 약하게 만들거나 제품 코드를 고치지 않는다. tester 리뷰는 그 full 결과를 묶음 리뷰에 넣고 테스트 결과로 자동 반려하지 않는다. 제품 회귀는 리뷰의 `## 회귀` 를 거쳐 회귀 수정 태스크가 된다. 리뷰어는 전체 테스트를 다시 돌리지 않는다.
 - 리뷰 등급: P1(수용 기준 미충족, 동작 버그, 보안, 데이터 손실, 계약 위반, 테스트 실패)만 승인을 막는다. P2·P3 는 `## 후속`, spec 에 없는 요구는 `## 기획 누락` 에 적는다. 라운드 2부터는 이전 지적과 새 커밋만 본다. orch 는 `## 지적 사항` 의 P1 줄과 `## 이전 지적 확인` 의 미해결 줄 수로 판정을 맞춘다. 수정 워커는 P1 만 고친다.
-- 코디네이터는 묶음 tester 태스크를 accept 하면 `orch followups T-xxx` 로 회귀·후속·기획 누락을 모아 회귀 수정 태스크, 묶음 정리 태스크, 사용자 질문을 만든다. 모든 태스크가 끝나면 `orch test --full` 을 한 번 더 돌린 뒤 완료를 알린다.
+- 관제는 묶음 tester 태스크를 accept 하면 `orch followups T-xxx` 로 회귀·후속·기획 누락을 모아 회귀 수정 태스크, 묶음 정리 태스크, 사용자 질문을 만든다. 모든 태스크가 끝나면 `orch test --full` 을 한 번 더 돌린 뒤 완료를 알린다.
 - `[test]` 가 없는 프로젝트는 테스트 관문과 묶음 검사가 꺼진다. 리뷰 등급·라운드 규칙은 모든 프로젝트에 적용된다.
 - 0.5.x 로 만든 프로젝트에 적용하기:
   1. 플러그인을 0.6.0 으로 업데이트한다.
@@ -106,17 +106,30 @@ Orca 터미널에서 새 프로젝트 폴더의 Claude 세션을 연다.
   5. 코디네이터 터미널을 닫고 메인에서 `/orca-team:up` 으로 다시 띄운다.
 - 설계: `docs/superpowers/specs/2026-11-08-orca-team-batch-verify-design.md`, 구현 계획: `docs/superpowers/plans/2026-11-08-orca-team-batch-verify.md`.
 
+## 고정 에이전트 (0.7.0)
+
+- 생산(planner·designer·developer), 조사(director), 테스트(tester) 에이전트가 각자 Orca 탭 하나에 뜬다. 왼쪽은 작업 세션, 오른쪽은 그 에이전트 태스크의 Codex 리뷰 진행(`orch review-view`)이다.
+- 같은 세션이 여러 태스크와 수정 라운드를 이어 맡는다. 묶음(tester 태스크)이 끝나면 `docs/handoff/<에이전트>.md` 에 인수인계를 쓰고 세션을 비운다. 직접 비우려면 `orch agent reset <에이전트>`.
+- 에이전트가 바쁠 때 준비된 독립 태스크는 임시 워커로 돈다(`[overflow] enabled`).
+- 코디네이터는 없다. 관제(`orch drive`, "orca-team 관제" 탭)가 절차를 돌리고 판단할 일만 메인에 decide 로 올린다.
+
+### 0.6.0 이하 프로젝트를 올리기
+1. 진행 중인 태스크가 끝나기를 기다리고 코디네이터 탭을 닫는다.
+2. 메인에서 `.orchestration/bin/orch upgrade` 를 실행하고 출력의 바뀐 파일을 확인한다.
+3. `.orchestration/` 과 `CLAUDE.md` 를 경로 지정 커밋한다.
+4. `/orca-team:up` 으로 관제를 띄운다.
+
 ## 보안 주의
 
 Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박스·승인 없음, `--bypass-hook-trust`: 저장소 Codex 훅 자동 신뢰)로 돈다. `/orca-team:image` 도 같은 래퍼로 샌드박스·승인 없이 돈다(`--profile image`, 훅 신뢰 자동 없음). Codex 는 워커가 만든 코드를 읽고 그 테스트·빌드를 실행하며, 사용자의 자격 증명(셸 환경 변수, git·클라우드 인증, Codex 로그인)을 그대로 물려받는다. 신뢰할 수 있는 저장소에서만 쓴다.
 
 ## 권한 설정
 
-코디네이터와 워커는 사람 없이 돈다. 이 세션들의 도구 권한이 프로젝트의 `.orchestration/bin/orch`, `git`, `orca` 실행을 허용해야 한다. 허용되지 않으면 권한 프롬프트에서 멈춰 Run 이 정지한다. bypass permissions 로 돌리거나, 이 명령들을 허용 목록(allowlist)에 넣는다. 실환경 검증은 모든 세션이 bypass permissions 였던 환경에서만 했고, 기본 권한 모드의 무인 실행은 검증하지 못했다.
+관제와 고정 에이전트·임시 워커는 사람 없이 돈다. 이 세션들의 도구 권한이 프로젝트의 `.orchestration/bin/orch`, `git`, `orca` 실행을 허용해야 한다. 허용되지 않으면 권한 프롬프트에서 멈춰 Run 이 정지한다. bypass permissions 로 돌리거나, 이 명령들을 허용 목록(allowlist)에 넣는다. 실환경 검증은 모든 세션이 bypass permissions 였던 환경에서만 했고, 기본 권한 모드의 무인 실행은 검증하지 못했다.
 
 ## 복구
 
-- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. 재시작한 코디네이터는 이것을 따른다.
+- `.orchestration/bin/orch status` 는 태스크마다 다음 행동 `next` 를 보여 준다. 재시작한 관제(`orch drive`)는 이것을 따른다.
 
   | status | next |
   |---|---|
@@ -129,9 +142,9 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
   | `launch_failed` | Orca 에 남은 워커를 확인한 뒤 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`. 행에 `launching: true` 가 있으면 아직 워커를 띄우는 중이라 끝날 때까지 기다린다(그동안 `--retry` 는 exit 2) |
   | `done`, `dropped` | 없음(`null`) |
 
-- `orch drop T-xxx --reason "<이유>"`(코디네이터): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. 메인에는 progress 로 알린다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.
-- 코디네이터가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 코디네이터 터미널을 확인하고, 닫힌 핸들이거나 Claude 가 끝난 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 그사이 보낸 요청은 Run 메일함에 쌓였다가 새 코디네이터가 처리한다. Orca 에 연결하지 못하면 띄우지 않고 확인을 부탁한다. 끄려면 `.orchestration/config.toml` 의 `[coordinator]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 자동으로 띄운 코디네이터가 10분 안에 다시 꺼지면 그 10분 동안은 다시 띄우지 않고 /orca-team:up 을 안내한다. 같은 안내는 바뀔 때와 세션 시작 때만 한다. 살아 있지만 멈춘 코디네이터(권한 창 대기 등)는 감지하지 못한다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
-- 수동 복구는 메인에서 `/orca-team:up` 을 실행한다. 살아 있는 코디네이터는 그대로 두고, 없으면 새로 띄운다. 새 코디네이터는 `orch bind` 로 기존 Run 에 다시 붙고 `orch status` 의 `next` 로 이어 간다.
+- `orch drop T-xxx --reason "<이유>"`(메인이 관제 큐로 보낸다): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. 메인에는 progress 로 알린다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.
+- 관제가 죽었으면 메인 세션의 훅이 자동으로 다시 띄운다. 세션을 열 때와 프롬프트를 칠 때(60초 간격) 관제 터미널을 확인하고, 닫힌 핸들이거나 Claude 가 끝난 것이 확실할 때만 `orch up` 을 분리 프로세스로 실행한다. 메인은 답변 첫 줄에 한 줄로 알린다. 그사이 보낸 요청은 관제 큐에 쌓였다가 새 관제가 처리한다. Orca 에 연결하지 못하면 띄우지 않고 확인을 부탁한다. 끄려면 `.orchestration/config.toml` 의 `[drive]` 에 `auto_up = false` 를 넣는다. 실행 기록은 `.orchestration/state/auto-up.log` 에 남는다. 자동으로 띄운 관제가 10분 안에 다시 꺼지면 그 10분 동안은 다시 띄우지 않고 /orca-team:up 을 안내한다. 같은 안내는 바뀔 때와 세션 시작 때만 한다. 살아 있지만 멈춘 관제(권한 창 대기 등)는 감지하지 못한다. 설계: `docs/superpowers/specs/2026-11-06-orca-team-auto-up-design.md`.
+- 수동 복구는 메인에서 `/orca-team:up` 을 실행한다. 관제가 살아 있으면 그대로 두고, 없으면 새로 띄운다. 새 관제는 `orch bind` 로 기존 Run 에 다시 붙고 `orch status` 의 `next` 로 이어 간다.
 
 ## 개발
 

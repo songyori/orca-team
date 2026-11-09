@@ -517,3 +517,4 @@ E2E 반영 (Orca 1.4.240)
 - `orch followups` 가 리뷰 파일의 회귀·후속·기획 누락을 모으고, 코디네이터가 회귀 수정·묶음 정리 태스크를 만든다. 마지막에 `orch test --full` 을 한 번 더 돌린다.
 - `orch upgrade` 가 기존 프로젝트의 복사된 규칙 파일을 바꾼다(config.toml 제외, 커밋 안 함).
 - 한계: 설계 문서 §10.
+- 0.7.0 에서 코디네이터를 관제(orch drive)와 메인 판단으로 바꿨다. 설계: specs/2026-11-09-orca-team-persistent-agents-design.md.

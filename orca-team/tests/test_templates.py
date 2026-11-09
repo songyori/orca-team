@@ -298,7 +298,7 @@ class TemplateTest(unittest.TestCase):
 
     def test_readme_documents_final_review_changes(self):
         text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
-        for key in ("orch notify --type question --json -", "orch plan check", "orch reask", "open_questions",
+        for key in ("orch plan check", "orch reask", "open_questions",
                     "`max_parallel` 은 `orch start-ready` 만 지킨다", "선행이 `awaiting_user` 여도 시작해"):
             self.assertIn(key, text)
         self.assertEqual(text.count("| status | next |"), 1)
@@ -341,7 +341,7 @@ class TemplateTest(unittest.TestCase):
 
     def test_readme_documents_design_director(self):
         text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
-        for key in ("## 디자인 디렉터", "planner·director·designer·developer·tester", "orch ask-user", "design_system_url",
+        for key in ("## 디자인 디렉터", "고정 에이전트 3개(생산·조사·테스트)", "orch ask-user", "design_system_url",
                     ".orchestration/design-rules.md", "시스템 추가 제안", "`[roles.director]`",
                     "0.3.0 으로 만든 프로젝트는", "orca-team/templates/roles/director.md",
                     "orca-team/templates/design-rules.md", "orch plan check",
@@ -442,8 +442,19 @@ class TemplateTest(unittest.TestCase):
 
     def test_status_doc_describes_hotfix(self):
         status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
-        for key in ("(2026-11-09, 0.6.1)", "| 0.6.1 |", "worker-show 를 --full 로"):
+        for key in ("| 0.6.1 |", "worker-show 를 --full 로"):
             self.assertIn(key, status)
+
+    def test_status_doc_describes_persistent_agents(self):
+        status = (PLUGIN.parent / "docs/superpowers/2026-11-05-orca-team-status.md").read_text(encoding="utf-8")
+        for key in ("(2026-11-09, 0.7.0)", "| 0.7.0 |", "0.7.0 전체(설계 §15)"):
+            self.assertIn(key, status)
+
+    def test_readme_describes_persistent_agents(self):
+        text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
+        for key in ("## 고정 에이전트 (0.7.0)", "orch review-view", "orch agent reset", "0.6.0 이하 프로젝트를 올리기"):
+            self.assertIn(key, text)
+        self.assertNotIn("orch notify --type question", text)
 
     def test_handoff_template(self):
         text = (T / "handoff.md").read_text(encoding="utf-8")

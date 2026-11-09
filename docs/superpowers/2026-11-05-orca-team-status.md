@@ -1,4 +1,4 @@
-# orca-team 현재 상태 (2026-11-09, 0.6.1)
+# orca-team 현재 상태 (2026-11-09, 0.7.0)
 
 다음 작업을 시작할 때 먼저 읽는 문서다. 세부 결정은 각 설계 문서와 기본 설계 §13 에 있다.
 
@@ -16,10 +16,11 @@
 | 0.5.2 | 디자인 규칙: design-rules.md 를 §0–§7(접근성·색·글자·레이아웃·표면·동작·상태)로 넓힘, Codex 디자인 리뷰를 변경분 분류·지운 줄 읽기·즉시 차단 항목 기준으로, 지운 줄 접근성 신호 자동 검사(designdiff) | `specs/2026-11-06-orca-team-design-rules-design.md`, `plans/2026-11-06-orca-team-design-rules.md` |
 | 0.6.0 | 묶음 검증: `[test]` quick·full 을 orch 가 돌리는 테스트 관문(`orch test`), 묶음(tester 태스크) 단위 전체 테스트와 묶음 리뷰, P1 만 막는 수렴형 리뷰와 판정 맞추기, 후속 모으기(`orch followups`), 기존 프로젝트 갱신(`orch upgrade`) | `specs/2026-11-08-orca-team-batch-verify-design.md`, `plans/2026-11-08-orca-team-batch-verify.md` |
 | 0.6.1 | Orca 1.4.240 응답에 맞춘다: worker-show 를 --full 로 읽고 간략형도 읽는다(바쁨 판정이 늘 확인 불가였다), 지금 Orca 에 없는 worker-retain 호출을 지운다 | — |
+| 0.7.0 | 고정 에이전트: 코디네이터 LLM 대신 관제(orch drive)가 절차를, 메인이 판단(decide)을. 생산·조사·테스트 고정 에이전트(작업·리뷰 보기 좌우 pane), 묶음 끝 인수인계·리셋, 복구, 임시 워커, 메인 → 관제 요청 큐, design-decide, --extra-round, 리뷰 effort xhigh | specs/2026-11-09-orca-team-persistent-agents-design.md, plans/2026-11-09-orca-team-persistent-agents.md |
 
 ## 검증
 
-- 테스트: `bash orca-team/tests/run.sh`(678개, 2026-11-09 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
+- 테스트: `bash orca-team/tests/run.sh`(777개, 2026-11-09 통과). 내장 Codex 래퍼 회귀 테스트까지: `bash orca-team/tests/run.sh --wrapper`.
 - 실환경 확인: 0.3.0, 0.4.0, 0.5.0 을 실제 Orca·Codex·Claude Design 으로 한 바퀴씩 돌렸다. 0.5.1 은 코디네이터 부활만, 0.5.2 는 Codex 디자인 리뷰만 실제로 확인했다. 결과는 0.3.0·0.4.0 설계 문서 §12, 0.5.0 설계 문서 §14, 0.5.1 설계 문서 §13, 0.5.2 설계 문서 §13.1 에 있다.
 - 실환경 확인 방법:
   1. 버리는 시험 프로젝트 폴더를 만들고 Orca 터미널에서 Claude 세션을 연다.
@@ -34,6 +35,7 @@
 ## 실환경에서 확인하지 않은 흐름
 
 - 톤 시안 피드백 분기: 세부 수정이면 수정안 1개, 방향 전환이면 새 3안. 확인 때 추천안을 골라 실행되지 않았다(단위 테스트는 있다).
+- 0.7.0 전체(설계 §15): 관제 탭과 고정 에이전트 탭 배치, 같은 세션 수정 라운드, 묶음 끝 리셋, 임시 워커 분기, 고정 에이전트 터미널 닫기·Orca 재시작 복구, 리뷰 보기 pane.
 - 기본 권한 모드의 무인 실행. 모든 확인이 bypass permissions 세션이었다.
 - 0.5.1 코디네이터 자동 부활을 Orca 재시작 뒤에 하는 경우. 코디네이터 터미널을 닫은 경우만 확인했다.
 - 0.5.2 디자인 규칙의 워커 쪽: 실제 워커가 쓰는 `### 디자인 점검`·§7 상태 확인, director 의 §3·§4 반영. Codex 리뷰 판정과 diff 자동 검사는 실환경에서 확인했다(설계 §13.1).
@@ -75,11 +77,13 @@
 
 ## 다음 작업 후보
 
-- 0.6.0 실환경 확인(설계 §12): 리뷰만 확인 → Orca 한 바퀴 → 실제 사용 프로젝트에 `orch upgrade`. 태스크별 라운드 수와 전체 시간을 설계 §14 에 적는다.
+- 0.6.1 실환경 확인(설계 §12, 0.7.0 구현과 함께 하기로 했다): 리뷰만 확인 → Orca 한 바퀴 → 실제 사용 프로젝트에 `orch upgrade`. 태스크별 라운드 수와 전체 시간을 설계 §14 에 적는다.
+- 0.7.0 실환경 확인(설계 §15)
+- 0.7.1: 테스트 에이전트를 Codex 로, 그 리뷰를 Claude 로(설계 §16)
 - 0.5.2 디자인 규칙의 워커 쪽 실환경 확인: 기획→디렉터→디자인→구현 한 바퀴에서 워커가 `### 디자인 점검`·§7 상태 확인을 쓰는지, director 가 §3·§4(램프·역할 토큰·크기 단계·한글 줄바꿈)를 시스템에 넣는지 본다. 파일 이동과 `aria-label` 제거 수정 라운드를 함께 넣는다.
 - 0.5.1 Orca 재시작 뒤 코디네이터 자동 부활 확인.
 - 디자인 diff 검사 정밀도: `const role = 'admin'` 같은 문자열 할당을 신호에서 빼기, 리뷰 한 번에 `git show` 결과 공유(문구·디자인 검사).
-- 템플릿에 남은 물결표 범위(`orca-team/templates/roles/director.md`, `roles/planner.md`, `coordinator.md` 의 `6~9`, `2~4` 등)를 en dash 로 정리하기.
+- 템플릿에 남은 물결표 범위(`orca-team/templates/roles/director.md`, `roles/planner.md` 의 `6~9`, `2~4` 등)를 en dash 로 정리하기.
 - jakubkrehel/skills 의 better-writing 중 문구 규칙에 보탤 것("확인 창보다 되돌리기", "설정은 켜진 상태로 설명", "입력란 안내는 예시로")은 0.5.2 범위 밖으로 남겼다.
 
 ## 개발 흐름
