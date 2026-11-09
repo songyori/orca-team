@@ -3,6 +3,7 @@ import os
 import stat
 import subprocess
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -286,6 +287,110 @@ class UpgradeTest(ProjectCase):
         out = self.upgrade()
         self.assertEqual(out["skipped"][0]["path"], ".orchestration/text-rules.md")
         self.assertIn("추적되지 않는다", out["skipped"][0]["reason"])
+
+
+OLD_CONFIG = """max_parallel = 4
+user_approval_roles = ["designer"]
+
+[coordinator]
+model = "opus"
+effort = "xhigh"
+auto_up = false
+
+[review]
+max_rounds = 3
+
+[defaults]
+claude_model = "sonnet"
+claude_effort = "xhigh"
+codex_model = "gpt-6.1-sol"
+codex_effort = "high"
+
+[roles.planner]
+title = "기획"
+codex_effort = "high"
+owns = ["docs/planning/**"]
+
+[roles.designer]
+title = "디자인"
+codex_effort = "medium"
+owns = ["docs/design/**"]
+
+[roles.developer]
+title = "개발"
+codex_effort = "low"
+owns = ["src/**"]
+"""
+
+
+class Upgrade070Test(ProjectCase):
+    def setUp(self):
+        super().setUp()
+        self.scaffold()
+        (self.root / ".orchestration/config.toml").write_text(OLD_CONFIG, encoding="utf-8")
+        (self.root / ".orchestration/coordinator.md").write_text("# 옛 코디네이터 절차\n", encoding="utf-8")
+        claude = self.root / "CLAUDE.md"
+        claude.write_text("# 내 프로젝트\n\n<!-- orca-team -->\n## orca-team 오케스트레이션\n옛 메인 규칙(orch tell)\n",
+                          encoding="utf-8")
+        (self.root / ".orchestration/state/run.json").write_text(
+            json.dumps({"run_id": "run_old", "coordinator_handle": "term_old"}), encoding="utf-8")
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "0.6.0 project")
+
+    def upgrade(self, check=True):
+        return self.orch("upgrade", check=check, env={"ORCA_TERMINAL_HANDLE": "term_main"})
+
+    def test_migrates_coordinator_project(self):
+        out = json.loads(self.upgrade().stdout)
+        self.assertIn(".orchestration/coordinator.md", out["removed"])
+        self.assertFalse((self.root / ".orchestration/coordinator.md").exists())
+        cfg = tomllib.loads((self.root / ".orchestration/config.toml").read_text(encoding="utf-8"))
+        self.assertNotIn("coordinator", cfg)
+        self.assertIs(cfg["drive"]["auto_up"], False)
+        self.assertIs(cfg["overflow"]["enabled"], True)
+        self.assertEqual(cfg["agents"]["production"]["roles"], ["planner", "designer", "developer"])
+        self.assertNotIn("research", cfg["agents"])  # director 직무가 없는 프로젝트
+        self.assertEqual((cfg["defaults"]["codex_effort"], cfg["roles"]["planner"]["codex_effort"],
+                          cfg["roles"]["designer"]["codex_effort"], cfg["roles"]["developer"]["codex_effort"]),
+                         ("xhigh", "xhigh", "xhigh", "low"))  # 사용자가 바꾼 low 는 둔다
+        claude = (self.root / "CLAUDE.md").read_text(encoding="utf-8")
+        self.assertTrue(claude.startswith("# 내 프로젝트\n"))
+        self.assertIn("### 판단 기준 (decide)", claude)
+        self.assertNotIn("orch tell", claude)
+        self.assertNotIn("coordinator_handle", json.loads((self.root / ".orchestration/state/run.json").read_text()))
+        self.assertIn("/orca-team:up", out["next"])
+
+    def test_refuses_while_tasks_run_or_coordinator_lives(self):
+        state = self.root / ".orchestration/state/tasks/T-001.json"
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text(json.dumps({"id": "T-001", "status": "working"}), encoding="utf-8")
+        proc = self.upgrade(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("T-001(working)", proc.stderr)
+        state.unlink()
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}})
+        proc = self.upgrade(check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("코디네이터 탭을 닫은 뒤", proc.stderr)
+
+    def test_dirty_config_is_skipped(self):
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(OLD_CONFIG + "\n# 고치는 중\n", encoding="utf-8")
+        out = json.loads(self.upgrade().stdout)
+        self.assertIn("커밋 안 된 변경", out["config"]["skipped"])
+        self.assertIn("[coordinator]", path.read_text(encoding="utf-8"))
+
+    def test_current_config_is_left_alone(self):
+        path = self.root / ".orchestration/config.toml"
+        text = OLD_CONFIG.replace("[coordinator]", "[drive]").replace('model = "opus"\neffort = "xhigh"\n', "")
+        path.write_text(text, encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "0.7.0 config")
+        before = path.read_bytes()
+        out = json.loads(self.upgrade().stdout)
+        self.assertEqual(out["config"], {"changed": []})
+        self.assertEqual(path.read_bytes(), before)
 
 
 class DoctorTest(ProjectCase):

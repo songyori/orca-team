@@ -1,12 +1,15 @@
 """설치 점검, 프로젝트 스캐폴드, 세팅 모드."""
 from __future__ import annotations
 
+import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import time
+import tomllib
 from datetime import datetime
 from dataclasses import dataclass
 from pathlib import Path
@@ -142,37 +145,141 @@ def scaffold(root: Path, description: str) -> dict:
 
 
 UPGRADE_KEEP = (".orchestration/config.toml",)  # 사용자 설정이라 덮어쓰지 않는다
-UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .orchestration) 커밋한다. 코디네이터는 시작할 때만 지침을 읽으므로 "
-                "커밋한 뒤 코디네이터 터미널을 닫고 메인에서 /orca-team:up 으로 다시 띄운다. 테스트 관문을 쓰려면 "
-                "docs/planning/tasks.toml 에 [test] 를 넣는다(README \"묶음 검증\").")
+UPGRADE_NEXT = ("바뀐 파일을 확인하고(git diff -- .orchestration CLAUDE.md) 커밋한다. 그다음 메인에서 /orca-team:up 으로 "
+                "관제를 띄운다. 테스트 관문을 쓰려면 docs/planning/tasks.toml 에 [test] 를 넣는다(README \"묶음 검증\").")
+# 0.6.0 템플릿의 codex_effort. 이 값 그대로인 표만 0.7.0 값(xhigh)으로 올린다(사용자가 바꾼 값은 둔다).
+OLD_CODEX_EFFORT = {"defaults": "high", "roles.planner": "high", "roles.director": "high", "roles.designer": "medium",
+                    "roles.developer": "xhigh", "roles.tester": "high"}
+
+
+def editable_reason(p: Project, rel: str) -> str | None:
+    """git 에 추적되고 커밋 안 된 변경이 없으면 None(고쳐도 된다), 아니면 건너뛸 이유."""
+    if not git_ok(p.root, "ls-files", "--error-unmatch", "--", rel):
+        return "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"
+    if git(p.root, "status", "--porcelain", "--", rel).strip():
+        return "커밋 안 된 변경이 있다. 커밋하거나 되돌린 뒤 다시 한다"
+    return None
+
+
+def table_re(header: str) -> re.Pattern:
+    return re.compile(rf"^\[{re.escape(header)}\][ \t]*\n.*?(?=^\[|\Z)", re.M | re.S)
+
+
+def refuse_busy(p: Project) -> None:
+    busy = [f"{st['id']}({st.get('status')})" for st in all_states(p) if st.get("status") in ("working", "reviewing")]
+    if busy:
+        raise OrchError("진행 중인 태스크가 있다: " + ", ".join(busy) + ". 끝나기를 기다린 뒤 다시 한다"
+                        "(옛 Run 의 메일은 새 관제로 넘어가지 않는다)", 2)
+    handle = load_run(p).get("coordinator_handle")
+    if handle and orca.terminal_state(handle) == "alive":
+        raise OrchError(f"코디네이터가 아직 떠 있다({handle}). 코디네이터 탭을 닫은 뒤 다시 한다", 2)
+
+
+def migrate_config(p: Project) -> dict:
+    """[coordinator] → [drive], [overflow]·[agents] 추가, 0.6.0 기본 codex_effort → xhigh. 글자 단위로 고쳐 주석을 지킨다.
+    0.7.0 설정(drive 가 있고 coordinator 가 없다)은 사용자가 정한 값이라 건드리지 않는다."""
+    rel = ".orchestration/config.toml"
+    reason = editable_reason(p, rel)
+    if reason:
+        return {"skipped": reason}
+    path = p.root / rel
+    text = path.read_text(encoding="utf-8")
+    data = tomllib.loads(text)
+    if "coordinator" not in data and "drive" in data:
+        return {"changed": []}
+    changed = []
+    auto_up = True
+    if "coordinator" in data:
+        auto_up = data["coordinator"].get("auto_up", True) is not False
+        text = table_re("coordinator").sub("", text)
+        changed.append("[coordinator] 지움")
+    for header, old in OLD_CODEX_EFFORT.items():
+        table = data.get("defaults", {}) if header == "defaults" else data.get("roles", {}).get(header[6:], {})
+        if table.get("codex_effort") != old:
+            continue
+        text = table_re(header).sub(lambda m: re.sub(r'(?m)^codex_effort\s*=\s*"[^"]*"', 'codex_effort = "xhigh"',
+                                                      m.group(0)), text)
+        changed.append(f"[{header}].codex_effort {old} → xhigh")
+    text = text.rstrip() + "\n"
+    if "drive" not in data:
+        text += f"\n[drive]\nauto_up = {'true' if auto_up else 'false'}\n"
+        changed.append("[drive]")
+    if "overflow" not in data:
+        text += "\n[overflow]\nenabled = true\n"
+        changed.append("[overflow]")
+    if "agents" not in data:
+        roles = set(data.get("roles", {}))
+        for name, agent in tomllib.loads((TEMPLATES / "config.toml").read_text(encoding="utf-8"))["agents"].items():
+            keep = [r for r in agent["roles"] if r in roles]
+            if not keep:
+                continue
+            text += (f'\n[agents.{name}]\ntitle = "{agent["title"]}"\nroles = {json.dumps(keep, ensure_ascii=False)}\n'
+                     f'claude_model = "{agent["claude_model"]}"\nclaude_effort = "{agent["claude_effort"]}"\n')
+            changed.append(f"[agents.{name}]")
+    tomllib.loads(text)  # 고친 결과도 TOML 이어야 한다
+    if changed:
+        path.write_text(text, encoding="utf-8")
+    return {"changed": changed}
+
+
+def replace_claude_section(p: Project) -> dict:
+    """CLAUDE.md 의 orca-team 절(<!-- orca-team --> 부터 끝까지, scaffold 가 끝에 붙인다)을 새 템플릿으로 바꾼다."""
+    path = p.root / "CLAUDE.md"
+    if not path.exists():
+        return {"skipped": "CLAUDE.md 가 없다"}
+    reason = editable_reason(p, "CLAUDE.md")
+    if reason:
+        return {"skipped": reason}
+    text = path.read_text(encoding="utf-8")
+    start = text.find(MARK)
+    if start < 0:
+        return {"skipped": f"orca-team 절 표시({MARK})가 없다"}
+    new = text[:start] + (TEMPLATES / "CLAUDE.section.md").read_text(encoding="utf-8")
+    if new == text:
+        return {"updated": False}
+    path.write_text(new, encoding="utf-8")
+    return {"updated": True}
 
 
 def upgrade(p: Project) -> dict:
-    """프로젝트에 복사된 규칙 파일(config.toml 제외)을 이 플러그인의 템플릿으로 바꾼다.
-    git 에 커밋돼 있고 커밋 안 된 변경이 없는 파일만 덮어쓰고, 없는 파일은 만든다. 커밋하지 않는다."""
-    updated, created, skipped = [], [], []
-    targets = [(src, dst) for src, dst in SCAFFOLD_FILES if dst not in UPGRADE_KEEP]
-    for src, dst in targets:
+    """프로젝트를 이 플러그인 버전으로 맞춘다. 복사된 규칙 파일(config.toml 제외)을 템플릿으로 바꾸고, 0.7.0 이전 프로젝트면
+    코디네이터 문서를 지우고 config.toml·CLAUDE.md 를 옮긴다. git 에 커밋돼 있고 커밋 안 된 변경이 없는 파일만 고친다.
+    커밋하지 않는다. 진행 중인 태스크가 있거나 코디네이터가 떠 있으면 거부한다."""
+    refuse_busy(p)
+    updated, created, skipped, removed = [], [], [], []
+    for src, dst in [(s, d) for s, d in SCAFFOLD_FILES if d not in UPGRADE_KEEP]:
         target = p.root / dst
         new = (TEMPLATES / src).read_bytes()
         if not target.exists():
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(new)
             created.append(dst)
-        elif not git_ok(p.root, "ls-files", "--error-unmatch", "--", dst):
-            skipped.append({"path": dst, "reason": "git 에 추적되지 않는다. 템플릿과 직접 비교해 바꾼다"})
-        elif git(p.root, "status", "--porcelain", "--", dst).strip():
-            skipped.append({"path": dst, "reason": "커밋 안 된 변경이 있다. 커밋하거나 되돌린 뒤 다시 한다"})
+            continue
+        reason = editable_reason(p, dst)
+        if reason:
+            skipped.append({"path": dst, "reason": reason})
         elif target.read_bytes() != new:
             target.write_bytes(new)
             updated.append(dst)
+    legacy = ".orchestration/coordinator.md"
+    if (p.root / legacy).exists():
+        reason = editable_reason(p, legacy)
+        if reason:
+            skipped.append({"path": legacy, "reason": reason})
+        else:
+            (p.root / legacy).unlink()
+            removed.append(legacy)
+    config = migrate_config(p)
+    claude_md = replace_claude_section(p)
+    update_run(p, lambda r: (r.pop("coordinator_handle", None), r.pop("launched_at", None)))
     shim = p.root / ".orchestration/bin/orch"
     if shim.exists():
         shim.chmod(0o755)
-    # 건너뛴 파일의 사용자 변경이 섞이지 않게 바꾸거나 만든 파일만 본다.
-    changed = [*updated, *created]
+    changed = [*updated, *created, *removed, *([".orchestration/config.toml"] if config.get("changed") else []),
+               *(["CLAUDE.md"] if claude_md.get("updated") else [])]
     stat = git(p.root, "diff", "--stat", "--", *changed, check=False) if changed else ""
-    return {"updated": updated, "created": created, "skipped": skipped, "diff_stat": stat.strip(), "next": UPGRADE_NEXT}
+    return {"updated": updated, "created": created, "removed": removed, "skipped": skipped, "config": config,
+            "claude_md": claude_md, "diff_stat": stat.strip(), "next": UPGRADE_NEXT}
 
 
 def setup_done(p: Project) -> dict:
@@ -277,7 +384,7 @@ def project_objective(p: Project) -> str:
 
 
 def bind(p: Project) -> dict:
-    """코디네이터 터미널을 Run 에 묶는다. 처음이면 만들고, 있으면 다시 붙는다."""
+    """관제가 Run 을 만들거나 다시 붙는다. 처음이면 만들고, 있으면 다시 붙는다."""
     require_drive(p)
     run = load_run(p)
     if run.get("run_id"):
