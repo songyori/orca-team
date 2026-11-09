@@ -297,6 +297,7 @@ def compose_spec(p: Project, cfg: Config, doc: TaskDoc, stage: str, rnd: int, ow
         "role": doc.role, "role_title": cfg.title(doc.role), "role_doc": role_doc, "task_id": doc.id,
         "round": rnd, "task_body": doc.body, "depends_on": ", ".join(deps_of(doc)) or "없음",
         "owns": ", ".join(owns), "fix_block": fix_block,
+        "handoff_block": agents.handoff_block(p, cfg, doc.role),
         "test_block": gate_block(p, doc)})
 
 

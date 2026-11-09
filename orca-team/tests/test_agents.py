@@ -5,7 +5,7 @@ from unittest import mock
 
 from helpers import FAKES, ProjectCase
 from test_tasks import TaskCase
-from orch import agents
+from orch import agents, tasks
 from orch.config import Config
 from orch.paths import Project
 
@@ -204,6 +204,79 @@ class AgentFixTest(AgentCase):
         self.orch("drop", "T-002", "--reason", "필요 없어졌다")
         self.assertEqual(self.calls_for("orchestration worker-release"), [])
         self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+
+class ResetTest(AgentCase):
+    def started(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        agents.release_task(self.p, "production", "T-001")
+
+    def test_spec_reads_handoff_file_when_present(self):
+        (self.root / "docs/handoff").mkdir(parents=True)
+        (self.root / "docs/handoff/production.md").write_text("# 인수인계\n", encoding="utf-8")
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.assertIn("먼저 `docs/handoff/production.md` 를 읽는다", self.arg(self.last_start(), "--spec"))
+
+    def test_spec_has_no_handoff_line_without_file(self):
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        spec = self.arg(self.last_start(), "--spec")
+        self.assertNotIn("docs/handoff", spec)
+        self.assertNotIn("\n\n\n", spec)
+
+    def test_mark_reset_pending_only_used_agents(self):
+        self.started()
+        self.assertEqual(agents.mark_reset_pending(self.p, self.cfg()), ["production"])
+        self.assertTrue(self.agents_state()["production"]["reset_pending"])
+        self.assertNotIn("research", self.agents_state())
+
+    def test_begin_and_finish_reset(self):
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
+        out = agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertEqual((out["status"], out["dispatch_id"]), ("handoff", "ctx_h"))
+        created = self.calls_for("orchestration task-create")[-1]
+        self.assertIn("docs/handoff/production.md", self.arg(created, "--spec"))
+        self.assertEqual(self.arg(created, "--task-title"), "[handoff] 생산 인수인계")
+        self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
+        self.assertEqual(agents.reset_owner(self.p, "ctx_h"), "production")
+        self.assertEqual(agents.place(self.p, self.cfg(), "developer"), agents.WAIT)
+        out = agents.finish_reset(self.p, "production", True, sleep=lambda _: None)
+        self.assertEqual(out["status"], "reset")
+        sent = self.calls_for("terminal send")[-1]
+        self.assertEqual((self.arg(sent, "--terminal"), self.arg(sent, "--text")), ("term_a1", "/clear"))
+        self.assertEqual(self.arg(self.calls_for("terminal wait")[-1], "--for"), "tui-idle")
+        state = self.agents_state()["production"]
+        self.assertEqual((state["since_reset"], state["reset_pending"], state["resetting"]), (0, False, None))
+        self.assertEqual(agents.place(self.p, self.cfg(), "developer"), "production")
+
+    def test_failed_handoff_keeps_session(self):
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
+        agents.begin_reset(self.p, self.cfg(), "production")
+        out = agents.finish_reset(self.p, "production", False, sleep=lambda _: None)
+        self.assertEqual(out["status"], "handoff_failed")
+        self.assertEqual(self.calls_for("terminal send"), [])
+        self.assertEqual(self.agents_state()["production"]["since_reset"], 1)
+
+    def test_begin_reset_skips_dead_terminal_and_busy_agent(self):
+        self.started()
+        agents.update(self.p, "production", lambda e: e.update(reset_pending=True, task="T-009"))
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        agents.update(self.p, "production", lambda e: e.update(task=None))
+        self.respond("terminal show", STALE, code=1)
+        self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "skipped")
+        self.assertEqual((self.agents_state()["production"]["reset_pending"], self.agents_state()["production"]["handle"]),
+                         (False, None))
+
+    def test_orch_agent_reset(self):
+        self.orch("agent", "reset", "production")
+        self.assertTrue(self.agents_state()["production"]["reset_pending"])
+        self.assertEqual(self.orch("agent", "reset", "nobody", check=False).returncode, 2)
 
 
 if __name__ == "__main__":

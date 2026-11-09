@@ -503,6 +503,12 @@ class TemplateTest(unittest.TestCase):
         for key in ("(2026-11-09, 0.6.1)", "| 0.6.1 |", "worker-show 를 --full 로"):
             self.assertIn(key, status)
 
+    def test_handoff_template(self):
+        text = (T / "handoff.md").read_text(encoding="utf-8")
+        for key in ("{agent}", "{agent_title}", "{path}", "200줄", "worker_done"):
+            self.assertIn(key, text)
+        self.assertIn("{handoff_block}## 소유 경로", (T / "worker-spec.md").read_text(encoding="utf-8"))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -78,6 +78,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("followups", help="묶음(또는 묶음 밖) 리뷰의 회귀·후속·기획 누락을 모은다(코디네이터, 읽기 전용)")
     s.add_argument("id", nargs="?", help="tester 태스크 ID(그 묶음) 또는 태스크 ID")
     s.add_argument("--rest", action="store_true", help="어떤 묶음에도 들지 않은 done developer 태스크")
+    s = sub.add_parser("agent", help="고정 에이전트")
+    agent_sub = s.add_subparsers(dest="agent_cmd", required=True)
+    agent_sub.add_parser("reset", help="다음 태스크 전에 인수인계를 쓰고 세션을 비운다").add_argument("name")
     sub.add_parser("which").add_argument("ref")
     add_graph_commands(sub)
     return parser
@@ -96,7 +99,7 @@ def add_graph_commands(sub) -> None:
 
 
 GRAPH_COMMANDS = {"plan", "start-ready", "design-review"}  # 태스크 그래프 명령(코디네이터). add_graph_commands·run_graph 가 처리한다
-CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", *GRAPH_COMMANDS}
+CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
 
 
 def project(need_config: bool):
@@ -224,6 +227,10 @@ def run(args) -> int:
         from . import review
 
         emit(review.review(p, cfg, args.id))
+    elif args.cmd == "agent":
+        from . import agents
+
+        emit(agents.request_reset(p, cfg, args.name))
     else:
         from . import tasks
 

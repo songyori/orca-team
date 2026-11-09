@@ -6,16 +6,19 @@ from __future__ import annotations
 
 import fcntl
 import shlex
+import time
 from contextlib import contextmanager
 
 from . import orca
 from .config import Agent, Config
-from .paths import OrchError, Project
-from .util import now, read_json, write_json
+from .paths import TEMPLATES, OrchError, Project
+from .util import now, read_json, render, write_json
 
 TEMP = "temp"  # 임시 워커(태스크마다 새 워커)
 WAIT = "wait"  # 고정 에이전트를 기다린다
 TAB_PREFIX = "orca-team "
+HANDOFF_DIR = "docs/handoff"
+RESET_SETTLE_SECONDS = 5.0  # /clear 뒤 tui-idle 이 떠도 새 세션 화면이 입력을 받기까지 기다린다(실험 E4)
 
 
 def load_all(p: Project) -> dict:
@@ -177,3 +180,82 @@ def summary(p: Project, cfg: Config) -> list[dict]:
                      "reset_pending": bool(e.get("reset_pending")), "resetting": bool(e.get("resetting")),
                      "since_reset": int(e.get("since_reset") or 0)})
     return rows
+
+
+def handoff_rel(name: str) -> str:
+    return f"{HANDOFF_DIR}/{name}.md"
+
+
+def handoff_block(p: Project, cfg: Config, role: str) -> str:
+    """그 직무의 에이전트 인수인계 파일이 있으면 워커 spec 에 넣을 줄. 임시 워커에도 넣는다."""
+    agent = cfg.agent_for(role)
+    if agent is None or not (p.root / handoff_rel(agent.name)).is_file():
+        return ""
+    return (f"먼저 `{handoff_rel(agent.name)}` 를 읽는다. {agent.title} 에이전트가 이 프로젝트에서 정한 결정과 규칙, "
+            "남은 일이 적혀 있다.\n\n")
+
+
+def mark_reset_pending(p: Project, cfg: Config) -> list[str]:
+    """묶음이 끝났다. 마지막 리셋 뒤 태스크를 하나라도 한 에이전트는 다음 태스크 전에 리셋한다."""
+    names = []
+    for name in cfg.agents:
+        if int(entry(p, name).get("since_reset") or 0) >= 1:
+            update(p, name, lambda e: e.update(reset_pending=True))
+            names.append(name)
+    return names
+
+
+def request_reset(p: Project, cfg: Config, name: str) -> dict:
+    """사용자가 요청한 리셋(orch agent reset)."""
+    if name not in cfg.agents:
+        raise OrchError(f"고정 에이전트가 아니다: {name}. 가능한 이름: {', '.join(cfg.agents) or '없음'}", 2)
+    update(p, name, lambda e: e.update(reset_pending=True))
+    return {"name": name, "reset_pending": True}
+
+
+def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
+    """비어 있고(맡은 태스크·대기열 없음) reset_pending 이면 인수인계 태스크를 넣는다. 아니면 None.
+    작업 터미널이 없으면 비울 세션이 없으므로 표시만 지운다."""
+    agent = cfg.agents[name]
+    e = entry(p, name)
+    if not e.get("reset_pending") or e.get("task") or e.get("resetting") or e.get("queue"):
+        return None
+    handle = e.get("handle")
+    if not handle or not orca.terminal_alive(handle):
+        update(p, name, lambda x: x.update(reset_pending=False, since_reset=0, handle=None))
+        return {"name": name, "status": "skipped"}
+    spec = render((TEMPLATES / "handoff.md").read_text(encoding="utf-8"),
+                  {"agent": name, "agent_title": agent.title, "path": handoff_rel(name)})
+    code, receipt, _ = start(p, agent, spec, f"[handoff] {agent.title} 인수인계")
+    dispatch = orca.find_key(receipt, ("dispatchId",))
+    if code != 0 or not receipt.get("ok") or not dispatch:
+        return {"name": name, "status": "failed", "receipt": receipt}
+    update(p, name, lambda x: x.update(resetting={"dispatch_id": dispatch, "at": now()}))
+    _best_effort(["terminal", "rename", "--terminal", handle, "--title", TAB_PREFIX + agent.title])
+    return {"name": name, "status": "handoff", "dispatch_id": dispatch}
+
+
+def reset_owner(p: Project, dispatch_id: str | None) -> str | None:
+    """이 디스패치가 인수인계 태스크면 그 에이전트 이름."""
+    if not dispatch_id:
+        return None
+    for name, e in load_all(p).items():
+        resetting = e.get("resetting") if isinstance(e, dict) else None
+        if isinstance(resetting, dict) and resetting.get("dispatch_id") == dispatch_id:
+            return name
+    return None
+
+
+def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep) -> dict:
+    """인수인계 worker_done 뒤. 성공이면 /clear 로 세션을 비우고 입력 준비를 기다린다. 실패면 세션을 그대로 둔다.
+    새 세션 화면을 그리는 동안 넣은 입력은 사라질 수 있어(실험 E4) tui-idle 뒤 RESET_SETTLE_SECONDS 를 더 기다린다."""
+    handle = entry(p, name).get("handle")
+    if not ok:
+        update(p, name, lambda e: e.update(resetting=None, reset_pending=False))
+        return {"name": name, "status": "handoff_failed"}
+    if handle:
+        _best_effort(["terminal", "send", "--terminal", handle, "--text", "/clear", "--enter", "--wait-submit", "10"])
+        _best_effort(["terminal", "wait", "--terminal", handle, "--for", "tui-idle", "--timeout-ms", "30000"])
+        sleep(RESET_SETTLE_SECONDS)
+    update(p, name, lambda e: e.update(resetting=None, reset_pending=False, since_reset=0, last_reset_at=now()))
+    return {"name": name, "status": "reset"}

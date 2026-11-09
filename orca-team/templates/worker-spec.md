@@ -8,7 +8,7 @@
 
 선행 태스크: {depends_on}. 시작 전에 `docs/planning/contracts.md`(있으면)와 선행 태스크 리포트 `docs/tasks/<선행 태스크 ID>/report.md` 를 먼저 읽는다.
 
-## 소유 경로
+{handoff_block}## 소유 경로
 수정·커밋해도 되는 경로: {owns}
 리포트 경로 `docs/tasks/{task_id}/report.md` 는 항상 허용된다.
 소유 경로 밖을 고쳐야 하면 멈추고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
