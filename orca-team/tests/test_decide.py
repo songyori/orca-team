@@ -99,6 +99,51 @@ class DesignDecideTest(DecideCase):
         self.assertEqual(self.state("T-001")["history"][-1]["note"], "제목을 키운다 = 크게")
 
 
+    def test_retry_after_mid_sequence_failure_applies_only_the_rest(self):
+        for t in ("T-001", "T-002", "T-003"):
+            self.awaiting(t)
+        entry = comm.post(self.p, "approval", "디자인 3개", {"tasks": ["T-001", "T-002", "T-003"]})
+        (self.root / ".orchestration/state/design-review.json").write_text(json.dumps({"asks": [
+            {"id": entry["id"], "tasks": {"T-001": 1, "T-002": 1, "T-003": 1}, "at": "x"}]}), encoding="utf-8")
+        started = {"ok": True, "result": {"taskId": "task_9", "dispatchId": "ctx_9"}}
+        self.respond_seq("orchestration worker-start", started, ({"ok": False, "error": {"code": "x"}}, 1))
+        fixes = {"T-001": "a", "T-002": "b", "T-003": "c"}
+        with self.assertRaises(OrchError) as ctx:
+            plan.design_decide(self.p, self.cfg(), entry["id"], [], fixes)
+        self.assertEqual(ctx.exception.code, 1)
+        msg = str(ctx.exception)
+        self.assertIn("T-001(fix)", msg)
+        self.assertIn("T-002", msg)
+        self.assertIn("같은 명령을 다시 하면 남은 것만 적용한다", msg)
+        self.assertNotIn(entry["id"], comm.load_answered(self.p)["ids"])
+        self.assertIn(entry["id"], [q["id"] for q in ask.open_questions(self.p)])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), 2)
+        # 실패한 launch 는 영수증을 보고 --retry 로 먼저 푼다(안내 문구). 그 뒤 같은 명령을 다시 한다.
+        self.respond("orchestration worker-start", started)
+        tasks.fix(self.p, self.cfg(), "T-002", retry=True)
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), 3)
+        out = plan.design_decide(self.p, self.cfg(), entry["id"], [], fixes)
+        self.assertEqual(out["fixed"], ["T-001", "T-002", "T-003"])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), 4)  # T-003 만 새로 띄웠다
+        self.assertEqual([self.state(t)["round"] for t in ("T-001", "T-002", "T-003")], [2, 2, 2])
+        self.assertIn(entry["id"], comm.load_answered(self.p)["ids"])
+
+    def test_second_decide_after_success_is_exit_3(self):
+        self.awaiting("T-001")
+        entry = comm.post(self.p, "approval", "디자인 1개", {"tasks": ["T-001"]})
+        plan.design_decide(self.p, self.cfg(), entry["id"], ["T-001"], {})
+        with self.assertRaises(OrchError) as ctx:
+            plan.design_decide(self.p, self.cfg(), entry["id"], ["T-001"], {})
+        self.assertEqual(ctx.exception.code, 3)
+
+    def test_cli_duplicate_fix_is_exit_2(self):
+        self.awaiting("T-001")
+        entry = comm.post(self.p, "approval", "디자인 1개", {"tasks": ["T-001"]})
+        proc = self.orch("design-decide", entry["id"], "--fix", "T-001=a", "--fix", "T-001=b", check=False)
+        self.assertEqual(proc.returncode, 2)
+        self.assertEqual(self.state("T-001")["status"], "awaiting_user")
+
+
 class ScopeTest(DecideCase):
     def test_scope_sends_to_dispatch(self):
         self.write_spec("T-001")

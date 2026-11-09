@@ -259,15 +259,17 @@ def answer(p: Project, out_id: str, body: str) -> dict:
         raise OrchError(f"{out_id} 는 디자인 승인 질문이다. 화면별 결정을 "
                         f"`orch design-decide {out_id} --approve T-xxx,… --fix 'T-yyy=<요청>'` 으로 넘긴다", 2)
     if kind == "decide":
-        with comm.answered_lock(p):
+        with comm.answered_lock(p):  # 잠금은 확인·기록 때만 잡는다. 큐 전송을 기다리는 동안 잡지 않는다
             if out_id in comm.load_answered(p)["ids"]:
                 raise OrchError(f"{out_id} 에는 이미 답했다(state/answered.json)", 3)
-            result = {"id": out_id, "type": "decide", "kind": entry.get("kind")}
-            if entry.get("kind") == "worker_question":
-                if not entry.get("message_id"):
-                    raise OrchError(f"{out_id}: 워커 질문의 Orca 메시지 id 가 없다", 2)
-                result["sent"] = queue.submit(p, "reply", {"message_id": entry["message_id"], "body": body})
-            comm.record_answered(p, out_id)  # 보내지 못하면(예외) 기록하지 않는다(다시 답할 수 있다)
+        result = {"id": out_id, "type": "decide", "kind": entry.get("kind")}
+        if entry.get("kind") == "worker_question":
+            if not entry.get("message_id"):
+                raise OrchError(f"{out_id}: 워커 질문의 Orca 메시지 id 가 없다", 2)
+            result["sent"] = queue.submit(p, "reply", {"message_id": entry["message_id"], "body": body})
+        with comm.answered_lock(p):  # 보내지 못하면(예외) 기록하지 않는다(다시 답할 수 있다)
+            if out_id not in comm.load_answered(p)["ids"]:
+                comm.record_answered(p, out_id)
         return result
     raise OrchError(f"{out_id} 는 {kind} 메시지다. ask·decide 에만 답한다", 2)
 
@@ -277,7 +279,7 @@ def open_questions(p: Project) -> list[dict]:
     watch 가 다시 주지 않으므로 status 와 reask 가 이것으로 찾는다.
 
     - ask: 답 파일이 없고, 그 태스크가 working 상태의 ASK_ROLES 직무일 때(질문한 워커가 아직 기다린다)
-    - question·approval: answered.json 에 없을 때. 기록 시작점(since)보다 앞선 줄은 뺀다(0.2.0 에서 올라온 질문)."""
+    - approval·decide: answered.json 에 없을 때. 기록 시작점(since)보다 앞선 줄은 뺀다(0.2.0 에서 올라온 질문)."""
     answered = comm.load_answered(p)
     since, done = comm.out_number(answered["since"]), set(answered["ids"])
     found = []

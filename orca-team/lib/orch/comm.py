@@ -86,7 +86,7 @@ def _outbox_lock(p: Project):
 
 
 def answered_lock(p: Project):
-    """orch answer 가 question·approval 에 한 번만 답하게 확인·전송·기록을 묶는다."""
+    """approval·decide 에 한 번만 답하게 answered.json 의 확인과 기록을 각각 짧게 잠근다(Orca 호출·큐 대기 동안은 잡지 않는다)."""
     return _file_lock(p.answered_json.with_name(p.answered_json.name + ".lock"))
 
 

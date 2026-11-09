@@ -147,7 +147,10 @@ def run_graph(p, cfg, args) -> int:
             task_id, sep, note = pair.partition("=")
             if not sep:
                 raise OrchError(f"--fix 는 T-xxx=<요청> 형식이다: {pair}", 2)
-            fixes[task_id.strip()] = note.strip()
+            task_id = task_id.strip()
+            if task_id in fixes:
+                raise OrchError(f"--fix 가 같은 태스크에 두 번 있다: {task_id}", 2)
+            fixes[task_id] = note.strip()
         approve = [t.strip() for t in args.approve.split(",") if t.strip()]
         emit(plan.design_decide(p, cfg, args.id, approve, fixes))
         return 0

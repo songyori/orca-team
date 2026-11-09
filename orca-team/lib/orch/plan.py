@@ -585,26 +585,60 @@ def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixe
         return fixes[task_id]
 
     out = {"id": out_id, "approved": [], "fixed": [], "dependent_fixes": [], "deferred": []}
-    with comm.answered_lock(p):
+    with comm.answered_lock(p):  # 잠금은 확인 동안만 잡는다. Orca 호출(fix) 을 하는 동안 잡지 않는다
         if out_id in comm.load_answered(p)["ids"]:
             raise OrchError(f"{out_id} 에는 이미 답했다(state/answered.json)", 3)
-        for task_id in approve:
-            if task_id not in via:
-                accept(p, task_id)
+    asked_rounds = next((a.get("tasks") for a in load_design_reviews(p) if a.get("id") == out_id), None)
+    asked_rounds = asked_rounds if isinstance(asked_rounds, dict) else {}
+
+    def fixed_already(task_id: str, note: str | None) -> bool:
+        """이 답으로 이미 고쳤나. 물은 라운드보다 현재 라운드가 크면(launch_failed 는 제외) 고친 것이다.
+        묻지 않은 선행 의존 화면은 같은 요청 문구가 이력에 있으면 고친 것이다."""
+        st = load_state(p, task_id) or {}
+        asked = asked_rounds.get(task_id)
+        if isinstance(asked, int) and isinstance(st.get("round"), int):
+            return st["round"] > asked and st.get("status") != "launch_failed"
+        return note is not None and any(isinstance(h, dict) and h.get("note") == note for h in st.get("history") or [])
+
+    steps = [("approve", t, None) for t in approve if t not in via]
+    steps += [("fix", t, fixes[t].strip()) for t in fixes]
+    steps += [("dep", t, f"선행 디자인 {src} 가 바뀐다: {request_of(t)}. 바뀐 선행 디자인에 맞춘다") for t, src in via.items()]
+    applied = []
+    for kind, task_id, note in steps:
+        try:
+            if kind == "approve":
+                if (load_state(p, task_id) or {}).get("status") != "done":
+                    accept(p, task_id)
                 out["approved"].append(task_id)
-        for task_id, note in fixes.items():
-            fix(p, cfg, task_id, note.strip())
-            out["fixed"].append(task_id)
-        for task_id, source in via.items():
-            note = f"선행 디자인 {source} 가 바뀐다: {request_of(task_id)}. 바뀐 선행 디자인에 맞춘다"
-            st = load_state(p, task_id) or {}
-            if st.get("status") in ("awaiting_user", "changes"):
-                fix(p, cfg, task_id, note)
+            elif kind == "fix":
+                if not fixed_already(task_id, None):
+                    fix(p, cfg, task_id, note)
+                out["fixed"].append(task_id)
+            elif fixed_already(task_id, note):
                 out["dependent_fixes"].append(task_id)
             else:
-                st["pending_dep_fix"] = note
-                save_state(p, st)
-                out["deferred"].append(task_id)
-        comm.record_answered(p, out_id)
+                st = load_state(p, task_id) or {}
+                if st.get("status") in ("awaiting_user", "changes"):
+                    fix(p, cfg, task_id, note)
+                    out["dependent_fixes"].append(task_id)
+                elif st.get("pending_dep_fix") != note:
+                    st["pending_dep_fix"] = note
+                    save_state(p, st)
+                    out["deferred"].append(task_id)
+                else:
+                    out["deferred"].append(task_id)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+            hint = ""
+            if (load_state(p, task_id) or {}).get("status") == "launch_failed":
+                hint = f" {task_id} 는 launch_failed 다. 영수증을 보고 `orch fix {task_id} --retry` 를 먼저 한다."
+            done = ", ".join(f"{t}({k})" for k, t in applied) or "없음"
+            raise OrchError(f"{out_id}: 적용 도중 {task_id} 에서 멈췄다({exc}). 적용한 것: {done}. 답은 기록하지 않았다.{hint} "
+                            "같은 명령을 다시 하면 남은 것만 적용한다", 1) from exc
+        applied.append((kind, task_id))
+    with comm.answered_lock(p):
+        if out_id not in comm.load_answered(p)["ids"]:  # 그 사이 다른 쪽이 답했으면 다시 쓰지 않는다
+            comm.record_answered(p, out_id)
     out["start_ready"] = start_ready(p, cfg)
     return out
