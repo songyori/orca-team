@@ -147,6 +147,26 @@ def release_task(p: Project, name: str, task_id: str) -> None:
     update(p, name, write)
 
 
+def enqueue(p: Project, name: str, task_id: str) -> None:
+    """수정 라운드를 에이전트 대기열 끝에 넣는다(이미 있으면 끝으로 옮긴다)."""
+    def write(e: dict) -> None:
+        e["queue"] = [*(t for t in (e.get("queue") or []) if t != task_id), task_id]
+    update(p, name, write)
+
+
+def dequeue(p: Project, name: str, task_id: str) -> None:
+    update(p, name, lambda e: e.update(queue=[t for t in (e.get("queue") or []) if t != task_id]))
+
+
+def detach(p: Project, name: str, task_id: str) -> None:
+    """중단(drop)했거나 작업자가 죽은 태스크를 에이전트에서 뗀다. 처리 수는 세지 않는다."""
+    def write(e: dict) -> None:
+        if e.get("task") == task_id:
+            e["task"] = None
+        e["queue"] = [t for t in (e.get("queue") or []) if t != task_id]
+    update(p, name, write)
+
+
 def summary(p: Project, cfg: Config) -> list[dict]:
     """orch status 용 표. Orca 를 부르지 않는다."""
     rows = []

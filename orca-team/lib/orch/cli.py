@@ -64,6 +64,8 @@ def build_parser() -> argparse.ArgumentParser:
             s.add_argument("--force", action="store_true", help="워커가 일하는 중이어도 fix 한다")
             s.add_argument("--supplement", metavar="T-yyy",
                            help="반영하는 디자인 시스템 보강 태스크(done 인 director). 이력에 사용자 요청 대신 남는다")
+            s.add_argument("--extra-round", action="store_true",
+                           help="최대 라운드를 넘긴 태스크를 한 번 더 고친다(사용자가 정했을 때만)")
     for name in ("review", "accept"):
         sub.add_parser(name).add_argument("id")
     s = sub.add_parser("drop", help="태스크 중단·잠금 해제(코디네이터)")
@@ -230,7 +232,8 @@ def run(args) -> int:
         elif args.cmd == "start":
             emit(tasks.start(p, cfg, args.id, args.retry, overrides(args)))
         elif args.cmd == "fix":
-            emit(tasks.fix(p, cfg, args.id, args.note, args.retry, overrides(args), args.force, args.supplement))
+            emit(tasks.fix(p, cfg, args.id, args.note, args.retry, overrides(args), args.force, args.supplement,
+                           args.extra_round))
         elif args.cmd == "accept":
             emit(tasks.accept(p, args.id))
         elif args.cmd == "drop":

@@ -527,16 +527,13 @@ class FixAcceptTest(TaskCase):
         self.set_state("T-001", status="approved")
         self.assertEqual(self.orch("fix", "T-001", check=False).returncode, 2)
 
-    def test_accept_releases_notifies_and_unlocks(self):
+    def test_accept_releases_and_unlocks(self):
         self.set_state("T-001", status="approved")
         out = json.loads(self.orch("accept", "T-001").stdout)
         self.assertTrue(out["released"])
         call = self.calls_for("orchestration worker-release")[-1]
         self.assertEqual(self.arg(call, "--dispatch"), "ctx_1")
         self.assertEqual(self.state("T-001")["status"], "done")
-        outbox = (self.root / ".orchestration/state/outbox.jsonl").read_text(encoding="utf-8")
-        self.assertIn("T-001", outbox)
-        self.assertIn("APPROVE", outbox)
         self.write_spec("T-002")
         self.orch("start", "T-002")
 
@@ -673,7 +670,7 @@ class DropTest(TaskCase):
         self.assertEqual((out["status"], out["forced"]), ("dropped", True))
         entry = self.state("T-001")["history"][-1]
         self.assertEqual((entry["stage"], entry["forced"]), ("drop", True))
-        self.assertIn("강제", self.outbox()[-1]["body"])
+        self.assertTrue(self.state("T-001")["history"][-1]["forced"])
 
     def outbox(self):
         path = self.root / ".orchestration/state/outbox.jsonl"
@@ -690,14 +687,6 @@ class DropTest(TaskCase):
         self.write_spec("T-002")
         self.orch("start", "T-002")
         self.assertEqual(self.state("T-002")["status"], "working")
-
-    def test_drop_notifies_main(self):
-        self.liveness("exited")
-        out = json.loads(self.drop().stdout)
-        last = self.outbox()[-1]
-        self.assertEqual((last["id"], last["type"]), (out["notified"], "progress"))
-        self.assertIn("T-001", last["body"])
-        self.assertIn("사용자가 중단을 결정", last["body"])
 
     def test_drop_refused_for_non_coordinator(self):
         proc = self.drop(check=False, env={"ORCA_TERMINAL_HANDLE": "term_main"})

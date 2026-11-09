@@ -9,7 +9,6 @@ from datetime import datetime
 from pathlib import Path
 
 from . import agents, orca, testgate
-from .comm import notify
 from .config import DEFAULT_APPROVAL_ROLES, Config
 from .globs import any_overlap
 from .paths import TEMPLATES, OrchError, Project
@@ -419,9 +418,14 @@ def check_supplement(p: Project, task_id: str, supplement: str) -> None:
 
 
 def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: bool = False,
-        overrides: dict | None = None, force: bool = False, supplement: str | None = None) -> dict:
+        overrides: dict | None = None, force: bool = False, supplement: str | None = None,
+        extra_round: bool = False, from_queue: bool = False) -> dict:
     """수정 라운드. supplement 는 이 fix 가 반영하는 디자인 시스템 보강(director) 태스크 ID 다. 주면 이력에 supplement 로
-    남고, awaiting_user 에서 해도 사용자 요청(user_requested)으로 남기지 않는다."""
+    남고, awaiting_user 에서 해도 사용자 요청(user_requested)으로 남기지 않는다.
+
+    고정 에이전트가 한 태스크는 같은 에이전트가 고친다(해제하지 않는다). 그 에이전트가 일하는 중이거나 앞선 수정이
+    기다리면 대기열에 넣고 {"status": "queued"} 를 돌려준다. 에이전트가 비면 drain_fix_queues 가 from_queue 로 띄운다.
+    extra_round 는 최대 라운드를 넘긴 태스크를 사용자가 한 번 더 고치기로 했을 때만 쓴다."""
     require_coordinator(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
@@ -441,9 +445,9 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
             raise OrchError(f"{task_id}: fix 는 changes, working(워커 실패 보고), awaiting_user(사용자 수정 요청) "
                             f"상태에서만 한다(status={status})", 2)
         # 최대 라운드는 Codex 리뷰 반복을 끊고 사용자에게 묻기 위한 것이다. awaiting_user 의 fix 는 이미 사용자 요청이다.
-        if status != "awaiting_user" and st["round"] >= cfg.max_rounds:
-            raise OrchError(f"{task_id}: 최대 {cfg.max_rounds} 라운드에 도달했다. "
-                            "orch notify --type question 으로 메인에 판단을 요청한다", 1)
+        if status != "awaiting_user" and st["round"] >= cfg.max_rounds and not extra_round:
+            raise OrchError(f"{task_id}: 최대 {cfg.max_rounds} 라운드에 도달했다. 메인이 사용자에게 묻고, 한 번 더 고치기로 "
+                            f"하면 orch fix {task_id} --extra-round 로 한다", 1)
         rnd = st["round"] + 1
         # 리뷰를 거친 changes 의 워커는 이미 settled 다. working 은 워커가 아직 일하는 중일 수 있어 확인한다.
         if status == "working" and not force:
@@ -454,16 +458,52 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
                                 "그래도 하려면 --force", 2)
     owns = owns_of(doc, cfg)
     check_lock(p, task_id, owns)
-    # 터미널 재사용은 Orca 가 agent_unconfigured 로 거부하므로 하지 않는다. 이전 디스패치를 해제하고 새 워커를 띄운다.
-    # awaiting_user 는 accept 때 이미 해제했다. 그때 해제에 실패했을 때만 다시 시도한다.
-    extra = {} if status == "awaiting_user" and st.get("released") else release_previous(st)
+    agent = st.get("agent") if st.get("agent") in cfg.agents else None
+    if agent and not from_queue and (agents.working(p, agent) or agents.entry(p, agent).get("queue")):
+        st["queued_fix"] = {"note": note, "supplement": supplement, "extra_round": extra_round, "force": force,
+                            "retry": retry, "at": now()}
+        save_state(p, st)
+        agents.enqueue(p, agent, task_id)
+        return {"id": task_id, "status": "queued", "agent": agent}
+    st.pop("queued_fix", None)
+    if agent:
+        extra: dict = {}  # 고정 에이전트는 해제하지 않는다(해제하면 작업 터미널이 닫힌다)
+    else:
+        # 임시 워커는 이전 디스패치를 해제하고 새 워커를 띄운다. awaiting_user 는 accept 때 이미 해제했다.
+        extra = {} if status == "awaiting_user" and st.get("released") else release_previous(st)
     if not retry and status == "working":
         extra["forced"] = force
     if supplement is not None:
         extra["supplement"] = supplement
     elif not retry and status == "awaiting_user":
         extra["user_requested"] = True
-    return launch(p, cfg, doc, st, "fix", rnd, owns, note, overrides, extra)
+    if extra_round:
+        extra["extra_round"] = True
+    return launch(p, cfg, doc, st, "fix", rnd, owns, note, overrides, extra, agent=agent)
+
+
+def drain_fix_queues(p: Project, cfg: Config) -> list[dict]:
+    """비어 있는 고정 에이전트마다 대기열 맨 앞의 수정 라운드를 띄운다(start_ready 가 먼저 부른다)."""
+    out = []
+    for name in cfg.agents:
+        e = agents.entry(p, name)
+        if e.get("task") or e.get("resetting") or not e.get("queue"):
+            continue
+        task_id = e["queue"][0]
+        agents.dequeue(p, name, task_id)
+        queued = (load_state(p, task_id) or {}).get("queued_fix")
+        if not isinstance(queued, dict):
+            continue
+        try:
+            entry = fix(p, cfg, task_id, queued.get("note"), bool(queued.get("retry")), None, bool(queued.get("force")),
+                        queued.get("supplement"), bool(queued.get("extra_round")), from_queue=True)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
+            out.append({"id": task_id, "status": "error", "error": str(exc)})
+            continue
+        out.append({"id": task_id, "status": "working", "dispatch_id": entry.get("dispatch_id")})
+    return out
 
 
 def release_previous(st: dict) -> dict:
@@ -478,14 +518,6 @@ def release_previous(st: dict) -> dict:
         return {"previous_released": False, "previous_release_error": str(exc)}
     released = code == 0 and bool(data.get("ok"))
     return {"previous_released": released} if released else {"previous_released": False, "previous_release_error": data}
-
-
-def role_title(p: Project, role: str) -> str:
-    """알림용 직무 이름. config.toml 이 깨져도 accept·drop 은 돌아야 하므로 읽지 못하면 직무 키를 쓴다."""
-    try:
-        return Config.load(p.config_path).title(role)
-    except OrchError:
-        return role
 
 
 def approval_roles(p: Project) -> list[str]:
@@ -509,8 +541,8 @@ def load_design_reviews(p: Project) -> list[dict]:
 
 
 def accept(p: Project, task_id: str) -> dict:
-    """APPROVE 된 태스크를 끝낸다. 사용자 승인 대상 직무는 먼저 awaiting_user 로 두고(워커 해제, 잠금 유지),
-    awaiting_user 에서 다시 accept 하면 사용자 승인으로 보고 done 이 된다."""
+    """APPROVE 된 태스크를 끝낸다. 사용자 승인 대상 직무는 먼저 awaiting_user 로 두고(잠금 유지),
+    awaiting_user 에서 다시 accept 하면 사용자 승인으로 보고 done 이 된다. 임시 워커만 해제한다."""
     require_coordinator(p)
     st = must_state(p, task_id)
     status = st.get("status")
@@ -518,24 +550,22 @@ def accept(p: Project, task_id: str) -> dict:
         st.update(status="done", done_at=now(), user_approved_at=now())
         st["history"].append({"stage": "user_approval", "round": st.get("round"), "at": now()})
         save_state(p, st)
-        msg = notify(p, "progress", f"{task_id} [{role_title(p, st['role'])}] {st['title']} — 사용자 승인 (r{st['round']})")
-        return {"id": task_id, "status": "done", "user_approved": True, "notified": msg["id"]}
+        return {"id": task_id, "status": "done", "user_approved": True}
     if status != "approved":
         raise OrchError(f"{task_id}: APPROVE 된 태스크(또는 사용자 승인 대기 awaiting_user)만 accept 한다"
                         f"(status={status})", 2)
     gated = st["role"] in approval_roles(p)  # 설정이 틀려 거부하면 워커를 해제하기 전에 멈춘다
-    code, data = orca.call(["orchestration", "worker-release", "--dispatch", str(st.get("dispatch_id"))], check=False)
-    released = code == 0 and bool(data.get("ok"))
+    released, data = None, None
+    if st.get("agent") in (None, agents.TEMP):
+        code, data = orca.call(["orchestration", "worker-release", "--dispatch", str(st.get("dispatch_id"))], check=False)
+        released = code == 0 and bool(data.get("ok"))
     if gated:
         st.update(status="awaiting_user", released=released, awaiting_since=now())
-        label = "Codex APPROVE, 사용자 승인 대기"
     else:
         st.update(status="done", released=released, done_at=now())
-        label = "APPROVE"
     save_state(p, st)
-    msg = notify(p, "progress", f"{task_id} [{role_title(p, st['role'])}] {st['title']} — {label} (r{st['round']})")
-    result = {"id": task_id, "status": st["status"], "released": released, "notified": msg["id"]}
-    if not released:
+    result = {"id": task_id, "status": st["status"], "released": released}
+    if released is False:
         result["release_error"] = data
     return result
 
@@ -567,7 +597,10 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
                                 "풀려 다음 태스크와 같은 파일을 동시에 고칠 수 있다. 워커를 먼저 멈추거나 worker_done 또는 "
                                 f"워커가 끝날(settled·exited 등) 때까지 기다린다. 그래도 중단하려면 --force", 2)
         released, release_error = None, None
-        if st.get("status") == "awaiting_user" and st.get("released"):
+        temp = st.get("agent") in (None, agents.TEMP)
+        if not temp:
+            agents.detach(p, st["agent"], task_id)  # 고정 에이전트는 해제하지 않는다
+        elif st.get("status") == "awaiting_user" and st.get("released"):
             released = True  # accept 때 이미 해제했다(fix 와 같다)
         elif st.get("dispatch_id"):
             try:
@@ -585,10 +618,7 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
         save_state(p, st)
     finally:
         release_pid(pid)
-    kind = "강제 중단(drop --force)" if force else "중단(drop)"
-    msg = notify(p, "progress",
-                 f"{task_id} [{role_title(p, st['role'])}] {st['title']} — {kind}, r{st.get('round')}: {reason}")
-    result = {"id": task_id, "status": "dropped", "released": released, "forced": force, "notified": msg["id"]}
+    result = {"id": task_id, "status": "dropped", "released": released, "forced": force}
     if release_error is not None:
         result["release_error"] = release_error
     return result

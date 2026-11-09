@@ -559,7 +559,7 @@ class ApprovalTest(PlanCase):
         self.assertEqual((out["status"], out["released"]), ("awaiting_user", True))
         self.assertEqual(self.state("T-001")["status"], "awaiting_user")
         self.assertEqual(len(self.calls_for("orchestration worker-release")), 1)
-        self.assertIn("사용자 승인 대기", outbox(self.root)[-1]["body"])
+        self.assertEqual(self.state("T-001")["status"], "awaiting_user")
         self.write_spec("T-002", role="designer", title="회원가입")
         proc = self.orch("start", "T-002", check=False)
         self.assertEqual(proc.returncode, 1)
@@ -573,7 +573,7 @@ class ApprovalTest(PlanCase):
         self.assertEqual(st["status"], "done")
         self.assertIn("user_approved_at", st)
         self.assertEqual(len(self.calls_for("orchestration worker-release")), 1)
-        self.assertIn("사용자 승인", outbox(self.root)[-1]["body"])
+        self.assertEqual(self.state("T-001")["status"], "done")
         self.write_spec("T-002", role="designer", title="회원가입")
         self.orch("start", "T-002")
 
@@ -647,11 +647,11 @@ class ApprovalTest(PlanCase):
         self.assertEqual(len(self.calls_for("orchestration worker-release")), 1)  # accept 때 한 번뿐
 
     def test_next_action_for_awaiting_user(self):
-        self.orch("accept", "T-001")  # out-0001 progress
+        self.orch("accept", "T-001")  # accept 는 outbox 에 쓰지 않는다
         self.assertIn("orch design-review", self.next_of("T-001"))
-        self.orch("design-review")  # out-0002 approval
+        self.orch("design-review")  # out-0001 approval
         nxt = self.next_of("T-001")
-        for text in ("out-0002", "orch accept T-001", "orch fix T-001 --note"):
+        for text in ("out-0001", "orch accept T-001", "orch fix T-001 --note"):
             self.assertIn(text, nxt)
 
 

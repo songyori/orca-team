@@ -13,9 +13,9 @@ from .ask import build_render
 from .config import Config
 from .globs import any_overlap
 from .paths import OrchError, Project
-from .tasks import (ACTIVE, FINISHED, all_states, check_lock, deps_of, format_unmet, load_design_reviews, load_doc,
-                    load_state, max_task_number, owns_of, parse_text, save_state, start, task_path, unmet_deps,
-                    validate)
+from .tasks import (ACTIVE, FINISHED, all_states, check_lock, deps_of, drain_fix_queues, format_unmet,
+                    load_design_reviews, load_doc, load_state, max_task_number, owns_of, parse_text, save_state, start,
+                    task_path, unmet_deps, validate)
 from .util import git, git_commit_paths, now, read_json, require_coordinator, write_json
 
 PLAN_FILE = "docs/planning/tasks.toml"
@@ -414,6 +414,7 @@ def start_ready(p: Project, cfg: Config) -> dict:
     (lock), working 수가 max_parallel 보다 적은(limit) 것을 tasks.toml 순서로 띄운다. 한 태스크의 실행 실패는 나머지를 막지 않는다.
     waiting reason: spec, deps, lock, agent(고정 에이전트 대기), limit."""
     require_coordinator(p)
+    fixes = drain_fix_queues(p, cfg)
     limit = cfg.max_parallel
     approval = cfg.user_approval_roles
     running = sum(1 for st in all_states(p) if st.get("status") == "working")
@@ -454,7 +455,7 @@ def start_ready(p: Project, cfg: Config) -> dict:
             continue
         started.append({"id": task_id, "status": "working", "dispatch_id": entry.get("dispatch_id")})
         running += 1
-    return {"started": started, "waiting": waiting, "running": running, "max_parallel": limit}
+    return {"started": started, "waiting": waiting, "running": running, "max_parallel": limit, "fixes": fixes}
 
 
 def design_system_url(p: Project) -> str | None:

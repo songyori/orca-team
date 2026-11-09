@@ -215,7 +215,7 @@ class BrokenConfigTest(ProjectCase):
         self.orch("wait")
         self.assertEqual(json.loads(self.orch("which", "ctx_1").stdout)["id"], "T-001")
         self.assertEqual(json.loads(self.orch("accept", "T-001").stdout)["status"], "done")
-        self.assertIn("[developer]", self.outbox_text())
+        self.assertNotIn("[developer]", self.outbox_text())  # accept 는 outbox 에 쓰지 않는다
 
     def outbox_text(self):
         return (self.root / ".orchestration/state/outbox.jsonl").read_text(encoding="utf-8")

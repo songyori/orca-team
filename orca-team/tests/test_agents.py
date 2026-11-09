@@ -140,5 +140,71 @@ class AgentStartTest(AgentCase):
         self.assertTrue(self.state("T-001")["history"][-1]["model_ignored"])
 
 
+class AgentFixTest(AgentCase):
+    def started(self, task_id="T-001", role="developer"):
+        self.commit_spec(task_id, role=role)
+        self.orch("start", task_id)
+
+    def test_fix_goes_to_same_agent_without_release(self):
+        self.started()
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="changes")
+        self.respond("orchestration worker-start", NEXT)
+        self.orch("fix", "T-001", "--note", "고친다")
+        self.assertEqual(self.calls_for("orchestration worker-release"), [])
+        call = self.last_start()
+        self.assertEqual(self.arg(call, "--terminal"), "term_a1")
+        self.assertEqual((self.state("T-001")["round"], self.state("T-001")["history"][-1]["note"]), (2, "고친다"))
+
+    def test_fix_queues_while_agent_busy_then_drains(self):
+        self.started()                      # 생산 에이전트가 T-001 을 하는 중
+        self.commit_spec("T-002", role="planner")
+        head = self.git("rev-parse", "HEAD").strip()
+        (self.root / ".orchestration/state/tasks/T-002.json").write_text(json.dumps({
+            "id": "T-002", "role": "planner", "title": "로그인", "status": "changes", "stage": "work", "round": 1,
+            "base": head, "owns": ["docs/planning/**"], "depends_on": [], "agent": "production", "task_id": "task_x",
+            "dispatch_id": "ctx_x", "history": [], "verdicts": {"1": "REQUEST_CHANGES"}}), encoding="utf-8")
+        out = json.loads(self.orch("fix", "T-002", "--note", "보강").stdout)
+        self.assertEqual((out["status"], out["agent"]), ("queued", "production"))
+        self.assertEqual(self.agents_state()["production"]["queue"], ["T-002"])
+        self.assertEqual(self.state("T-002")["queued_fix"]["note"], "보강")
+        agents.release_task(self.p, "production", "T-001")
+        self.respond("orchestration worker-start", NEXT)
+        out = json.loads(self.orch("start-ready").stdout)
+        self.assertEqual(out["fixes"][0]["id"], "T-002")
+        self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
+        self.assertNotIn("queued_fix", self.state("T-002"))
+        self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+    def test_extra_round(self):
+        self.started()
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="changes", round=3)
+        proc = self.orch("fix", "T-001", check=False)
+        self.assertEqual(proc.returncode, 1)
+        self.assertIn("--extra-round", proc.stderr)
+        self.respond("orchestration worker-start", NEXT)
+        self.orch("fix", "T-001", "--extra-round")
+        last = self.state("T-001")["history"][-1]
+        self.assertEqual((self.state("T-001")["round"], last["extra_round"]), (4, True))
+
+    def test_accept_and_drop_do_not_release_agent(self):
+        self.started()
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="approved")
+        out = json.loads(self.orch("accept", "T-001").stdout)
+        self.assertEqual((out["status"], out["released"]), ("done", None))
+        self.assertNotIn("notified", out)
+        self.commit_spec("T-002", role="planner")
+        self.respond("orchestration worker-start", NEXT)
+        self.orch("start", "T-002")
+        agents.release_task(self.p, "production", "T-002")
+        self.set_state("T-002", status="changes")
+        agents.enqueue(self.p, "production", "T-002")
+        self.orch("drop", "T-002", "--reason", "필요 없어졌다")
+        self.assertEqual(self.calls_for("orchestration worker-release"), [])
+        self.assertEqual(self.agents_state()["production"]["queue"], [])
+
+
 if __name__ == "__main__":
     unittest.main()
