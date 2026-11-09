@@ -57,6 +57,8 @@
 
 ### Task 1: Orca 응답 모양과 가짜 orca 순서 응답
 
+> 완료: 0.6.1 로 main 에 먼저 넣었다(a6f1dc9, dd67808, 5ef6b5e). 0.7.0 브랜치는 그 위에서 Task 2 부터 한다.
+
 지금 Orca(1.4.240)의 `worker-show --json` 은 간략형(`result.state`·`stage`·`terminal`·`liveness`)만 준다. `orca.worker_info` 가 읽는 `result.worker.*` 는 `--full` 을 붙여야 나온다. 그래서 지금은 바쁨 판정이 늘 "확인 불가"다. 또 `review.py` 가 부르는 `orchestration worker-retain` 은 지금 Orca 에 없는 명령이다(보존은 `worker-keep-open`). drive 테스트에는 같은 명령의 응답을 차례로 바꾸는 가짜 orca 가 필요하다.
 
 **Files:**
@@ -4896,7 +4898,7 @@ git commit -m "feat(orca-team): orch upgrade 가 코디네이터 프로젝트를
 
 - [ ] **Step 1: 버전을 올린다**
 
-세 곳의 `0.6.0` 을 `0.7.0` 으로 바꾼다(`paths.py` 의 `VERSION`, 두 JSON 의 `"version"`).
+세 곳의 `0.6.1` 을 `0.7.0` 으로 바꾼다(`paths.py` 의 `VERSION`, 두 JSON 의 `"version"`).
 
 Run: `cd orca-team/tests && python3 -m unittest test_cli -v 2>&1 | tail -3`
 Expected: OK(세 곳이 같은지 검사한다)
