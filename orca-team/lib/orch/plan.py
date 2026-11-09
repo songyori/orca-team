@@ -13,7 +13,7 @@ from .ask import build_render
 from .config import Config
 from .globs import any_overlap
 from .paths import OrchError, Project
-from .tasks import (ACTIVE, FINISHED, all_states, check_lock, deps_of, drain_fix_queues, format_unmet,
+from .tasks import (ACTIVE, FINISHED, accept, fix, all_states, check_lock, deps_of, drain_fix_queues, format_unmet,
                     load_design_reviews, load_doc, load_state, max_task_number, owns_of, parse_text, save_state, start,
                     task_path, unmet_deps, validate)
 from .util import git, git_commit_paths, now, read_json, require_coordinator, write_json
@@ -533,3 +533,78 @@ def design_review(p: Project, cfg: Config) -> dict:
     asks.append({"id": entry["id"], "tasks": rounds, "at": now()})
     write_json(p.design_review_json, {"asks": asks})
     return {"id": entry["id"], "tasks": list(rounds), "links": links}
+
+
+def design_decide(p: Project, cfg: Config, out_id: str, approve: list[str], fixes: dict[str, str]) -> dict:
+    """디자인 승인 질문(approval out_id)에 대한 사용자 답을 화면별 결정으로 적용한다.
+
+    물은 화면마다 승인(approve) 또는 수정(fixes: T-id → 사용자 요청 원문)이 하나씩 있어야 한다. 고치는 화면을 선행으로 둔
+    승인 대상 태스크는 승인했더라도 accept 하지 않고 함께 고친다. 그 태스크가 아직 일하는 중이면 pending_dep_fix 로
+    남기고 drive 가 리뷰 뒤에 고친다. 끝나면 질문을 닫고 start-ready."""
+    from .ask import find_entry
+
+    require_coordinator(p)
+    entry = find_entry(p, out_id)
+    if not entry or entry.get("type") != "approval":
+        raise OrchError(f"{out_id} 는 디자인 승인 질문(approval)이 아니다", 2)
+    asked = [t for t in entry.get("tasks") or [] if isinstance(t, str)]
+    approve = list(dict.fromkeys(approve))
+    problems = []
+    unknown = [t for t in [*approve, *fixes] if t not in asked]
+    both = sorted(set(approve) & set(fixes))
+    missing = [t for t in asked if t not in approve and t not in fixes]
+    if unknown:
+        problems.append(f"묻지 않은 화면: {', '.join(unknown)}")
+    if both:
+        problems.append(f"승인과 수정에 함께 있다: {', '.join(both)}")
+    if missing:
+        problems.append(f"결정이 없는 화면: {', '.join(missing)}. 사용자에게 다시 묻는다")
+    empty = [t for t, note in fixes.items() if not note.strip()]
+    if empty:
+        problems.append(f"수정 요청이 비었다: {', '.join(empty)}")
+    if problems:
+        raise OrchError("; ".join(problems), 2)
+    roles = cfg.user_approval_roles
+    via: dict[str, str] = {}  # 함께 고칠 태스크 → 바뀐 선행 태스크
+    changed = set(fixes)
+    grew = True
+    while grew:
+        grew = False
+        for st in all_states(p):
+            if st["id"] in changed or st.get("role") not in roles or st.get("status") in FINISHED:
+                continue
+            hit = next((d for d in st.get("depends_on") or [] if d in changed), None)
+            if hit:
+                via[st["id"]] = hit
+                changed.add(st["id"])
+                grew = True
+
+    def request_of(task_id: str) -> str:
+        while task_id in via:
+            task_id = via[task_id]
+        return fixes[task_id]
+
+    out = {"id": out_id, "approved": [], "fixed": [], "dependent_fixes": [], "deferred": []}
+    with comm.answered_lock(p):
+        if out_id in comm.load_answered(p)["ids"]:
+            raise OrchError(f"{out_id} 에는 이미 답했다(state/answered.json)", 3)
+        for task_id in approve:
+            if task_id not in via:
+                accept(p, task_id)
+                out["approved"].append(task_id)
+        for task_id, note in fixes.items():
+            fix(p, cfg, task_id, note.strip())
+            out["fixed"].append(task_id)
+        for task_id, source in via.items():
+            note = f"선행 디자인 {source} 가 바뀐다: {request_of(task_id)}. 바뀐 선행 디자인에 맞춘다"
+            st = load_state(p, task_id) or {}
+            if st.get("status") in ("awaiting_user", "changes"):
+                fix(p, cfg, task_id, note)
+                out["dependent_fixes"].append(task_id)
+            else:
+                st["pending_dep_fix"] = note
+                save_state(p, st)
+                out["deferred"].append(task_id)
+        comm.record_answered(p, out_id)
+    out["start_ready"] = start_ready(p, cfg)
+    return out

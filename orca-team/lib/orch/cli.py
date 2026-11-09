@@ -81,6 +81,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("agent", help="고정 에이전트")
     agent_sub = s.add_subparsers(dest="agent_cmd", required=True)
     agent_sub.add_parser("reset", help="다음 태스크 전에 인수인계를 쓰고 세션을 비운다").add_argument("name")
+    s = sub.add_parser("scope", help="일하는 중인 태스크에 추가 범위를 알린다(메인, spec 커밋 뒤)")
+    s.add_argument("id")
+    s.add_argument("body")
     sub.add_parser("which").add_argument("ref")
     add_graph_commands(sub)
     return parser
@@ -88,6 +91,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def add_graph_commands(sub) -> None:
     """태스크 그래프 명령(코디네이터)."""
+    s = sub.add_parser("design-decide", help="디자인 승인 답을 화면별 결정으로 적용한다(메인)")
+    s.add_argument("id", help="approval 메시지 id(out-NNNN)")
+    s.add_argument("--approve", default="", help="승인한 태스크 ID, 쉼표로 구분")
+    s.add_argument("--fix", action="append", default=[], metavar="T-xxx=<요청>", help="고칠 태스크와 사용자 요청 원문")
     s = sub.add_parser("plan", help="태스크 그래프(docs/planning/tasks.toml) 적용(코디네이터)")
     plan_sub = s.add_subparsers(dest="plan_cmd", required=True)
     a = plan_sub.add_parser("apply", help="검증 후 태스크 spec·pending 상태 생성")
@@ -98,7 +105,7 @@ def add_graph_commands(sub) -> None:
     sub.add_parser("design-review", help="awaiting_user 디자인을 모아 사용자 승인 질문 하나를 올린다(코디네이터)")
 
 
-GRAPH_COMMANDS = {"plan", "start-ready", "design-review"}  # 태스크 그래프 명령(코디네이터). add_graph_commands·run_graph 가 처리한다
+GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # 태스크 그래프 명령(코디네이터). add_graph_commands·run_graph 가 처리한다
 CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
 
 
@@ -134,6 +141,16 @@ def overrides(args) -> dict:
 def run_graph(p, cfg, args) -> int:
     from . import plan
 
+    if args.cmd == "design-decide":
+        fixes = {}
+        for pair in args.fix:
+            task_id, sep, note = pair.partition("=")
+            if not sep:
+                raise OrchError(f"--fix 는 T-xxx=<요청> 형식이다: {pair}", 2)
+            fixes[task_id.strip()] = note.strip()
+        approve = [t.strip() for t in args.approve.split(",") if t.strip()]
+        emit(plan.design_decide(p, cfg, args.id, approve, fixes))
+        return 0
     if args.cmd == "plan":
         emit(plan.check_only(p, cfg, args.file) if args.plan_cmd == "check" else plan.apply(p, cfg, args.append))
         return 0
@@ -245,6 +262,8 @@ def run(args) -> int:
             emit(tasks.accept(p, args.id))
         elif args.cmd == "drop":
             emit(tasks.drop(p, args.id, args.reason, args.force))
+        elif args.cmd == "scope":
+            emit(tasks.scope(p, args.id, args.body))
         else:
             emit(tasks.which(p, args.ref))
     return 0

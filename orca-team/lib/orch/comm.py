@@ -22,7 +22,7 @@ TYPES = ("progress", "question", "done")  # orch notify 가 받는 타입
 POST_TYPES = (*TYPES, "ask", "approval", "decide", "result")  # outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다
 DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure",
                 "test_config", "planning_gaps", "unknown_regression", "token_update")
-REPLY_TYPES = ("question", "approval")  # 메인 답이 코디네이터 Run 으로 가는 타입. 답한 id 는 state/answered.json 에 남긴다
+REPLY_TYPES = ("approval", "decide")  # 메인이 답해 닫는 타입. 답한 id 는 state/answered.json 에 남긴다
 WAIT_TYPES = "worker_done,escalation,question,status"
 MAIN_SUBJECT = "[main]"
 MAIN_IDS_KEEP = 1000

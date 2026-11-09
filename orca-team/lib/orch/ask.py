@@ -13,7 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
-from . import comm
+from . import comm, queue
 from .paths import OrchError, Project
 from .tasks import TASK_ID_RE, load_state
 from .util import now, read_json
@@ -242,8 +242,9 @@ def ask_user(p: Project, task_id: str, source: str | None = None, wait_id: str |
 
 
 def answer(p: Project, out_id: str, body: str) -> dict:
-    """메인의 답. ask 는 답 파일로(질문한 워커가 받아 간다), question·approval 은 코디네이터 Run 으로 보내고
-    state/answered.json 에 남긴다. 같은 id 에 두 번 답하면 exit 3."""
+    """메인의 답. ask 는 답 파일로(질문한 워커가 받아 간다). decide 는 state/answered.json 에 남겨 닫고,
+    worker_question 이면 답을 drive 큐로 워커에게 보낸다(orca orchestration reply). 같은 id 에 두 번 답하면 exit 3.
+    approval 은 orch design-decide 로 답한다."""
     body = body.strip()
     if not body:
         raise OrchError("답이 비었다", 2)
@@ -254,14 +255,21 @@ def answer(p: Project, out_id: str, body: str) -> dict:
     if kind == "ask":
         path = write_answer(p, out_id, body)
         return {"id": out_id, "type": "ask", "task": entry.get("task"), "answer_file": str(path.relative_to(p.root))}
-    if kind in REPLY_TYPES:
+    if kind == "approval":
+        raise OrchError(f"{out_id} 는 디자인 승인 질문이다. 화면별 결정을 "
+                        f"`orch design-decide {out_id} --approve T-xxx,… --fix 'T-yyy=<요청>'` 으로 넘긴다", 2)
+    if kind == "decide":
         with comm.answered_lock(p):
             if out_id in comm.load_answered(p)["ids"]:
                 raise OrchError(f"{out_id} 에는 이미 답했다(state/answered.json)", 3)
-            sent = comm.tell(p, body, out_id)  # 보내지 못하면 기록하지 않는다(다시 답할 수 있다)
-            comm.record_answered(p, out_id)
-        return {"id": out_id, "type": kind, **sent}
-    raise OrchError(f"{out_id} 는 {kind} 메시지다. ask·question·approval 에만 답한다", 2)
+            result = {"id": out_id, "type": "decide", "kind": entry.get("kind")}
+            if entry.get("kind") == "worker_question":
+                if not entry.get("message_id"):
+                    raise OrchError(f"{out_id}: 워커 질문의 Orca 메시지 id 가 없다", 2)
+                result["sent"] = queue.submit(p, "reply", {"message_id": entry["message_id"], "body": body})
+            comm.record_answered(p, out_id)  # 보내지 못하면(예외) 기록하지 않는다(다시 답할 수 있다)
+        return result
+    raise OrchError(f"{out_id} 는 {kind} 메시지다. ask·decide 에만 답한다", 2)
 
 
 def open_questions(p: Project) -> list[dict]:

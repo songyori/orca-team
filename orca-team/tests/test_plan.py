@@ -704,9 +704,9 @@ class DesignReviewTest(PlanCase):
         self.assertTrue(render["options"][0]["description"].startswith("추천 사유: "))
         saved = json.loads((self.root / ".orchestration/state/design-review.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["asks"][-1]["tasks"], {"T-001": 1, "T-002": 1})
-        self.orch("answer", out["id"], "전부 승인 (추천)", env=MAIN)
-        call = self.calls_for("orchestration send")[-1]
-        self.assertEqual(call[call.index("--subject") + 1], f"[main] reply {out['id']}")
+        proc = self.orch("answer", out["id"], "전부 승인 (추천)", check=False, env=MAIN)  # approval 은 design-decide 로 답한다
+        self.assertEqual(proc.returncode, 2)
+        self.assertIn("design-decide", proc.stderr)
 
     def test_same_designs_twice_is_exit_3(self):
         self.awaiting("T-001", "로그인 화면", "docs/design/login/**")
@@ -815,14 +815,10 @@ class GraphEndToEndTest(PlanCase):
         self.assertEqual((review["tasks"], review["links"]), (["T-001"], {"T-001": "https://claude.ai/artifact/login-1"}))
         status = json.loads(self.orch("status", env=MAIN).stdout)
         self.assertEqual(status["open_questions"], [{"id": review["id"], "type": "approval"}])
-        self.orch("answer", review["id"], "전부 승인 (추천)", env=MAIN)
-        call = self.calls_for("orchestration send")[-1]
-        self.assertEqual(call[call.index("--subject") + 1], f"[main] reply {review['id']}")
+        decided = json.loads(self.orch("design-decide", review["id"], "--approve", "T-001").stdout)
+        self.assertEqual((decided["approved"], decided["fixed"]), (["T-001"], []))
         self.assertEqual(json.loads(self.orch("status", env=MAIN).stdout)["open_questions"], [])
-
-        self.assertTrue(json.loads(self.orch("accept", "T-001").stdout)["user_approved"])
-        out = json.loads(self.orch("start-ready").stdout)
-        self.assertEqual([(s["id"], s["status"]) for s in out["started"]], [("T-003", "working")])
+        self.assertEqual([(s["id"], s["status"]) for s in decided["start_ready"]["started"]], [("T-003", "working")])
         self.assertEqual({t["id"]: t["status"] for t in json.loads(self.orch("status").stdout)["tasks"]},
                          {"T-001": "done", "T-002": "done", "T-003": "working"})
 

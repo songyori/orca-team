@@ -174,7 +174,10 @@ class StopAndSessionStartTest(HookCase):
         self.assertIn("1건", context)
 
     def test_session_start_mentions_open_questions(self):
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")
+        from orch import comm
+        from orch.paths import Project
+
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "실패")
         (self.root / ".orchestration/state/outbox.cursor").write_text("1", encoding="utf-8")
         context = self.hook("session-start", {"session_id": "fresh"})["hookSpecificOutput"]["additionalContext"]
         self.assertIn("답하지 않은 질문이 1건", context)
@@ -480,7 +483,7 @@ class MainContextGuardTest(HookCase):
         self.assertIsNone(self.ask_user(question))  # transcript 기록이 늦어도 메인이 거부에 갇히지 않는다
         self.assertIsNone(self.ask_user(question))
         self.assertEqual(self.denied_ids(), [entry["id"]])
-        other = self.post("question", question="두 번째 질문으로 갈까요?")
+        other = self.post("approval", question="두 번째 질문으로 갈까요?")
         self.assertEqual(self.decision(self.ask_user(other["render"]["question"])), "deny")
         self.assertEqual(self.denied_ids(), [entry["id"], other["id"]])
 

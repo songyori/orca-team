@@ -285,15 +285,6 @@ class NotifyQuestionJsonTest(AskCase):
         self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")
         self.assertNotIn("render", self.outbox()[0])
 
-    def test_answer_to_json_question_goes_to_coordinator(self):
-        self.notify_json(GOOD, check=True)
-        out = json.loads(self.orch("answer", "out-0001", "소셜", env=MAIN).stdout)
-        self.assertEqual(out["type"], "question")
-        call = self.calls_for("orchestration send")[-1]
-        self.assertEqual(call[call.index("--subject") + 1], "[main] reply out-0001")
-        self.assertIn("--body=소셜", call)
-        self.assertFalse((self.root / ".orchestration/state/answers").exists())
-
 
 class AnswerTest(AskCase):
     def test_answer_to_ask_writes_file_once(self):
@@ -304,17 +295,6 @@ class AnswerTest(AskCase):
         self.assertEqual((saved["id"], saved["answer"]), ("out-0001", "소셜"))
         self.assertEqual(self.orch("answer", "out-0001", "이메일", check=False, env=MAIN).returncode, 3)
         self.assertEqual(self.calls_for("orchestration send"), [])
-
-    def test_answer_to_question_and_approval_goes_to_coordinator_run(self):
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")  # out-0001
-        comm.post(Project(self.root), "approval", "디자인 1개를 확인해 주세요", {"tasks": ["T-002"]})  # out-0002
-        for out_id, kind in (("out-0001", "question"), ("out-0002", "approval")):
-            out = json.loads(self.orch("answer", out_id, "전부 승인", env=MAIN).stdout)
-            self.assertEqual(out["type"], kind)
-            call = self.calls_for("orchestration send")[-1]
-            self.assertEqual(call[call.index("--subject") + 1], f"[main] reply {out_id}")
-            self.assertIn("--body=전부 승인", call)
-        self.assertFalse((self.root / ".orchestration/state/answers").exists())
 
     def test_answer_rejects_unknown_progress_and_empty(self):
         self.orch("notify", "--type", "progress", "진행")  # out-0001
@@ -347,22 +327,23 @@ class OpenQuestionsTest(AskCase):
 
     def test_question_and_approval_are_open_until_answered_once(self):
         self.orch("notify", "--type", "progress", "진행")  # out-0001
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")  # out-0002
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "실패")  # out-0002
         comm.post(Project(self.root), "approval", "디자인 1개를 확인해 주세요", {"tasks": ["T-002"]})  # out-0003
-        self.assertEqual(self.status(), [{"id": "out-0002", "type": "question"}, {"id": "out-0003", "type": "approval"}])
+        self.assertEqual(self.status(), [{"id": "out-0002", "type": "decide"}, {"id": "out-0003", "type": "approval"}])
         self.orch("answer", "out-0002", "A안", env=MAIN)
         self.assertEqual(self.status(), [{"id": "out-0003", "type": "approval"}])
         self.assertEqual(self.answered()["ids"], ["out-0002"])
         proc = self.orch("answer", "out-0002", "B안", check=False, env=MAIN)
         self.assertEqual(proc.returncode, 3)
         self.assertIn("out-0002", proc.stderr)
-        self.assertEqual(len(self.calls_for("orchestration send")), 1)
+        self.assertEqual(self.calls_for("orchestration send"), [])
 
     def test_failed_send_is_not_recorded(self):
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")  # out-0001
-        (self.root / ".orchestration/state/run.json").write_text("{}", encoding="utf-8")
-        self.assertEqual(self.orch("answer", "out-0001", "A안", check=False, env=MAIN).returncode, 1)
-        self.assertEqual(self.status(), [{"id": "out-0001", "type": "question"}])
+        comm.post_decide(Project(self.root), "worker_question", "T-001", "q", extra={"message_id": "msg_1"})  # out-0001
+        with mock.patch("orch.queue.submit", side_effect=OrchError("관제가 꺼져 있다", 1)):
+            with self.assertRaises(OrchError):
+                ask.answer(Project(self.root), "out-0001", "A안")
+        self.assertEqual(self.status(), [{"id": "out-0001", "type": "decide"}])
         self.assertEqual(self.answered()["ids"], [])
 
     def test_questions_from_before_tracking_are_not_open(self):
@@ -371,18 +352,18 @@ class OpenQuestionsTest(AskCase):
         outbox.write_text(json.dumps({"id": "out-0001", "type": "question", "body": "예전 질문", "at": "x"},
                                      ensure_ascii=False) + "\n", encoding="utf-8")
         self.assertEqual(self.status(), [])
-        self.orch("notify", "--type", "question", "새 질문")  # out-0002
-        self.assertEqual(self.status(), [{"id": "out-0002", "type": "question"}])
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "새 질문")  # out-0002
+        self.assertEqual(self.status(), [{"id": "out-0002", "type": "decide"}])
         self.assertEqual(self.answered(), {"since": "out-0002", "ids": []})
 
     def test_reask_reemits_delivered_open_questions_in_watch_format(self):
         self.ask("--json", self.question_file())  # out-0001 ask
         self.orch("notify", "--type", "progress", "진행")  # out-0002
-        self.orch("notify", "--type", "question", "A안과 B안 중 무엇으로 할까요?")  # out-0003
-        self.orch("notify", "--type", "question", "답한 질문")  # out-0004
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "A안과 B안 중 무엇으로 할까요?")  # out-0003
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "답한 질문")  # out-0004
         self.orch("answer", "out-0004", "네", env=MAIN)
         self.deliver()
-        self.orch("notify", "--type", "question", "아직 전하지 않은 질문")  # out-0005, watch 가 전한다
+        comm.post_decide(Project(self.root), "worker_failed", "T-001", "아직 전하지 않은 질문")  # out-0005, watch 가 전한다
         cursor = (self.root / ".orchestration/state/outbox.cursor").read_text(encoding="utf-8")
         out = json.loads(self.orch("reask", env=MAIN).stdout)
         entries = {e["id"]: e for e in self.outbox()}

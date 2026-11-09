@@ -729,6 +729,24 @@ def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:
     return f"알 수 없는 상태({status}). .orchestration/state/tasks/{task_id}.json 을 확인한다"
 
 
+def scope(p: Project, task_id: str, body: str) -> dict:
+    """일하는 중인 태스크에 추가 범위를 알린다. 메인이 spec 에 "추가 범위"를 먼저 커밋한다.
+    pending 태스크는 spec 을 고쳐 커밋하면 되므로 받지 않는다."""
+    require_coordinator(p)
+    st = must_state(p, task_id)
+    if st.get("status") != "working" or not st.get("dispatch_id"):
+        raise OrchError(f"{task_id}: 일하는 중(working)인 태스크에만 범위를 더한다(status={st.get('status')}). "
+                        "시작 전이면 spec 을 고쳐 커밋한다", 2)
+    body = body.strip()
+    if not body:
+        raise OrchError("추가 범위가 비었다", 2)
+    orca.call(["orchestration", "send", "--to", f"dispatch:{st['dispatch_id']}", "--subject", "추가 범위",
+               f"--body={body}"])  # '-' 로 시작하는 본문이 플래그로 읽히지 않게
+    st["history"].append({"stage": "scope", "round": st.get("round"), "at": now(), "body": body})
+    save_state(p, st)
+    return {"id": task_id, "sent": True}
+
+
 def which(p: Project, ref: str) -> dict:
     for st in all_states(p):
         refs = {st.get("task_id"), st.get("dispatch_id")}
