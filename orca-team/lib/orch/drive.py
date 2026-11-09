@@ -50,7 +50,7 @@ class Drive:
     def _spawn(self, args: list[str]):
         """orch 하위 명령을 자식 프로세스로 띄운다. 환경(ORCA_TERMINAL_HANDLE=관제)을 그대로 물려준다."""
         return subprocess.Popen([sys.executable, str(ORCH_BIN), *args], cwd=self.p.root, stdout=subprocess.PIPE,
-                                stderr=subprocess.PIPE, text=True)
+                                stderr=subprocess.PIPE, text=True, errors="replace")
 
     def log(self, text: str) -> None:
         line = f"{now()} {text}"
@@ -62,30 +62,31 @@ class Drive:
         except OSError:
             pass
 
-    def fail(self, key: str, where: str, exc: Exception, task_id: str | None = None) -> None:
+    def fail(self, key: str, where: str, exc: Exception, task_id: str | None = None, summary: str | None = None,
+             commands=(), extra=None) -> None:
         text = f"{where} 실패: {type(exc).__name__}: {exc}"
         self.log(text)
         if self.failures.get(key) == text:
             return
-        self.failures[key] = text
         try:
-            self.decide("escalation", task_id, text[:300], files=self.task_files(task_id))
-        except Exception as inner:  # 올리는 일마저 실패해도 관제는 계속 돈다
+            self.decide("escalation", task_id, text[:300] if summary is None else summary[:600],
+                        files=self.task_files(task_id), commands=commands, extra=extra)
+        except Exception as inner:  # 올리는 일마저 실패해도 관제는 계속 돈다. 키를 남기지 않아 다음 실패가 다시 올린다
             if isinstance(inner, OrchError) and inner.code == 12:
                 raise
             self.log(f"{where} 실패를 올리지 못했다: {type(inner).__name__}: {inner}")
+            return
+        self.failures[key] = text
 
-    def isolated(self, key: str, where: str, fn, task_id: str | None = None):
-        """한 단위의 일이 예외로 끝나도 관제를 죽이지 않는다. 12(orca 없음)만 올린다."""
+    def isolated(self, key: str, where: str, fn, task_id: str | None = None, describe=None):
+        """한 단위의 일이 예외로 끝나도 관제를 죽이지 않는다. 12(orca 없음)만 올린다.
+        describe(exc) 는 올리는 글 {summary, commands, extra} 를 직접 만든다."""
         try:
             result = fn()
-        except OrchError as exc:
-            if exc.code == 12:
-                raise
-            self.fail(key, where, exc, task_id)
-            return None
         except Exception as exc:
-            self.fail(key, where, exc, task_id)
+            if isinstance(exc, OrchError) and exc.code == 12:
+                raise
+            self.fail(key, where, exc, task_id, **(describe(exc) if describe else {}))
             return None
         self.failures.pop(key, None)
         return result
@@ -123,8 +124,9 @@ class Drive:
         if command == "start-ready":
             return plan.start_ready(p, cfg)
         if command == "fix":
-            return tasks.fix(p, cfg, a["id"], a.get("note"), bool(a.get("retry")), a.get("overrides") or {},
-                             bool(a.get("force")), a.get("supplement"), bool(a.get("extra_round")))
+            return self.fix_with_pending(a["id"], a.get("note"), retry=bool(a.get("retry")),
+                                         overrides=a.get("overrides") or {}, force=bool(a.get("force")),
+                                         supplement=a.get("supplement"), extra_round=bool(a.get("extra_round")))
         if command == "accept":
             return self.accepted(a["id"], tasks.accept(p, a["id"]))
         if command == "drop":
@@ -151,12 +153,13 @@ class Drive:
         except OrchError as exc:
             if exc.code == 12:
                 raise
-            self.log(f"메일 확인 실패: {exc}")
+            self.fail("check", "메일 확인", exc)
             return []
         if code != 0 or not data.get("ok"):
-            self.log(f"메일 확인 실패(exit {code}): {json.dumps(data, ensure_ascii=False)[:300]}")
+            self.fail("check", "메일 확인", OrchError(f"exit {code}: {json.dumps(data, ensure_ascii=False)[:300]}", 1))
             return []
         self.check_failed = False
+        self.failures.pop("check", None)
         result = data.get("result") if isinstance(data.get("result"), dict) else {}
         self.ack = result.get("deliveryId") or None
         return [m for m in result.get("messages") or [] if isinstance(m, dict)]
@@ -214,7 +217,30 @@ class Drive:
                         extra={"question": body, "message_id": msg.get("id")})
         elif kind == "escalation":
             task_id = self.task_of(dispatch, orca_task)
+            if task_id and self.stale_dispatch(tasks.load_state(self.p, task_id) or {}, dispatch):
+                self.log(f"{task_id} 지난 디스패치의 escalation 무시: {dispatch}")
+                return
             self.decide("escalation", task_id, body[:300] or "워커가 worker_done 없이 멈췄다", files=self.task_files(task_id))
+
+    def msg_task(self, msg: dict) -> str | None:
+        payload = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+        try:
+            return self.task_of(payload.get("dispatchId"), payload.get("taskId"))
+        except Exception:
+            return None
+
+    def message_failure(self, msg: dict, exc: Exception) -> dict:
+        """처리하지 못한 메시지를 메인이 복구할 수 있게 올리는 글. Orca 는 메시지를 다시 주지 않는다."""
+        payload = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
+        kind, dispatch, orca_task = msg.get("type"), payload.get("dispatchId"), payload.get("taskId")
+        body = str(msg.get("body") or msg.get("subject") or "").strip()
+        summary = (f"메시지 {msg.get('id')} 처리 실패: {type(exc).__name__}: {exc} "
+                   f"[type={kind} taskId={orca_task} dispatchId={dispatch}] {body[:200]}")
+        out: dict = {"summary": summary}
+        if kind == "question":
+            out["extra"] = {"question": body, "message_id": msg.get("id")}
+            out["commands"] = ['orch answer <이 decide 의 id> "<답>"']
+        return out
 
     @staticmethod
     def stale_dispatch(st: dict, dispatch) -> bool:
@@ -254,13 +280,16 @@ class Drive:
         for key, job in list(self.jobs.items()):
             if job.proc.poll() is None:
                 continue
-            out, err = job.proc.communicate()
-            del self.jobs[key]
-            if job.kind == "review":
-                self.apply_mark(job.task_id)
-                self.review_done(job.task_id, job.proc.returncode, out or "", err or "")
-            elif job.kind == "final":
-                self.final_done(job.proc.returncode, out or "", err or "")
+            del self.jobs[key]  # 끝난 일은 먼저 뺀다. 뒤 처리가 실패해도 다시 읽지 않는다
+            self.isolated(f"job:{key}", f"{key} 마무리", lambda key=key, job=job: self.finish_job(job), job.task_id)
+
+    def finish_job(self, job: Job) -> None:
+        out, err = job.proc.communicate()
+        if job.kind == "review":
+            self.apply_mark(job.task_id)
+            self.review_done(job.task_id, job.proc.returncode, out or "", err or "")
+        elif job.kind == "final":
+            self.final_done(job.proc.returncode, out or "", err or "")
 
     def apply_mark(self, task_id: str) -> None:
         mark = self.pending_marks.pop(task_id, None)
@@ -308,19 +337,24 @@ class Drive:
             h.get("source") == "orch" and "quick" in (h.get("tests") or {}) and h["tests"]["quick"] not in testgate.PASSED
             for h in reviews)
 
-    def run_fix(self, task_id: str, note: str | None) -> bool:
-        """tasks.fix. 선행 변경 note(pending_dep_fix)가 남아 있으면 함께 전하고, 성공한 뒤에만 지운다."""
-        pending = (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
-        full = "\n".join(x for x in (note, pending) if x) or None
-        done = []
-        self.guard(lambda: done.append(tasks.fix(self.p, self.cfg, task_id, full)), task_id, pending)
-        if not done:
-            return False
+    def fix_with_pending(self, task_id: str, note: str | None, retry: bool = False, **kw) -> dict:
+        """tasks.fix. 선행 변경 note(pending_dep_fix)가 남아 있으면 앞에 붙여 함께 전하고, 성공한 뒤에만 지운다.
+        거부는 OrchError 로 올린다(대기열에 들어간 fix 도 note 를 담고 있어 지운다). --retry 는 이미 전한 지시를 다시 띄우므로 건드리지 않는다."""
+        pending = None if retry else (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
+        full = "\n".join(x for x in (pending, note) if x) or None
+        result = tasks.fix(self.p, self.cfg, task_id, full, retry, **kw)
         if pending:
             st = tasks.load_state(self.p, task_id) or {}
             if st.pop("pending_dep_fix", None) is not None:
                 tasks.save_state(self.p, st)
-        return True
+        return result
+
+    def run_fix(self, task_id: str, note: str | None) -> bool:
+        """관제가 정한 절차의 fix. 거부되면 못 전한 지시와 함께 메인에 올린다."""
+        pending = (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
+        done = []
+        self.guard(lambda: done.append(self.fix_with_pending(task_id, note)), task_id, pending)
+        return bool(done)
 
     def request_changes(self, task_id: str, result: dict) -> None:
         st = tasks.load_state(self.p, task_id) or {}
@@ -553,7 +587,8 @@ class Drive:
     def tick(self, wait_ms: int = WAIT_MS) -> None:
         self.beat()
         for msg in self.check(wait_ms):
-            self.isolated(f"msg:{msg.get('id')}", f"메시지 {msg.get('id')} 처리", lambda: self.handle_message(msg))
+            self.isolated(f"msg:{msg.get('id')}", f"메시지 {msg.get('id')} 처리", lambda msg=msg: self.handle_message(msg),
+                          self.msg_task(msg), describe=lambda exc, msg=msg: self.message_failure(msg, exc))
         if self.isolated("queue", "메인 요청 처리", self.run_queue):
             self.isolated("start_ready", "start_ready", self.start_ready)
         self.isolated("poll_jobs", "자식 프로세스 확인", self.poll_jobs)

@@ -188,6 +188,21 @@ class FixReviewTest(DriveCase):
         self.assertEqual(self.state("T-001")["pending_dep_fix"], note)
         self.assertIn(note, self.outbox("decide")[-1]["summary"])
 
+    def test_queued_fix_from_main_carries_and_clears_pending_dep_fix(self):
+        self.started("T-001", role="designer")
+        pending = "선행 디자인 T-000 가 바뀐다: 색"
+        self.set_state("T-001", status="changes", pending_dep_fix=pending)
+        from orch import queue
+        self.drive_alive()
+        queue.submit(self.p, "fix", {"id": "T-001", "note": "추가"}, wait=0)
+        self.assertEqual(self.drive.run_queue(), 1)
+        st = self.state("T-001")
+        self.assertNotIn("pending_dep_fix", st)
+        note = st["history"][-1]["note"]
+        self.assertIn(pending, note)
+        self.assertIn("추가", note)
+        self.assertLess(note.index(pending), note.index("추가"))
+
     def test_late_worker_done_is_ignored(self):
         self.started()
         self.drive.handle_message(self.done_msg(dispatch="ctx_old"))
@@ -223,6 +238,59 @@ class IsolationTest(DriveCase):
         self.assertEqual(handled, ["m2", "m2"])
         [entry] = self.outbox("decide")
         self.assertIn("KeyError", entry["summary"])
+
+    def test_failed_question_is_actionable(self):
+        self.started()
+        msg = {"id": "msg_q", "type": "question", "body": "토큰 이름?",
+               "payload": {"taskId": "task_1", "dispatchId": "ctx_1"}}
+        self.respond("orchestration check", {"ok": True, "result": {"deliveryId": "d", "messages": [msg]}})
+        real = self.drive.decide
+        calls = []
+
+        def flaky(kind, *a, **kw):
+            calls.append(kind)
+            if kind == "worker_question":
+                raise KeyError("boom")
+            return real(kind, *a, **kw)
+        with mock.patch.object(self.drive, "decide", side_effect=flaky):
+            self.drive.tick(wait_ms=0)
+        [entry] = self.outbox("decide")
+        self.assertIn("토큰 이름?", entry["summary"])
+        self.assertIn("KeyError", entry["summary"])
+        self.assertEqual((entry["message_id"], entry["task"]), ("msg_q", "T-001"))
+
+    def test_isolated_reraises_code_12(self):
+        with self.assertRaises(OrchError) as cm:
+            self.drive.isolated("k", "x", lambda: (_ for _ in ()).throw(OrchError("no orca", 12)))
+        self.assertEqual(cm.exception.code, 12)
+
+    def test_failure_key_unset_when_posting_fails(self):
+        with mock.patch.object(self.drive, "decide", side_effect=OSError("disk")):
+            self.drive.fail("k", "x", KeyError("a"))
+        self.assertNotIn("k", self.drive.failures)
+        self.drive.fail("k", "x", KeyError("a"))
+        self.assertEqual(len(self.outbox("decide")), 1)
+
+    def test_job_failure_is_isolated(self):
+        self.started()
+        self.drive.start_review("T-001")
+        self.spawned[-1][1].finish(0, "{}")
+        with mock.patch.object(self.drive, "review_done", side_effect=KeyError("x")):
+            self.drive.poll_jobs()
+        self.assertEqual(self.drive.jobs, {})
+        self.assertIn("job:review:T-001", self.drive.failures)
+
+    def test_check_failure_escalates_once(self):
+        self.respond("orchestration check", {"ok": False}, code=1)
+        self.drive.check(0)
+        self.drive.check(0)
+        self.assertEqual(len(self.outbox("decide")), 1)
+
+    def test_stale_escalation_is_ignored(self):
+        self.started()
+        self.drive.handle_message({"id": "m", "type": "escalation", "body": "멈춤",
+                                   "payload": {"taskId": "task_1", "dispatchId": "ctx_old"}})
+        self.assertEqual(self.outbox("decide"), [])
 
     def test_resets_error_does_not_stop_tick(self):
         self.respond("orchestration check", {"ok": True, "result": {"messages": []}})
@@ -291,6 +359,19 @@ class ReconcileTest(DriveCase):
         self.assertEqual(st["round"], 2)
         self.assertIn("이전 작업자가 중간에 끝났다", st["history"][-1]["note"])
 
+    def test_one_failing_task_does_not_stop_reconcile(self):
+        self.started("T-001")
+        tasks.save_state(self.p, {**self.state("T-001"), "id": "T-002"})
+        seen = []
+
+        def fake(st):
+            seen.append(st["id"])
+            if st["id"] == "T-001":
+                raise KeyError("boom")
+        with mock.patch.object(self.drive, "reconcile_task", side_effect=fake):
+            self.drive.reconcile()
+        self.assertEqual(seen, ["T-001", "T-002"])
+
     def test_tick_reads_mail_and_queue(self):
         self.started()
         self.respond_seq("orchestration check", {"ok": True, "result": {"deliveryId": "d1", "messages": [self.done_msg()]}})
@@ -298,6 +379,38 @@ class ReconcileTest(DriveCase):
         self.drive.tick(wait_ms=0)
         self.assertEqual(self.spawned[0][0], ["review", "T-001"])
         self.assertTrue((self.root / ".orchestration/state/drive/heartbeat").is_file())
+
+
+class SettleResetTest(DriveCase):
+    def setUp(self):
+        super().setUp()
+        path = self.root / ".orchestration/config.toml"
+        path.write_text(path.read_text(encoding="utf-8") + '\n[agents.test]\ntitle = "테스트"\nroles = ["tester"]\n',
+                        encoding="utf-8")
+        self.drive = drive.Drive(self.p, Config.load(path), spawn=self.fake_spawn)
+
+    def set_resetting(self, at):
+        from datetime import datetime
+        at = at or datetime.now().astimezone().isoformat()
+        agents.update(self.p, "test", lambda e: e.update(resetting={"dispatch_id": "ctx_h", "at": at}))
+
+    def show(self, stage, state, verdict="alive"):
+        self.respond("orchestration worker-show", {"ok": True, "result": {
+            "worker": {"stage": stage, "state": state}, "projection": {"liveness": {"verdict": verdict}}}})
+
+    def test_settled_failed_with_recent_at_escalates(self):
+        self.set_resetting(None)
+        self.show("settled", "failed")
+        self.drive.reconcile()
+        self.assertFalse(agents.entry(self.p, "test").get("resetting"))
+        self.assertIn("인수인계가 끝나지 않았다", self.outbox("decide")[-1]["summary"])
+
+    def test_recent_live_handoff_is_left_alone(self):
+        self.set_resetting(None)
+        self.show("running", None)
+        self.drive.reconcile()
+        self.assertTrue(agents.entry(self.p, "test").get("resetting"))
+        self.assertEqual(self.outbox("decide"), [])
 
 
 class ResetTest(DriveCase):
