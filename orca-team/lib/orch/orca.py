@@ -80,7 +80,7 @@ def _terminal_verdict(code: int, data: dict) -> str:
 
 
 def terminal_state(handle: str | None) -> str:
-    """코디네이터 자동 부활용 생존 판정. 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
+    """관제 자동 부활용 생존 판정. 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
     훅(10초 제한) 안에서 돌므로 TERMINAL_STATE_TIMEOUT 초만 기다린다."""
     if not handle:
         return "unknown"

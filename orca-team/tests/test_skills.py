@@ -4,10 +4,8 @@ import unittest
 from helpers import PLUGIN
 from orch.cli import build_parser
 
-# templates/coordinator.md 와 templates/CLAUDE.section.md 는 아직 없어진 orch tell·wait 를 적는다. Task 14 가 새로 쓸 때
-# 이 목록에 CLAUDE.section.md 를 다시 넣는다(coordinator.md 는 그때 지운다).
 DOCS = [PLUGIN / "skills/init/SKILL.md", PLUGIN / "skills/up/SKILL.md",
-        PLUGIN / "templates/roles/planner.md"]
+        PLUGIN / "templates/CLAUDE.section.md", PLUGIN / "templates/roles/planner.md"]
 
 
 class SkillDocsTest(unittest.TestCase):
@@ -49,7 +47,7 @@ class SkillDocsTest(unittest.TestCase):
         text = (PLUGIN / "skills/up/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("open_questions", text)
         self.assertIn(".orchestration/bin/orch reask", text)
-        self.assertIn("질문 표시 규칙", text)
+        self.assertIn("메인 규칙", text)
 
     def test_init_uses_fixed_steps(self):
         text = (PLUGIN / "skills/init/SKILL.md").read_text(encoding="utf-8")

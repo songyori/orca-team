@@ -146,7 +146,7 @@ class ComposeSpecTest(TaskCase):
         spec = self.arg(self.last_start(), "--spec")
         self.assertNotIn("## 수정 라운드", spec)
         self.assertNotIn("\n\n\n", spec)
-        self.assertIn("묻는다.\n\n## 작업 규칙\n", spec)
+        self.assertIn("답한다).\n\n## 작업 규칙\n", spec)
 
     def test_fix_stage_block_present_and_separated(self):
         self.write_spec("T-001")
@@ -155,7 +155,7 @@ class ComposeSpecTest(TaskCase):
         self.orch("fix", "T-001", "--note", "P1 반영")
         spec = self.arg(self.last_start(), "--spec")
         self.assertIn("## 수정 라운드\n", spec)
-        self.assertIn("코디네이터 지시: P1 반영\n\n## 작업 규칙\n", spec)
+        self.assertIn("지시: P1 반영\n\n## 작업 규칙\n", spec)
         self.assertNotIn("\n\n\n", spec)
         lines = spec.splitlines()
         i = lines.index("## 작업 규칙")
@@ -207,7 +207,7 @@ class TestBlockTest(TaskCase):
 
     def test_developer_gets_quick_rules(self):
         spec = self.spec_for("T-001", "developer")
-        self.assertIn("묻는다.\n\n## 테스트\n", spec)
+        self.assertIn("답한다).\n\n## 테스트\n", spec)
         self.assertIn("`.orchestration/bin/orch test T-001` 가 통과해야 한다", spec)
         self.assertIn("전체 테스트는 돌리지 않는다", spec)
         order = ("작업을 `[T-001]` 커밋으로 먼저 커밋한다", "`.orchestration/bin/orch test T-001` 를 돌린다",
@@ -253,7 +253,7 @@ class TestBlockTest(TaskCase):
         self.set_state("T-001", status="changes")
         self.orch("fix", "T-001", "--note", "P1 반영")
         spec = self.arg(self.last_start(), "--spec")
-        self.assertIn("코디네이터 지시: P1 반영\n\n## 테스트\n", spec)
+        self.assertIn("지시: P1 반영\n\n## 테스트\n", spec)
         self.assertNotIn("\n\n\n", spec)
 
 
@@ -827,7 +827,7 @@ class NextActionTest(TaskCase):
     def test_changes_at_max_rounds_asks_main_then_drop(self):
         self.set_state("T-001", status="changes", round=3)
         nxt = self.next()
-        self.assertIn("orch notify --type question", nxt)
+        self.assertIn("decide 로 올리고", nxt)
         self.assertIn("orch drop T-001", nxt)
         self.assertNotIn("orch fix", nxt)
 
@@ -937,7 +937,7 @@ class DependsPendingTest(TaskCase):
         self.write_pending("T-002", role="tester", depends_on=("T-001",), owns=("tests/**",))
         nxt = self.next_of("T-002")
         self.assertIn("T-001", nxt)
-        self.assertIn("orch notify --type question", nxt)
+        self.assertIn("decide 로 올리고", nxt)
         self.assertIn("orch drop T-002", nxt)
 
     def test_status_survives_malformed_max_parallel(self):

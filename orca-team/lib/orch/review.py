@@ -201,7 +201,7 @@ def gate_failure(task_id: str, entry: dict) -> str:
         lines += ["", "출력 끝:", "```", entry["tail"], "```"]
     lines += ["", f"고친 뒤 `.orchestration/bin/orch test {task_id}` 로 다시 확인한다.",
               "실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 다른 파일) 코드를 고치지 말고 근거를 리포트에 "
-              "적은 뒤 프리앰블의 ask 명령으로 코디네이터에게 묻는다."]
+              "적은 뒤 프리앰블의 ask 명령으로 묻는다."]
     return "\n".join(lines)
 
 

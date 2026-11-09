@@ -22,7 +22,6 @@ from .util import drive_alive, git, git_ok, load_run, now, pid_alive, record_plu
 MARK = "<!-- orca-team -->"
 SCAFFOLD_FILES = [
     ("config.toml", ".orchestration/config.toml"),
-    ("coordinator.md", ".orchestration/coordinator.md"),
     ("design-rules.md", ".orchestration/design-rules.md"),
     ("text-rules.md", ".orchestration/text-rules.md"),
     ("roles/planner.md", ".orchestration/roles/planner.md"),

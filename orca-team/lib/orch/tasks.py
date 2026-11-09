@@ -30,12 +30,12 @@ UNKNOWN_START_LIMIT = 3  # 같은 태스크에서 start_unknown 이 이만큼이
 DIED_NOTE = "이전 작업자가 중간에 끝났다. 리포트와 [{task_id}] 커밋을 확인하고 남은 일을 이어서 한다"
 FIX_BLOCK = """## 수정 라운드
 이전 워커의 대화는 사라졌다. 먼저 `docs/tasks/{task_id}/report.md`(있으면)와 이 태스크의 `[{task_id}]` 커밋(`git log --grep "^\\[{task_id}\\]"`)을 읽어 지금까지 한 일을 파악한다.
-{review_line}코디네이터 지시: {note}
+{review_line}지시: {note}
 
 """
 REVIEW_LINE = ("`{review}` 리뷰를 읽고 막는 지적(`## 지적 사항` 의 P1, `## 이전 지적 확인` 의 미해결, orch 사전 검사 사유)을 모두 고친다. "
                "고치지 않는 항목은 리포트에 이유를 적는다. `## 후속`·`## 기획 누락`·`## 회귀` 는 고치지 않는다"
-               "(코디네이터가 따로 태스크로 만든다).\n")
+               "(관제가 따로 태스크로 만든다).\n")
 TEST_BLOCK = """## 테스트
 - 순서: 작업을 `[{task_id}]` 커밋으로 먼저 커밋한다 → `.orchestration/bin/orch test {task_id}` 를 돌린다 → 리포트를 따로 커밋한다. quick 은 커밋된 변경만 보므로 커밋하기 전에 돌리면 orch 가 거부한다(exit 2).
 - worker_done 전에 `.orchestration/bin/orch test {task_id}` 가 통과해야 한다(exit 0). 이 태스크가 바꾼 파일과 관련된 테스트만 돈다. 실패하면 고쳐서 커밋하고 다시 돌린다.
@@ -47,7 +47,7 @@ TEST_BLOCK = """## 테스트
 TESTER_TEST_BLOCK = """## 테스트
 - 이 태스크는 묶음 테스트다. 선행 태스크(묶음 개발 태스크)의 기능을 잇는 묶음 통합 테스트를 소유 경로에 쓰고 커밋한다.
 - 커밋한 뒤 `.orchestration/bin/orch test {task_id} --full` 로 전체 테스트를 한 번 돌린다. 다시 돌리지 않는다. 리뷰는 같은 라운드의 이 결과를 다시 쓴다.
-- 실패는 QA 리포트에서 둘로 나눈다. 테스트 코드의 잘못은 고친다(고친 테스트를 커밋한 뒤 `.orchestration/bin/orch test {task_id}` 로 확인할 수 있다). 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 회귀는 리뷰가 `## 회귀` 로 넘기고 코디네이터가 회귀 수정 태스크로 만든다.
+- 실패는 QA 리포트에서 둘로 나눈다. 테스트 코드의 잘못은 고친다(고친 테스트를 커밋한 뒤 `.orchestration/bin/orch test {task_id}` 로 확인할 수 있다). 제품 회귀는 실패한 테스트 이름, 원인으로 보이는 선행 태스크 ID, 근거를 적는다. 제품 회귀는 리뷰가 `## 회귀` 로 넘기고 관제가 회귀 수정 태스크로 만든다.
 - 테스트를 통과시키려고 테스트를 약하게 만들거나 건너뛰거나 지우지 않는다. 제품 코드는 고치지 않는다.
 
 """
@@ -675,17 +675,17 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
 
 
 def next_action(p: Project, cfg: Config | None, st: dict) -> str | None:
-    """재시작한 코디네이터가 따를 다음 행동. 끝난 태스크는 None. cfg 가 없으면(설정 깨짐) 최대 라운드 검사를 뺀다."""
+    """다시 뜬 관제가 따를 다음 행동. 끝난 태스크는 None. cfg 가 없으면(설정 깨짐) 최대 라운드 검사를 뺀다."""
     task_id, status = st.get("id"), st.get("status")
     max_rounds = cfg.max_rounds if cfg is not None else None
     at_max = max_rounds is not None and int(st.get("round") or 1) >= max_rounds
-    ask_then_drop = (f"최대 {max_rounds} 라운드라 fix 할 수 없다. orch notify --type question 으로 메인에 묻고, "
+    ask_then_drop = (f"최대 {max_rounds} 라운드라 fix 할 수 없다. 메인에 decide 로 올리고, "
                      f"중단하기로 하면 orch drop {task_id} --reason \"<이유>\"")
     if status == "pending":
         dropped = [dep for dep in st.get("depends_on") or [] if (load_state(p, dep) or {}).get("status") == "dropped"]
         if dropped:
-            return (f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 시작할 수 없다. orch notify --type question 으로 "
-                    f"메인에 묻고, 진행하지 않기로 하면 orch drop {task_id} --reason \"<이유>\"")
+            return (f"선행 태스크 {', '.join(dropped)} 가 중단(dropped)돼 시작할 수 없다. 메인에 decide 로 올리고, "
+                    f"진행하지 않기로 하면 orch drop {task_id} --reason \"<이유>\"")
         return "orch start-ready"
     if status == "awaiting_user":
         asks = load_design_reviews(p)

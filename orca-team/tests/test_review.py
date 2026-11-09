@@ -542,7 +542,7 @@ class ReviewGateTest(GateReviewCase):
         review = (self.root / "docs/reviews/T-001/r1.md").read_text(encoding="utf-8")
         for text in ("quick: 실패", "FAIL tests/a.test.ts", "`.orchestration/bin/orch test T-001`",
                      "실패가 이 태스크 탓이 아니면(소유 경로 밖 코드, 위의 커밋 안 된 다른 파일) 코드를 고치지 말고",
-                     "프리앰블의 ask 명령으로 코디네이터에게 묻는다"):
+                     "프리앰블의 ask 명령으로 묻는다"):
             self.assertIn(text, review)
         self.assertTrue(review.rstrip().endswith("VERDICT: REQUEST_CHANGES"))
         self.assertEqual(read_test_args(self), [["src/login.ts"], ["src/login.ts"]])

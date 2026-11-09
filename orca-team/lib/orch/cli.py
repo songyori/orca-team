@@ -63,14 +63,14 @@ def build_parser() -> argparse.ArgumentParser:
                            help="최대 라운드를 넘긴 태스크를 한 번 더 고친다(사용자가 정했을 때만)")
     for name in ("review", "accept"):
         sub.add_parser(name).add_argument("id")
-    s = sub.add_parser("drop", help="태스크 중단·잠금 해제(코디네이터)")
+    s = sub.add_parser("drop", help="태스크 중단·잠금 해제(관제)")
     s.add_argument("id")
     s.add_argument("--reason", required=True)
     s.add_argument("--force", action="store_true", help="워커가 살아 있어도 중단한다")
     s = sub.add_parser("test", help="[test] 명령으로 태스크 관련 테스트(quick)나 전체 테스트(--full)를 돌린다")
     s.add_argument("id", nargs="?", help="태스크 ID. 없으면 --full 로 전체 테스트만 돌린다(마지막 확인)")
     s.add_argument("--full", action="store_true", help="전체 테스트(full)")
-    s = sub.add_parser("followups", help="묶음(또는 묶음 밖) 리뷰의 회귀·후속·기획 누락을 모은다(코디네이터, 읽기 전용)")
+    s = sub.add_parser("followups", help="묶음(또는 묶음 밖) 리뷰의 회귀·후속·기획 누락을 모은다(관제, 읽기 전용)")
     s.add_argument("id", nargs="?", help="tester 태스크 ID(그 묶음) 또는 태스크 ID")
     s.add_argument("--rest", action="store_true", help="어떤 묶음에도 들지 않은 done developer 태스크")
     s = sub.add_parser("agent", help="고정 에이전트")
@@ -85,22 +85,22 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def add_graph_commands(sub) -> None:
-    """태스크 그래프 명령(코디네이터)."""
+    """태스크 그래프 명령(관제)."""
     s = sub.add_parser("design-decide", help="디자인 승인 답을 화면별 결정으로 적용한다(메인)")
     s.add_argument("id", help="approval 메시지 id(out-NNNN)")
     s.add_argument("--approve", default="", help="승인한 태스크 ID, 쉼표로 구분")
     s.add_argument("--fix", action="append", default=[], metavar="T-xxx=<요청>", help="고칠 태스크와 사용자 요청 원문")
-    s = sub.add_parser("plan", help="태스크 그래프(docs/planning/tasks.toml) 적용(코디네이터)")
+    s = sub.add_parser("plan", help="태스크 그래프(docs/planning/tasks.toml) 적용(관제)")
     plan_sub = s.add_subparsers(dest="plan_cmd", required=True)
     a = plan_sub.add_parser("apply", help="검증 후 태스크 spec·pending 상태 생성")
     a.add_argument("--append", action="store_true", help="이미 적용한 계획에 새 key 만 더한다")
     c = plan_sub.add_parser("check", help="tasks.toml 을 plan apply 와 같은 규칙으로 검사만 한다(쓰기 없음)")
     c.add_argument("--file", default=None, metavar="PATH", help="검사할 파일(기본 docs/planning/tasks.toml)")
-    sub.add_parser("start-ready", help="시작할 수 있는 pending 태스크를 max_parallel 까지 띄운다(코디네이터)")
-    sub.add_parser("design-review", help="awaiting_user 디자인을 모아 사용자 승인 질문 하나를 올린다(코디네이터)")
+    sub.add_parser("start-ready", help="시작할 수 있는 pending 태스크를 max_parallel 까지 띄운다(관제)")
+    sub.add_parser("design-review", help="awaiting_user 디자인을 모아 사용자 승인 질문 하나를 올린다(관제)")
 
 
-GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # 태스크 그래프 명령(코디네이터). add_graph_commands·run_graph 가 처리한다
+GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # 태스크 그래프 명령(관제). add_graph_commands·run_graph 가 처리한다
 CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
 # 메인에서 실행하면 관제 큐를 거치는 명령(Orca 를 부른다). 관제 터미널에서는 바로 실행한다.
 QUEUED = {"start", "start-ready", "fix", "accept", "drop", "design-decide", "scope", "agent"}

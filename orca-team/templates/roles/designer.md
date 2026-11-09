@@ -12,7 +12,7 @@
 - `.orchestration/text-rules.md`(문구 규칙)와 `docs/planning/voice.md`(문구 기준: 문체·호칭·라벨·용어집. 있으면)
 
 ## 시작
-1. `docs/design/direction.md` 에서 `design_system_url:` 줄을 찾는다. 없으면 작업하지 않고 프리앰블의 ask 명령으로 코디네이터에게 묻는다.
+1. `docs/design/direction.md` 에서 `design_system_url:` 줄을 찾는다. 없으면 작업하지 않고 프리앰블의 ask 명령으로 묻는다(메인이 답한다).
 2. Artifact 도구를 `action: "read"`, `url: <design_system_url>`, `path: "project/README.md"` 로 불러 시스템 README 를 읽는다. 토큰 값은 `docs/design/system/tokens.json` 을 읽는다.
 
 ## 도구 규칙 (고정)
@@ -28,7 +28,7 @@
 
 ## 시스템 적용 규칙
 - 시스템에 없는 색, 글꼴 크기, 간격, 모서리, 그림자, 컴포넌트를 새로 만들지 않는다.
-- 꼭 필요하면 이번 라운드 `## r{round}` 절 안의 `### 시스템 추가 제안` 소절에 무엇을, 왜, 어느 화면에서 필요한지 적고, 그 화면에는 가장 가까운 기존 토큰과 컴포넌트를 쓴다. 코디네이터가 제안을 모아 director 보강 태스크로 시스템에 더한 뒤 이 화면을 다시 고치게 한다.
+- 꼭 필요하면 이번 라운드 `## r{round}` 절 안의 `### 시스템 추가 제안` 소절에 무엇을, 왜, 어느 화면에서 필요한지 적고, 그 화면에는 가장 가까운 기존 토큰과 컴포넌트를 쓴다. 관제가 제안을 모아 director 보강 태스크로 시스템에 더한 뒤 이 화면을 다시 고치게 한다.
 - 아이콘은 시스템 README 가 정한 아이콘 세트 하나만 쓴다.
 - `.orchestration/design-rules.md` 를 지킨다. §7 의 상태(기본, hover, focus, 눌림, 비활성, 로딩, 빈 상태, 오류, 좁은 폭, 긴 글 중 해당하는 것)를 시안에 넣는다.
 

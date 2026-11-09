@@ -17,7 +17,7 @@ class ScaffoldTest(ProjectCase):
 
     def test_creates_files_and_setup_mode(self):
         out = self.run_scaffold()
-        for rel in (".orchestration/config.toml", ".orchestration/coordinator.md", ".orchestration/roles/designer.md",
+        for rel in (".orchestration/config.toml", ".orchestration/roles/designer.md",
                     ".orchestration/roles/director.md", ".orchestration/design-rules.md",
                     ".orchestration/text-rules.md", ".orchestration/bin/orch", ".orchestration/project.md", ".orchestration/tasks/.gitkeep",
                     "CLAUDE.md", "AGENTS.md", ".gitignore"):
@@ -243,13 +243,13 @@ class UpgradeTest(ProjectCase):
         self.assertIn("/orca-team:up", out["next"])
 
     def test_overwrites_committed_old_copy_without_commit(self):
-        self.commit_text(".orchestration/coordinator.md", "옛 지침\n")
+        self.commit_text(".orchestration/roles/planner.md", "옛 지침\n")
         head = self.git("rev-parse", "HEAD").strip()
         out = self.upgrade()
-        self.assertEqual(out["updated"], [".orchestration/coordinator.md"])
-        self.assertEqual((self.root / ".orchestration/coordinator.md").read_text(encoding="utf-8"),
-                         self.template("coordinator.md"))
-        self.assertIn(".orchestration/coordinator.md", out["diff_stat"])
+        self.assertEqual(out["updated"], [".orchestration/roles/planner.md"])
+        self.assertEqual((self.root / ".orchestration/roles/planner.md").read_text(encoding="utf-8"),
+                         self.template("roles/planner.md"))
+        self.assertIn(".orchestration/roles/planner.md", out["diff_stat"])
         self.assertEqual(self.git("rev-parse", "HEAD").strip(), head)
 
     def test_skips_uncommitted_change(self):
@@ -262,10 +262,10 @@ class UpgradeTest(ProjectCase):
     def test_diff_stat_only_covers_changed_files(self):
         (self.root / ".orchestration/roles/tester.md").write_text("작업 중\n", encoding="utf-8")
         self.assertEqual(self.upgrade()["diff_stat"], "")
-        self.commit_text(".orchestration/coordinator.md", "옛 지침\n")
+        self.commit_text(".orchestration/roles/planner.md", "옛 지침\n")
         out = self.upgrade()
-        self.assertEqual(out["updated"], [".orchestration/coordinator.md"])
-        self.assertIn(".orchestration/coordinator.md", out["diff_stat"])
+        self.assertEqual(out["updated"], [".orchestration/roles/planner.md"])
+        self.assertIn(".orchestration/roles/planner.md", out["diff_stat"])
         self.assertNotIn("tester.md", out["diff_stat"])
 
     def test_keeps_config_toml(self):

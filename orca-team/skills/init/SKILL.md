@@ -1,7 +1,7 @@
 ---
 name: init
 description: >
-  새 프로젝트에 orca-team 오케스트레이션(메인/코디네이터/직무 워커, Codex 리뷰)을 세팅한다.
+  새 프로젝트에 orca-team 오케스트레이션(메인/관제/고정 에이전트, Codex 리뷰)을 세팅한다.
   트리거: "/orca-team:init <프로젝트 설명>". 설명 없이 부르면 한 줄로 묻는다.
 argument-hint: "<프로젝트 설명>"
 ---
@@ -41,15 +41,15 @@ argument-hint: "<프로젝트 설명>"
 - AskUserQuestion 으로 한 번에 승인받는다. 옵션: "전부 승인(Recommended)", "설치 없이 진행". 일부 제외는 Other 로 받는다.
 - 승인된 항목을 설치·적용한다. 실패해도 멈추지 않고 표에 결과(성공/실패)를 남긴다.
 
-## 5. 코디네이터 기동
+## 5. 관제 기동
 1. `.orchestration/bin/orch up --wait-run 180` 을 Bash `timeout: 240000` 으로 실행한다(Run 생성을 최대 180초 기다리므로 기본 2분 제한에 걸리지 않게 한다).
 2. Bash `run_in_background: true` 로 `.orchestration/bin/orch watch` 를 띄운다.
    - 이후 watch 가 끝날 때마다(메시지 도착) CLAUDE.md 의 "메인 규칙" 대로 처리하고 다시 띄운다.
 
 ## 6. 마무리
 1. `.orchestration/bin/orch setup-done` 을 실행한다.
-2. 세팅 파일을 경로를 지정해 커밋한다. `<경로>` 는 `CLAUDE.md AGENTS.md .gitignore .orchestration` 과 4단계에서 바뀐 설정 파일이다: `git add -- <경로> && git commit -m "chore: orca-team 세팅" -- <경로>`. 코디네이터와 인덱스를 같이 쓰므로 경로 없는 `git commit` 은 쓰지 않는다.
-3. 보고한다: 준비 완료, 코디네이터 터미널 handle, 설치 결과 표, "다음 메시지로 첫 업무를 주면 된다".
+2. 세팅 파일을 경로를 지정해 커밋한다. `<경로>` 는 `CLAUDE.md AGENTS.md .gitignore .orchestration` 과 4단계에서 바뀐 설정 파일이다: `git add -- <경로> && git commit -m "chore: orca-team 세팅" -- <경로>`. 관제·워커와 인덱스를 같이 쓰므로 경로 없는 `git commit` 은 쓰지 않는다.
+3. 보고한다: 준비 완료, 관제 탭(orca-team 관제) handle, 설치 결과 표, "다음 메시지로 첫 업무를 주면 된다".
 
 ## 하지 않는 것
 - `orca orchestration` 직접 호출. 메인이 Run 에 묶이면 Orca 알림이 사용자 입력란에 들어온다.

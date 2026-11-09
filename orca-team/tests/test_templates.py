@@ -158,17 +158,8 @@ class TemplateTest(unittest.TestCase):
         designer = (T / "roles" / "designer.md").read_text(encoding="utf-8")
         for key in ("Claude Design", "quickstart", '"design"', "/orca-team:image", "docs/design/"):
             self.assertIn(key, designer)
-        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("Claude Design", coordinator)
-        self.assertIn("/orca-team:image", coordinator)
         for name in ("CLAUDE.section.md", "AGENTS.md"):
             self.assertIn("/orca-team:image", (T / name).read_text(encoding="utf-8"), name)
-
-    def test_coordinator_rules(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        for key in ("orch bind", "orch wait", "run_in_background", "orch review", "orch accept", "orch fix",
-                    "orch notify --type question", "[main]"):
-            self.assertIn(key, text)
 
     def test_commit_instructions_use_pathspec(self):
         """공유 인덱스에서 남의 스테이징까지 커밋하지 않도록 모든 커밋 지시는 `git commit ... -- <경로>` 형식이다."""
@@ -182,33 +173,27 @@ class TemplateTest(unittest.TestCase):
         self.assertGreaterEqual(len(spans), 4)
         worker = (T / "worker-spec.md").read_text(encoding="utf-8")
         self.assertIn("docs/tasks/{task_id}/report.md && git commit -m", worker)
-        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertEqual(coordinator.count('-- .orchestration/tasks/T-xxx.md`'), 2)
+        main = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        self.assertGreaterEqual(main.count('-- .orchestration/tasks/T-xxx.md`'), 1)
 
-    def test_review_instructions_run_in_background(self):
-        for line in (T / "coordinator.md").read_text(encoding="utf-8").splitlines():
-            if "`orch review" in line:
-                self.assertIn("run_in_background: true", line, line)
+    def test_main_rules_cover_decide_and_queue(self):
+        text = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
+        for kind in ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure",
+                     "test_config", "planning_gaps", "unknown_regression", "token_update"):
+            self.assertIn(f"| {kind} |", text)
+        for key in ("orch design-decide", "orch scope", "--extra-round", "plan: append", "관제가 꺼져 있다", "result",
+                    "반드시 `orch answer <id> \"<처리 내용>\"` 로 닫아야"):
+            self.assertIn(key, text)
+        self.assertNotIn("orch tell", text)
+        self.assertNotIn("coordinator", text)
 
-    def test_coordinator_relays_untracked_and_release_errors(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertRegex(text, r"`untracked`.*orch fix .*--note")
-        self.assertRegex(text, r"`released: false`.*`release_error`.*orch notify --type progress")
-        self.assertIn("orch drop T-xxx --force", text)
-
-    def test_fix_round_needs_no_manual_release(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("worker-release` 를 손으로 하지 않는다", text)
-        self.assertNotIn("--terminal", text)
-
-    def test_main_tells_dash_messages_after_double_dash(self):
-        self.assertIn('orch tell -- "<메시지>"', (T / "CLAUDE.section.md").read_text(encoding="utf-8"))
-
-    def test_coordinator_restart_follows_status_next(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("`next`", text)
-        self.assertIn("orch drop", text)
-        self.assertNotIn("status 를 `working` 으로 고친", text)
+    def test_no_coordinator_left_in_templates_and_code(self):
+        self.assertFalse((T / "coordinator.md").exists())
+        roots = [T, T.parent / "skills", T.parent / "lib" / "orch"]
+        legacy = {"config.py", "setup.py"}  # 옛 [coordinator] 설정을 옮기라는 안내와 upgrade 거부 문구만 남긴다
+        hits = [str(f) for root in roots for f in root.rglob("*") if f.is_file() and f.suffix in (".md", ".py")
+                and f.name not in legacy and "코디네이터" in f.read_text(encoding="utf-8")]
+        self.assertEqual(hits, [])
 
     def test_planner_interview_rules(self):
         text = (T / "roles" / "planner.md").read_text(encoding="utf-8")
@@ -254,17 +239,6 @@ class TemplateTest(unittest.TestCase):
         self.assertIn("| todo-test | tester | ui-foundation, todo-store, todo-ui |", confirm["context"])
 
     def test_batch_verify_rules_in_templates(self):
-        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
-        for key in ("## 묶음 후속", "## 마무리", "orch followups T-xxx", "orch followups --rest", "orch test --full",
-                    "출처: T-xxx followups", "출처: rest followups", "출처: final followups",
-                    "`[test]` 명령을 실행할 수 없다", "묶음 테스트(tester) 태스크였으면",
-                    "같은 테스트 실패로 orch 사전 검사(source orch) 반려가 두 라운드 이어지면 `orch fix` 하지 않고",
-                    "`[test]` 검증 실패", "`docs/planning/tasks.toml` 읽기 실패", "테스트 잠금(exclusive)",
-                    "고친 뒤 `orch test --full` 을 다시 돌린다",
-                    "커밋된 `docs/planning/tasks.toml` 에 `[test]` 가 있으면",
-                    "테스트 잠금 대기 초과면 잠시 뒤 다시 돌린다. 그 밖의 exit 2 면"):
-            self.assertIn(key, coordinator)
-        self.assertNotIn("exit 2 면 위 exit≠0 처리를 따른다", coordinator)
         planner = (T / "roles/planner.md").read_text(encoding="utf-8")
         for key in ('`["tests/<key>/**", "docs/qa/<key>.md"]`', "{files}", "ok_exit = [0, 5]", "exclusive = true",
                     "`[test]` 는 커밋해야 적용된다",
@@ -292,7 +266,7 @@ class TemplateTest(unittest.TestCase):
         for key in ("`.orchestration/bin/orch answer <id>", "`render.question`", "`render.header`", "`render.options`",
                     "label·description 을 순서 그대로", "단일 선택(`multiSelect: false`)", "Other 로 자유 입력",
                     "질문을 바꾸거나 합치지 않고", "하나씩 따로 묻는다",
-                    "ask(기획·디자인 디렉터 워커의 질문), approval(디자인 일괄 승인), question(코디네이터 질문. 답은 코디네이터로 간다)",
+                    "ask(기획·디자인 디렉터 워커의 질문)",
                     "`render` 가 없는 legacy question"):
             self.assertIn(key, text)
         self.assertRegex(text, r"`render\.context` 가 있으면 .*먼저.*평문.*AskUserQuestion")
@@ -305,31 +279,10 @@ class TemplateTest(unittest.TestCase):
         text = (T / "worker-spec.md").read_text(encoding="utf-8")
         self.assertIn("기획(planner)·디자인 디렉터(director) 워커만 직무 정의대로 `orch ask-user` 로 사용자에게 묻는다", text)
 
-    def test_coordinator_questions_use_structured_json(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("orch notify --type question --json -", text)
-        self.assertRegex(text, r'"recommended": \d')
-        for key in ('"example"', '"reason"', '"options"'):
-            self.assertIn(key, text)
-        self.assertNotIn("사용자에게 묻는 경우는 셋뿐", text)
-        self.assertIn("기획이 끝난 뒤 사용자에게 묻는 것은", text)
-        self.assertIn("애매한 디자인 답", text)
-
     def test_planner_runs_plan_check_before_confirmation(self):
         text = (T / "roles/planner.md").read_text(encoding="utf-8")
         self.assertRegex(text, r"확정 질문을 보내기 전에 `\.orchestration/bin/orch plan check`")
         self.assertRegex(text, r'interview\.md.*"확정".*다시 묻지 않는다')
-
-    def test_coordinator_parallel_rules(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        for key in ("orch task new planner", "orch plan apply", "orch plan apply --append", "orch start-ready",
-                    "orch design-review", "awaiting_user", "docs/planning/spec.md", "docs/planning/contracts.md",
-                    "docs/planning/interview.md", "max_parallel", "launch_failed", "done 또는 dropped",
-                    'orch fix T-xxx --note "<사용자 요청', "기획이 끝난 뒤 사용자에게 묻는 것은",
-                    'orch fix T-yyy --note "선행 디자인 T-xxx 가 바뀐다',
-                    "후속 태스크가 `working` 이면 그 결과를 그대로 accept 하지 않는다"):
-            self.assertIn(key, text)
-        self.assertNotIn("이 태스크를 기다리던 태스크가 있으면 `orch start`", text)
 
     def test_readme_summarizes_grilling_and_parallel(self):
         text = (PLUGIN.parent / "README.md").read_text(encoding="utf-8")
@@ -350,11 +303,6 @@ class TemplateTest(unittest.TestCase):
         for key in ("orch notify --type question --json", "orch plan check", "orch reask", "state/answered.json",
                     "선행 태스크가 dropped 면", "(M4)", "(M5)", "REVIEW_WAIT_STATUSES"):
             self.assertIn(key, section)
-
-    def test_coordinator_wait_loop_and_parallel_cap(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("타임아웃이면 먼저 `orch status` 를 실행해 태스크마다 `next` 를 따른 뒤", text)
-        self.assertIn("`max_parallel` 은 `orch start-ready` 만 지키는 상한이다", text)
 
     def test_planner_records_answer_first(self):
         text = (T / "roles/planner.md").read_text(encoding="utf-8")
@@ -379,16 +327,6 @@ class TemplateTest(unittest.TestCase):
         for key in ("docs/design/system/tokens.json", "CSS 변수", "공통 컴포넌트", "토큰과 공통 컴포넌트만 쓴다",
                     ".orchestration/design-rules.md", "`### 디자인 점검`", "Storybook", "커밋하지 않는다"):
             self.assertIn(key, text)
-
-    def test_coordinator_handles_director_and_system_proposals(self):
-        text = (T / "coordinator.md").read_text(encoding="utf-8")
-        for key in ("## 시스템 추가 제안", 'orch task new director "디자인 시스템 보강: <요약>"',
-                    "owns: docs/design/system/**, docs/design/direction.md",
-                    'orch fix T-xxx --supplement T-yyy --note "디자인 시스템 보강(T-yyy)을 반영한다"',
-                    'orch task new developer "토큰 갱신 반영: <요약>"', "- director:", "디자인 디렉터(director) 워커",
-                    "아래 \"시스템 추가 제안\"", "가장 마지막 `## r{round}` 절", "추가 범위", "`orch status` 에 보이지 않는다"):
-            self.assertIn(key, text)
-        self.assertLess(text.index("## 시스템 추가 제안"), text.index("## 사용자에게 묻기"))
 
     def test_role_lists_name_director(self):
         self.assertIn("기본 5개(planner·director·designer·developer·tester)",
@@ -429,8 +367,6 @@ class TemplateTest(unittest.TestCase):
         claude = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
         for key in ("`.orchestration/text-rules.md`", "voice.md"):
             self.assertIn(key, claude)
-        coordinator = (T / "coordinator.md").read_text(encoding="utf-8")
-        self.assertIn("`docs/planning/voice.md`", coordinator)
 
     def test_spec_section_13_design_director(self):
         text = (PLUGIN.parent / "docs/superpowers/specs/2026-10-30-orca-team-design.md").read_text(encoding="utf-8")
@@ -458,7 +394,7 @@ class TemplateTest(unittest.TestCase):
 
     def test_docs_describe_auto_up(self):
         claude = (T / "CLAUDE.section.md").read_text(encoding="utf-8")
-        self.assertIn("자동으로 다시 띄운다(config.toml auto_up)", claude)
+        self.assertIn("자동으로 다시 띄운다(config.toml `[drive] auto_up`)", claude)
         self.assertNotIn("세션을 다시 열었으면 `/orca-team:up` 을 먼저 실행한다", claude)
         up = (PLUGIN / "skills/up/SKILL.md").read_text(encoding="utf-8")
         self.assertIn("수동 복구", up)
