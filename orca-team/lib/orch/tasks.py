@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
-from . import orca, testgate
+from . import agents, orca, testgate
 from .comm import notify
 from .config import DEFAULT_APPROVAL_ROLES, Config
 from .globs import any_overlap
@@ -302,19 +302,26 @@ def compose_spec(p: Project, cfg: Config, doc: TaskDoc, stage: str, rnd: int, ow
 
 
 def launch(p: Project, cfg: Config, doc: TaskDoc, st: dict, stage: str, rnd: int, owns: list[str],
-           note: str | None, overrides: dict | None, extra: dict | None = None) -> dict:
+           note: str | None, overrides: dict | None, extra: dict | None = None, agent: str | None = None) -> dict:
+    """agent 가 [agents] 이름이면 그 고정 에이전트에, None 이면 임시 워커로 띄운다."""
     spec = compose_spec(p, cfg, doc, stage, rnd, owns, note)
-    cmd = ["orchestration", "worker-start", "--spec", spec,
-           "--task-title", f"{doc.id} {stage} r{rnd} [{doc.role}] {doc.title}", "--worktree", "current"]
-    pref = cfg.claude(doc.role, {**doc.front, **(overrides or {})})
-    cmd += ["--agent", "claude", "--model", pref.model, "--effort", pref.effort]
+    title = f"{doc.id} {stage} r{rnd} [{doc.role}] {doc.title}"
+    fixed = cfg.agents[agent] if agent else None
+    if fixed is None:
+        pref = cfg.claude(doc.role, {**doc.front, **(overrides or {})})
+        cmd = ["orchestration", "worker-start", "--spec", spec, "--task-title", title, "--worktree", "current",
+               "--agent", "claude", "--model", pref.model, "--effort", pref.effort]
     # Orca 호출 전에 launch_failed 로 먼저 기록한다. orch 가 호출 중 죽어도 재실행이 --retry 게이트에 걸린다.
     # pid 는 orch status 가 실행 중인 launch 와 끊긴 launch 를 가르는 데 쓴다(launch_in_progress).
     st["history"].append({"stage": stage, "round": rnd, "at": now(), "ok": None, "pending": True, "pid": os.getpid()})
-    st.update(status="launch_failed", stage=stage, round=rnd, owns=owns)
+    st.update(status="launch_failed", stage=stage, round=rnd, owns=owns, agent=agent or agents.TEMP)
     save_state(p, st)
     try:
-        code, receipt = orca.call(cmd, check=False)
+        if fixed is None:
+            code, receipt = orca.call(cmd, check=False)
+            fresh = None
+        else:
+            code, receipt, fresh = agents.start(p, fixed, spec, title)
     except OrchError:
         # 출력을 해석하지 못했다. 프로세스는 살아 있으므로 pending 을 지워 launching 으로 보이지 않게 한다.
         # 프로세스가 죽는 크래시는 여기에 오지 않아 pending 이 남는다(try/finally 를 쓰지 않는 이유).
@@ -332,9 +339,15 @@ def launch(p: Project, cfg: Config, doc: TaskDoc, st: dict, stage: str, rnd: int
     ok = code == 0 and bool(receipt.get("ok"))
     entry = {"stage": stage, "round": rnd, "at": now(), "ok": ok,
              "task_id": orca.find_key(receipt, ("taskId",)), "dispatch_id": orca.find_key(receipt, ("dispatchId",)),
-             **(extra or {}),
+             "agent": agent or agents.TEMP, **(extra or {}),
              "launch": ((receipt.get("result") or {}).get("launch") or {}).get("effective"),
              "receipt": str(receipt_path.relative_to(p.root))}
+    if note:
+        entry["note"] = note
+    if fixed is not None:
+        entry["fresh"] = fresh
+        if overrides or any(doc.front.get(k) for k in ("claude_model", "claude_effort")):
+            entry["model_ignored"] = True  # 고정 에이전트의 모델은 띄울 때 정해진다(--terminal 은 --model 을 받지 않는다)
     st["history"].append(entry)
     st.update(stage=stage, round=rnd, owns=owns)
     if ok:
@@ -342,6 +355,8 @@ def launch(p: Project, cfg: Config, doc: TaskDoc, st: dict, stage: str, rnd: int
     else:
         st["status"] = "launch_failed"
     save_state(p, st)
+    if ok and fixed is not None:
+        agents.record_start(p, fixed, receipt, bool(fresh), doc.id)
     if not ok:
         raise OrchError("worker-start 실패. 같은 명령을 그냥 다시 돌리지 않는다. 영수증의 failedStage·residualResources 를 보고 "
                         f"Orca recovery 참조(orca skills get orchestration --reference references/recovery-and-cleanup.md)를 "
@@ -378,12 +393,17 @@ def start(p: Project, cfg: Config, task_id: str, retry: bool = False, overrides:
                         "끝나면 orch start-ready 가 띄운다", 2)
     owns = owns_of(doc, cfg)
     check_lock(p, task_id, owns)
+    target = agents.place(p, cfg, doc.role)
+    if target == agents.WAIT:
+        agent = cfg.agent_for(doc.role)
+        raise OrchError(f"{task_id}: {agent.title} 에이전트가 바쁘고 임시 워커가 꺼져 있다([overflow] enabled = false). "
+                        "에이전트가 비면 orch start-ready 가 띄운다", 3)
     if fresh:
         # pending 상태의 plan_key 등은 남기고 실행 필드만 새로 쓴다.
         st = {**(st or {}), "id": task_id, "role": doc.role, "title": doc.title, "status": "new", "stage": "work",
               "round": 1, "base": git(p.root, "rev-parse", "HEAD").strip(), "owns": owns, "depends_on": deps,
               "task_id": None, "dispatch_id": None, "history": [], "verdicts": {}}
-    return launch(p, cfg, doc, st, "work", 1, owns, None, overrides)
+    return launch(p, cfg, doc, st, "work", 1, owns, None, overrides, agent=None if target == agents.TEMP else target)
 
 
 def check_supplement(p: Project, task_id: str, supplement: str) -> None:

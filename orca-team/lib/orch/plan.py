@@ -8,7 +8,7 @@ import re
 import tomllib
 from dataclasses import asdict, dataclass
 
-from . import comm, testgate
+from . import agents, comm, testgate
 from .ask import build_render
 from .config import Config
 from .globs import any_overlap
@@ -411,7 +411,8 @@ def plan_order(p: Project) -> list[str]:
 
 def start_ready(p: Project, cfg: Config) -> dict:
     """pending 태스크 중 선행 태스크가 모두 충족되고(deps. done, 승인 대상 직무끼리는 awaiting_user 도), 잠금이 겹치지 않고
-    (lock), working 수가 max_parallel 보다 적은(limit) 것을 tasks.toml 순서로 띄운다. 한 태스크의 실행 실패는 나머지를 막지 않는다."""
+    (lock), working 수가 max_parallel 보다 적은(limit) 것을 tasks.toml 순서로 띄운다. 한 태스크의 실행 실패는 나머지를 막지 않는다.
+    waiting reason: spec, deps, lock, agent(고정 에이전트 대기), limit."""
     require_coordinator(p)
     limit = cfg.max_parallel
     approval = cfg.user_approval_roles
@@ -435,6 +436,9 @@ def start_ready(p: Project, cfg: Config) -> dict:
         except OrchError as exc:
             waiting.append({"id": task_id, "reason": "lock", "detail": str(exc)})
             continue
+        if agents.place(p, cfg, doc.role) == agents.WAIT:
+            waiting.append({"id": task_id, "reason": "agent", "detail": cfg.agent_for(doc.role).title})
+            continue
         if running >= limit:
             waiting.append({"id": task_id, "reason": "limit"})
             continue
@@ -443,6 +447,9 @@ def start_ready(p: Project, cfg: Config) -> dict:
         except OrchError as exc:
             if exc.code == 12:
                 raise
+            if exc.code == 3:
+                waiting.append({"id": task_id, "reason": "agent", "detail": str(exc)})
+                continue
             started.append({"id": task_id, "status": "launch_failed", "error": str(exc)})
             continue
         started.append({"id": task_id, "status": "working", "dispatch_id": entry.get("dispatch_id")})

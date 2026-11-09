@@ -95,13 +95,18 @@ class ProjectCase(unittest.TestCase):
         parts = key.split()
         return [c for c in self.calls() if c[:len(parts)] == parts]
 
-    def scaffold(self) -> None:
-        """orch scaffold 후 코디네이터가 Run 을 만든 상태로 둔다."""
+    def scaffold(self, agents: bool = False) -> None:
+        """orch scaffold 후 Run 이 있는 상태로 둔다. agents=False 면 config.toml 의 [agents.*] 를 지워
+        모든 태스크가 임시 워커로 돈다(0.6.0 까지의 흐름)."""
         desc = self.tmp / "desc.txt"
         desc.write_text("테스트 프로젝트. 할 일 웹앱.", encoding="utf-8")
         self.orch("scaffold", "--description-file", str(desc))
         (self.root / ".orchestration/state/run.json").write_text(
             json.dumps({"run_id": "run_x", "coordinator_handle": "term_coord"}), encoding="utf-8")
+        if not agents:
+            path = self.root / ".orchestration/config.toml"
+            text = path.read_text(encoding="utf-8")
+            path.write_text(re.sub(r"(?m)^\[agents\.[a-z0-9-]+\]\n(?:[^\[\n].*\n|\n)*", "", text), encoding="utf-8")
 
     def remove_role(self, role: str) -> None:
         """config.toml 에서 [roles.<role>] 표를 지운다(그 직무가 없던 이전 버전 프로젝트)."""
