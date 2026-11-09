@@ -96,7 +96,7 @@ def log_hook_error(p: Project, label: str) -> None:
 
 
 def auto_up_context(p: Project, force: bool) -> str | None:
-    """코디네이터 자동 부활(orch.autoup.check). 실패해도 세션을 막지 않고 hook-errors.log 에 남긴다.
+    """관제 자동 부활(orch.autoup.check). 실패해도 세션을 막지 않고 hook-errors.log 에 남긴다.
     import 는 여기서 한다. guard 훅은 매 도구 호출마다 돌아 무거운 모듈을 미리 불러오지 않는다."""
     try:
         from orch import autoup

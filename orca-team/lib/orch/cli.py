@@ -39,7 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--json", metavar="FILE", help="질문 JSON 파일. - 면 표준 입력")
     g.add_argument("--wait", metavar="OUT_ID", help="이미 올린 질문의 답을 이어서 기다린다")
     g.add_argument("--pending", action="store_true", help="답은 왔지만 아직 읽지 않은 질문")
-    s = sub.add_parser("answer", help="ask·question·approval 에 답한다(메인)")
+    s = sub.add_parser("answer", help="ask·decide 에 답한다(메인). approval 은 design-decide")
     s.add_argument("id")
     s.add_argument("body")
     sub.add_parser("reask", help="이미 전했지만 답하지 않은 질문을 watch 형식으로 다시 출력한다(메인)")

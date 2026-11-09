@@ -189,10 +189,16 @@ class TemplateTest(unittest.TestCase):
 
     def test_no_coordinator_left_in_templates_and_code(self):
         self.assertFalse((T / "coordinator.md").exists())
-        roots = [T, T.parent / "skills", T.parent / "lib" / "orch"]
+        roots = [T, T.parent / "skills", T.parent / "lib" / "orch", T.parent / "hooks"]
         legacy = {"config.py", "setup.py"}  # 옛 [coordinator] 설정을 옮기라는 안내와 upgrade 거부 문구만 남긴다
         hits = [str(f) for root in roots for f in root.rglob("*") if f.is_file() and f.suffix in (".md", ".py")
                 and f.name not in legacy and "코디네이터" in f.read_text(encoding="utf-8")]
+        self.assertEqual(hits, [])
+
+    def test_code_does_not_route_main_to_question_notify(self):
+        # orch answer 는 question 에 답하지 않는다. 메인에게 notify --type question 을 시키면 막다른 길이다
+        hits = [str(f) for f in (T.parent / "lib" / "orch").rglob("*.py")
+                if "notify --type question 으로 메인에" in f.read_text(encoding="utf-8")]
         self.assertEqual(hits, [])
 
     def test_planner_interview_rules(self):

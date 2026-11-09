@@ -391,13 +391,13 @@ def codex_review(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: st
             if not ff or moved:
                 why = "되돌리기/재작성(fast-forward 아님)" if not ff else f"허용 밖 경로 커밋: {', '.join(moved)}"
                 raise OrchError(f"Codex 가 리뷰 중 HEAD 를 바꿨다({head_before[:10]} -> {head_after[:10]}): {why}. "
-                                f"판정 무효. 변경은 그대로 두고 orch notify --type question 으로 메인에 올린다. "
+                                f"판정 무효. 변경은 그대로 두고 메인에 decide 로 올린다. "
                                 f"run-dir: {run_dir}")
         touched = sorted(path for path in set(before) | set(after)
                          if before.get(path) != after.get(path) and not matches_any(path, exclude))
         if touched:
             raise OrchError(f"Codex 가 리뷰 중 추적 파일을 바꿨다: {', '.join(touched)}. 판정 무효. 변경은 그대로 두고 "
-                            f"orch notify --type question 으로 메인에 올린다. run-dir: {run_dir}")
+                            f"메인에 decide 로 올린다. run-dir: {run_dir}")
         # 테스트·빌드 산출물(__pycache__, dist 등)은 판정을 무효로 하지 않고 경고로만 남긴다.
         untracked_new |= {path for path in untracked_after - untracked_before if not matches_any(path, exclude)}
         status = read_json(run_dir / "status.json", {})
@@ -406,7 +406,7 @@ def codex_review(p: Project, cfg: Config, doc: TaskDoc, rnd: int, review_rel: st
             if verdict:
                 return verdict, sorted(untracked_new)
     raise OrchError(f"Codex 리뷰가 2회 모두 판정을 내지 못했다. run-dir: {last_dir}. "
-                    "orch notify --type question 으로 메인에 올린다")
+                    "메인에 decide 로 올린다")
 
 
 def auto_review(p: Project, review_rel: str, task_id: str, rnd: int, reason: str) -> str:
