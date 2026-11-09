@@ -27,6 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("bind", help="Run 생성·재연결(관제)")
     sub.add_parser("status", help="상태")
     sub.add_parser("drive", help="관제 루프(관제 탭 셸에서만. 메인은 /orca-team:up)")
+    sub.add_parser("review-view", help="리뷰 보기 pane(고정 에이전트 탭 오른쪽)").add_argument("name")
     s = sub.add_parser("watch", help="관제 → 메인 메시지 대기(메인, 백그라운드)")
     s.add_argument("--timeout", type=float, metavar="SECONDS")
     s = sub.add_parser("notify", help="관제 → 메인")
@@ -103,7 +104,7 @@ GRAPH_COMMANDS = {"plan", "start-ready", "design-review", "design-decide"}  # �
 CONFIG_COMMANDS = {"up", "task", "start", "fix", "review", "agent", *GRAPH_COMMANDS}
 # 메인에서 실행하면 관제 큐를 거치는 명령(Orca 를 부른다). 관제 터미널에서는 바로 실행한다.
 QUEUED = {"start", "start-ready", "fix", "accept", "drop", "design-decide", "scope", "agent"}
-CONFIG_COMMANDS.update({"agent", "drive"})
+CONFIG_COMMANDS.update({"agent", "drive", "review-view"})
 
 
 def design_args(args) -> tuple[list[str], dict[str, str]]:
@@ -230,6 +231,10 @@ def run(args) -> int:
         from . import drive
 
         return drive.main(p, cfg)
+    if args.cmd == "review-view":
+        from . import reviewview
+
+        return reviewview.main(p, cfg, args.name)
     if args.cmd in GRAPH_COMMANDS:
         return run_graph(p, cfg, args)
     if args.cmd in ("setup-done", "up", "bind", "status", "upgrade"):
