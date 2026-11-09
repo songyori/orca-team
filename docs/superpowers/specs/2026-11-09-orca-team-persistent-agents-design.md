@@ -34,6 +34,20 @@
 | 9 | 리뷰 effort | 모든 직무의 `codex_effort` 를 `xhigh` 로 한다 |
 | 10 | 세션 리셋 시점 | 묶음이 끝날 때. 오래 쉬었다가 시작할 때는 리셋하지 않는다(캐시가 만료된 뒤에는 인수인계를 쓰는 턴이 긴 컨텍스트를 다시 읽으므로 아끼는 것이 없다) |
 
+### 2.1 구현 계획을 쓰며 바뀐 것 (2026-11-09)
+
+1. Orca 1.4.240 의 `worker-show --json` 은 간략형(`result.state`·`stage`·`terminal`·`liveness`)만 준다. 지금 `orca.worker_info` 가 읽는 `result.worker.*` 는 `--full` 이 있어야 나와 바쁨 판정이 늘 "확인 불가"였다. `--full` 을 붙이고 두 모양을 다 읽는다. `review.py` 가 부르던 `orchestration worker-retain` 은 지금 Orca 에 없는 명령이라 지운다.
+2. 토큰 갱신 태스크는 관제가 만들지 않고 `decide` token_update 로 메인에 올린다. 어느 developer 태스크가 "UI 기반" 인지는 planner 가 정한 제목으로만 알 수 있어 기계적으로 고를 수 없다. 보강이 끝난 뒤 화면 `fix --supplement` 는 관제가 한다.
+3. 워커 질문 답은 `orch answer` 가 그 자리에서 decide 를 닫고, Orca 회신만 `reply` 요청으로 큐에 넣는다. 큐 명령은 `start`, `start-ready`, `fix`, `accept`, `drop`, `reply`, `design-decide`, `scope`, `agent-reset` 이다.
+4. 태스크별 잠금 파일(§6.4)은 두지 않는다. 리뷰 자식 프로세스는 지금의 `review.pid` 잠금을 쓰고, 관제는 리뷰가 끝난 뒤에만 그 태스크 상태를 쓴다.
+5. 고정 에이전트에 넣는 태스크의 모델 지정을 무시했다는 기록은 관제 로그가 아니라 이력 entry 의 `model_ignored` 에 남긴다.
+6. 훅: `agents.json` 의 작업 터미널 handle 이면 세션 표시가 없어도 워커로 본다(`/clear` 뒤 SessionStart 가 새 세션 id 로 온다). 워커 세션은 디스패치 프리앰블마다 직무를 다시 적는다(한 세션이 여러 직무를 받는다). 메인 Bash 의 `orch drive` 를 막고, `orch drive` 는 `CLAUDECODE` 환경(Claude 세션 안)에서 시작을 거부한다.
+7. accept·drop 은 outbox progress 를 쓰지 않는다(메인에는 이정표만 간다). 코디네이터용 `orch notify --json` 질문을 지운다.
+8. 자동 부활은 Orca 를 부르지 않고 관제 pid·heartbeat 로 판정한다. pid 는 살아 있는데 heartbeat 가 2분 넘게 멈췄으면 띄우지 않고 메인에 알린다.
+9. `start_unknown` 은 시작 기록 뒤 60초가 지나도 그대로일 때 복구한다. 관제는 decide 를 올린 라운드를 재확인에서 다시 처리하지 않는다(`decide_round`).
+10. `orch upgrade` 는 CLAUDE.md 의 orca-team 절(`<!-- orca-team -->` 부터 끝까지)을 새 템플릿으로 바꾸고, `[agents.*]` 는 프로젝트에 있는 직무만 넣는다.
+11. 최대 라운드를 넘긴 뒤 "한 번 더" 를 실행할 방법이 없던 것을 `orch fix --extra-round` 로 메운다(§5.5).
+
 ## 3. 실험 결과 (2026-11-08)
 
 Orca 1.4.240, Claude Code 2.1.319, codex-cli 0.166.0, 버리는 시험 프로젝트에서 했다. 원본 기록은 로컬 `.superpowers/sdd/persist/experiments.md`(커밋하지 않음)다.
@@ -193,20 +207,20 @@ worker_done 이 오면 drive 가 `agents.json` 의 `task` 를 비운다. 리뷰�
 | `orch review` exit 2, 테스트 잠금 대기 초과 | 다음 바퀴에 다시 리뷰 | |
 | accept·drop 의 워커 해제 실패 | | progress |
 | 묶음 후속(`orch followups`) | 원인 태스크를 아는 회귀마다 회귀 수정 태스크, P2·P3 는 묶음 정리 태스크 하나(지금 코디네이터 규칙과 같은 spec 형식, `출처: T-xxx followups`) | `decide` planning_gaps, 원인 모를 회귀는 `decide` unknown_regression |
-| 시스템 추가 제안 | designer 리포트 마지막 라운드의 `### 시스템 추가 제안` 원문을 모아 director 보강 태스크, 보강이 done 이면 `fix --supplement` 와 토큰 갱신 developer 태스크(지금 규칙과 같다) | |
+| 시스템 추가 제안 | designer 리포트 마지막 라운드의 `### 시스템 추가 제안` 원문을 모아 director 보강 태스크, 보강이 done 이면 제안한 화면마다 `fix --supplement` | `decide` token_update(UI 기반 developer 태스크에 토큰 반영, §2.1 의 2) |
 | 모두 done·dropped | `orch followups --rest` 처리, `[test]` 가 있으면 `orch test --full`, 실패하면 회귀 수정 태스크(`출처: final followups`) | 통과하면 done(결과 요약, 바뀐 주요 파일, 태스크별 판정과 라운드 수, 마지막 full 결과) |
 
 spec 을 만드는 태스크(회귀 수정, 묶음 정리, 보강, 토큰 갱신)는 drive 가 `.orchestration/tasks/T-xxx.md` 를 쓰고 그 파일만 경로 지정 커밋한다. 재시작한 drive 는 지금처럼 `출처:` 줄과 `docs/design/direction.md` 기록으로 이미 만든 태스크를 다시 만들지 않는다.
 
 ### 6.4 메인 요청 큐 `.orchestration/state/drive/queue/`
 
-메인이 Orca 를 건드리는 명령(`orch start`, `start-ready`, `fix`, `accept`, `drop`, `answer`(워커 질문), `design-decide`, `scope`, `agent reset`)을 실행하면:
+메인이 Orca 를 건드리는 명령(`orch start`, `start-ready`, `fix`, `accept`, `drop`, `design-decide`, `scope`, `agent reset`, 그리고 `orch answer` 가 워커 질문에 답할 때의 Orca 회신 `reply`)을 실행하면:
 1. 그 자리에서 검증한다: spec 형식, 상태 전이, 소유 경로 잠금. 실패하면 바로 오류로 끝난다.
 2. 요청 파일(`<번호>.json`: 명령, 인자, 시각)을 큐에 넣고 결과 파일(`<번호>.result.json`)을 120초까지 기다려 출력한다.
 3. 120초 안에 끝나지 않으면 "drive 가 처리 중"을 출력하고 끝난다. 결과는 outbox `result` 메시지로 온다.
 4. drive 가 죽어 있으면 큐에 넣지 않고 "drive 가 꺼져 있다. `/orca-team:up`" 오류로 끝난다.
 
-태스크 상태 파일을 쓰는 것은 drive 와 그 자식 프로세스뿐이다. 리뷰 자식 프로세스는 자기 태스크 파일만 쓰고, 태스크별 파일 잠금(`state/tasks/T-xxx.lock`)을 건다.
+태스크 상태 파일을 쓰는 것은 drive 와 그 자식 프로세스뿐이다. 리뷰 자식 프로세스는 자기 태스크 파일만 쓰고(`review.pid` 잠금), drive 는 리뷰가 끝난 뒤에만 그 태스크를 쓴다(§2.1 의 4).
 
 Orca 를 부르지 않는 명령(`orch status`, `task new`, `plan check`, `which`, `followups`, `test`, `watch`, `answer`(기획·디렉터 `ask`))은 지금처럼 바로 실행한다.
 
@@ -257,6 +271,7 @@ worker_question 은 `question`(원문)과 Orca 메시지 id 를 더 담는다. �
 | test_config | 사용자가 직접 넣은 `[test]` 면 사용자에게 묻는다. 아니면 `[test]` 를 고치는 기획 태스크를 만든다 |
 | planning_gaps | 문서로 답할 수 있으면 묶음 정리 태스크 Change 에 넣는다(`orch scope`). 제품 결정이 필요한 항목은 모아서 한 번에 묻는다. 넣기로 하면 증분 기획 태스크 |
 | unknown_regression | 원인 태스크를 사용자와 정해 회귀 수정 태스크를 만든다 |
+| token_update | 보강한 디자인 시스템 토큰을 UI 기반 developer 태스크에 반영할지 정한다. done 이면 토큰 갱신 태스크, working 이면 `orch scope`, 리뷰 중이면 결과를 기다린다 |
 
 사용자에게 물을 때는 AskUserQuestion 을 직접 쓴다(질문 하나, 선택지 2–4개, 추천 하나).
 
@@ -329,7 +344,7 @@ claude_effort = "xhigh"
 
 - `[roles.*]` 는 지금과 같다(title, owns, 임시 워커용 `claude_*`, 리뷰용 `codex_*`). 템플릿의 모든 직무 `codex_effort` 를 `xhigh` 로 바꾼다.
 - 검증: 한 직무가 두 에이전트에 있으면 오류. `[agents.*].roles` 의 직무가 `[roles]` 에 없으면 오류. `[agents]` 가 비면 모든 태스크가 임시 워커로 돈다.
-- 모델 우선순위: 고정 에이전트는 `[agents.<이름>]` > `[defaults]`. 임시 워커는 지금 규칙(명령 옵션 > 태스크 front matter > `[roles.<직무>]` > `[defaults]`). 고정 에이전트에 넣는 태스크의 front matter 모델 지정은 무시하고 drive 로그에 남긴다.
+- 모델 우선순위: 고정 에이전트는 `[agents.<이름>]` > `[defaults]`. 임시 워커는 지금 규칙(명령 옵션 > 태스크 front matter > `[roles.<직무>]` > `[defaults]`). 고정 에이전트에 넣는 태스크의 front matter 모델 지정은 무시하고 이력 entry 에 `model_ignored` 로 남긴다.
 - `[coordinator]` 절이 남아 있으면 설정 오류로 보고 `orch upgrade` 를 안내한다.
 
 ## 10. 기존 프로젝트 (`orch upgrade`, `lib/orch/setup.py`)
