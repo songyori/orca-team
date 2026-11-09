@@ -75,6 +75,16 @@ class ProjectCase(unittest.TestCase):
         path = self.fake_dir / (key.replace(" ", "_") + ".json")
         path.write_text(json.dumps({"code": code, "raw": text}), encoding="utf-8")
 
+    def respond_seq(self, key: str, *bodies, code: int = 0) -> None:
+        """가짜 orca 순서 응답. 호출마다 bodies 를 앞에서 하나씩 쓰고, 다 쓰면 respond 로 등록한 응답(없으면 기본)을 쓴다.
+        body 대신 (body, code) 튜플을 주면 그 종료 코드를 쓴다."""
+        items = []
+        for body in bodies:
+            value, exit_code = body if isinstance(body, tuple) else (body, code)
+            items.append({"code": exit_code, "body": value})
+        path = self.fake_dir / (key.replace(" ", "_") + ".seq.json")
+        path.write_text(json.dumps(items), encoding="utf-8")
+
     def calls(self) -> list[list[str]]:
         log = self.fake_dir / "orca.log"
         if not log.exists():

@@ -4,6 +4,7 @@ import subprocess
 import sys
 import time
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from helpers import FAKES, ProjectCase
@@ -136,7 +137,7 @@ class WorkerTerminalTest(ProjectCase):
             "projection": {"liveness": {"verdict": "alive"}},
         }})
         self.assertEqual(orca.worker_terminal("d1"), ("term_w", "alive"))
-        self.assertIn(["orchestration", "worker-show", "--dispatch", "d1", "--json"], self.calls())
+        self.assertIn(["orchestration", "worker-show", "--dispatch", "d1", "--full", "--json"], self.calls())
 
     def test_worker_info_has_stage_and_state(self):
         self.respond("orchestration worker-show", {"ok": True, "result": {
@@ -246,6 +247,48 @@ class TerminalStateTest(ProjectCase):
         self.assertFalse(orca.terminal_alive("term_x"))
         self.respond("terminal show", {"ok": True, "result": {}})
         self.assertFalse(orca.terminal_alive("term_x"))
+
+
+class WorkerShapeTest(ProjectCase):
+    def setUp(self):
+        super().setUp()
+        patcher = mock.patch.dict(os.environ, {"ORCA_TEAM_ORCA": str(FAKES / "orca"), "FAKE_DIR": str(self.fake_dir)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_worker_info_reads_full_record_with_full_flag(self):
+        self.respond("orchestration worker-show", {"ok": True, "result": {
+            "worker": {"agentTerminalHandle": "term_w", "stage": "settled", "state": "succeeded"},
+            "projection": {"liveness": {"verdict": "unverifiable"}}}})
+        self.assertEqual(orca.worker_info("ctx_1"),
+                         {"handle": "term_w", "verdict": "unverifiable", "stage": "settled", "state": "succeeded"})
+        self.assertIn("--full", self.calls_for("orchestration worker-show")[-1])
+
+    def test_worker_info_reads_concise_view(self):
+        self.respond("orchestration worker-show", {"ok": True, "result": {
+            "dispatchId": "ctx_1", "state": "start_unknown", "stage": "turn_start_unobserved",
+            "liveness": "live", "terminal": "term_w"}})
+        self.assertEqual(orca.worker_info("ctx_1"), {"handle": "term_w", "verdict": "live",
+                                                     "stage": "turn_start_unobserved", "state": "start_unknown"})
+
+    def test_shell_alive(self):
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}})
+        self.assertEqual(orca.shell_alive("term_d"), "alive")
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": False}}})
+        self.assertEqual(orca.shell_alive("term_d"), "dead")
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        self.assertEqual(orca.shell_alive("term_d"), "dead")
+        self.respond("terminal show", {"ok": False, "error": {"code": "runtime_unavailable"}}, code=1)
+        self.assertEqual(orca.shell_alive("term_d"), "unknown")
+        self.assertEqual(orca.shell_alive(None), "unknown")
+
+    def test_fake_sequence_then_fallback(self):
+        self.respond("orchestration check", {"ok": True, "result": {"messages": []}})
+        self.respond_seq("orchestration check", {"ok": True, "result": {"messages": [{"id": "m1"}]}},
+                         ({"ok": False, "error": {"code": "x"}}, 1))
+        self.assertEqual(orca.call(["orchestration", "check"])[1]["result"]["messages"], [{"id": "m1"}])
+        self.assertEqual(orca.call(["orchestration", "check"], check=False)[0], 1)
+        self.assertEqual(orca.call(["orchestration", "check"])[1]["result"]["messages"], [])
 
 
 if __name__ == "__main__":

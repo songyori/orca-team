@@ -8,7 +8,7 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from . import orca, plan, testgate
+from . import plan, testgate
 from .config import Config
 from .designdiff import design_diff_lint
 from .globs import matches_any
@@ -450,12 +450,6 @@ def run_review(p: Project, cfg: Config, doc: TaskDoc) -> dict:
                         f"(status={st.get('status')})", 2)
     rnd, owns = st["round"], owns_of(doc, cfg)
     review_rel = f"docs/reviews/{task_id}/r{rnd}.md"
-    if st.get("dispatch_id"):
-        try:  # 보존 요청은 최선 노력이다. orca 가 없을 때(12)만 멈춘다.
-            orca.call(["orchestration", "worker-retain", "--dispatch", st["dispatch_id"]], check=False)
-        except OrchError as exc:
-            if exc.code == 12:
-                raise
     st["status"] = "reviewing"
     save_state(p, st)
     untracked: list[str] = []

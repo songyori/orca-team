@@ -3,7 +3,8 @@
 
 응답 파일: $FAKE_DIR/<플래그가 아닌 앞 두 토큰을 _ 로 이은 이름>.json = {"code": int, "body": {...}}
 예: orchestration worker-start → orchestration_worker-start.json, status → status.json
-없으면 {"ok": true, "result": {}} 를 출력하고 exit 0. 응답 파일에 "sleep": <초> 가 있으면 그만큼 잔 뒤 응답한다.
+순서 응답: 같은 이름의 .seq.json(응답 목록)이 있으면 호출마다 앞에서 하나씩 꺼내 쓰고, 다 쓰면 .json 으로 돌아간다.
+없으면 {"ok": true, "result": {}} 를 출력하고 exit 0. 응답에 "sleep": <초> 가 있으면 그만큼 잔 뒤 응답한다.
 """
 import json
 import os
@@ -15,10 +16,18 @@ fake = Path(os.environ["FAKE_DIR"])
 args = sys.argv[1:]
 with (fake / "orca.log").open("a", encoding="utf-8") as fh:
     fh.write(json.dumps(args, ensure_ascii=False) + "\n")
-words = [a for a in args if not a.startswith("--")][:2]
-response = fake / ("_".join(words) + ".json")
-if response.exists():
-    spec = json.loads(response.read_text(encoding="utf-8"))
+name = "_".join([a for a in args if not a.startswith("--")][:2])
+spec = None
+seq = fake / (name + ".seq.json")
+if seq.exists():
+    items = json.loads(seq.read_text(encoding="utf-8"))
+    if items:
+        spec = items.pop(0)
+        seq.write_text(json.dumps(items), encoding="utf-8")
+single = fake / (name + ".json")
+if spec is None and single.exists():
+    spec = json.loads(single.read_text(encoding="utf-8"))
+if spec is not None:
     time.sleep(spec.get("sleep", 0))
     if "raw" in spec:
         sys.stdout.write(spec["raw"])

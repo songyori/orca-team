@@ -54,7 +54,7 @@ class ReviewTest(ReviewCase):
         self.assertEqual(call[call.index("--effort") + 1], "xhigh")
         self.assertEqual(call[call.index("--cwd") + 1], str(self.root))
         self.assertEqual(call[call.index("--profile") + 1], "run")
-        self.assertTrue(self.calls_for("orchestration worker-retain"))
+        self.assertEqual(self.calls_for("orchestration worker-retain"), [])
 
     def test_request_changes(self):
         self.commit_work()
@@ -299,13 +299,6 @@ class ReviewTamperTest(ReviewCase):
             self.assertNotIn("tests/locked.txt", hashes)
         finally:
             locked.chmod(0o644)
-
-    def test_worker_retain_failure_is_best_effort(self):
-        self.commit_work()
-        self.respond_raw("orchestration worker-retain", "not json at all")
-        self.modes("approve")
-        self.assertEqual(json.loads(self.review().stdout)["verdict"], "APPROVE")
-
 
 
 class ReviewReentryTest(ReviewCase):

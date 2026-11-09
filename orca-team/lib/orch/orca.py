@@ -104,21 +104,49 @@ def terminal_alive(handle: str | None) -> bool:
     return _terminal_verdict(code, data) == "alive"
 
 
-def worker_info(dispatch_id: str) -> dict | None:
-    """worker-show 요약 {handle, verdict, stage, state}. 조회 실패면 None. 코드 12(orca 없음)는 전파."""
+def shell_alive(handle: str | None) -> str:
+    """셸 터미널(관제 pane, 리뷰 보기 pane) 생존 → "alive" | "dead" | "unknown". 안에서 도는 에이전트 종류는 보지 않는다.
+    예외를 내지 않는다."""
+    if not handle:
+        return "unknown"
     try:
-        code, data = call(["orchestration", "worker-show", "--dispatch", dispatch_id], check=False)
+        code, data = call(["terminal", "show", "--terminal", handle], check=False, timeout=TERMINAL_STATE_TIMEOUT)
+    except (OrchError, OSError, ValueError):
+        return "unknown"
+    if code == 0 and data.get("ok"):
+        result = data.get("result")
+        term = result.get("terminal") if isinstance(result, dict) else None
+        if not isinstance(term, dict) or "connected" not in term:
+            return "unknown"
+        return "alive" if term.get("connected") is True else "dead"
+    error = data.get("error")
+    if isinstance(error, dict) and error.get("code") == "terminal_handle_stale":
+        return "dead"
+    return "unknown"
+
+
+def worker_info(dispatch_id: str) -> dict | None:
+    """worker-show 요약 {handle, verdict, stage, state}. 조회 실패면 None. 코드 12(orca 없음)는 전파.
+
+    전체 기록(--full: worker.*, projection.liveness.verdict)과 간략형(result.state·stage·terminal·liveness)을 모두 읽는다.
+    Orca 1.4.240 은 --full 이 없으면 간략형만 준다."""
+    try:
+        code, data = call(["orchestration", "worker-show", "--dispatch", dispatch_id, "--full"], check=False)
     except OrchError as exc:
         if exc.code == 12:
             raise
         return None
     if code != 0 or not data.get("ok"):
         return None
-    result = data.get("result") or {}
-    worker = result.get("worker") or {}
-    return {"handle": worker.get("agentTerminalHandle"),
-            "verdict": ((result.get("projection") or {}).get("liveness") or {}).get("verdict"),
-            "stage": worker.get("stage"), "state": worker.get("state")}
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    worker = result.get("worker") if isinstance(result.get("worker"), dict) else {}
+    projection = result.get("projection") if isinstance(result.get("projection"), dict) else {}
+    liveness = projection.get("liveness") if isinstance(projection.get("liveness"), dict) else {}
+    concise = lambda key: result.get(key) if isinstance(result.get(key), str) else None  # noqa: E731
+    return {"handle": worker.get("agentTerminalHandle") or concise("terminal"),
+            "verdict": liveness.get("verdict") or concise("liveness"),
+            "stage": worker.get("stage") or concise("stage"),
+            "state": worker.get("state") or concise("state")}
 
 
 def worker_terminal(dispatch_id: str) -> tuple[str | None, str | None]:
