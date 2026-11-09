@@ -17,6 +17,7 @@ from .paths import OrchError, Project
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 READ_ONLY_GIT = frozenset({"status", "diff", "log", "rev-parse", "diff-tree", "merge-base", "show", "cat-file"})
 COMMIT_LOCK_BUDGET = 30.0  # 다른 워커의 index.lock 을 기다리는 최대 초
+DRIVE_STALE_SECONDS = 120  # drive heartbeat 가 이보다 오래되면 죽은 것으로 본다
 
 
 def now() -> str:
@@ -124,6 +125,18 @@ def pid_alive(path: Path) -> bool:
     except (OSError, ValueError, IndexError):
         return False
     return process_alive(pid)
+
+
+def drive_alive(p: Project) -> bool:
+    """관제(orch drive)가 살아 있는가: pid 가 살아 있고 heartbeat 가 DRIVE_STALE_SECONDS 안이다."""
+    if not pid_alive(p.drive_pid):
+        return False
+    try:
+        stamp = p.drive_heartbeat.read_text(encoding="utf-8").strip()
+        age = (datetime.now().astimezone() - datetime.fromisoformat(stamp)).total_seconds()
+    except (OSError, ValueError):
+        return False
+    return 0 <= age < DRIVE_STALE_SECONDS
 
 
 def acquire_pid(path: Path, name: str) -> None:

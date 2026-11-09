@@ -74,6 +74,12 @@ class Project:
         self.plan_json = self.state / "plan.json"  # plan apply 의 key → T-id 와 지문
         self.design_review_json = self.state / "design-review.json"  # design-review 질문 이력
         self.answered_json = self.state / "answered.json"  # orch answer 가 답한 question·approval id 와 기록 시작점
+        self.agents_json = self.state / "agents.json"  # 고정 에이전트 상태(drive 만 쓴다)
+        self.drive_dir = self.state / "drive"
+        self.queue_dir = self.drive_dir / "queue"  # 메인 → drive 요청(queue.py)
+        self.drive_pid = self.drive_dir / "drive.pid"
+        self.drive_heartbeat = self.drive_dir / "heartbeat"  # drive 가 바퀴마다 시각을 쓴다
+        self.drive_log = self.drive_dir / "drive.log"
 
     def ensure_state(self) -> None:
         for folder in (self.state, self.task_state_dir, self.sessions):

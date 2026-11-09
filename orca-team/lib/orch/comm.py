@@ -19,7 +19,9 @@ from .paths import OrchError, Project
 from .util import acquire_pid, load_run, now, read_json, release_pid, write_json, write_text_atomic
 
 TYPES = ("progress", "question", "done")  # orch notify 가 받는 타입
-POST_TYPES = (*TYPES, "ask", "approval")  # outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다
+POST_TYPES = (*TYPES, "ask", "approval", "decide", "result")  # outbox 에 쓰는 모든 타입. ask·approval 은 메인이 그대로 쓰는 render 를 싣는다
+DECIDE_KINDS = ("worker_failed", "worker_question", "escalation", "max_rounds", "repeat_test_failure",
+                "test_config", "planning_gaps", "unknown_regression", "token_update")
 REPLY_TYPES = ("question", "approval")  # 메인 답이 코디네이터 Run 으로 가는 타입. 답한 id 는 state/answered.json 에 남긴다
 WAIT_TYPES = "worker_done,escalation,question,status"
 MAIN_SUBJECT = "[main]"
@@ -142,6 +144,17 @@ def notify(p: Project, kind: str, body: str) -> dict:
     if kind not in TYPES:
         raise OrchError(f"--type 은 {'|'.join(TYPES)} 중 하나다", 2)
     return post(p, kind, body)
+
+
+def post_decide(p: Project, kind: str, task: str | None, summary: str, files=(), commands=(),
+                extra: dict | None = None) -> dict:
+    """메인에 판단을 맡긴다(drive). 메인은 files 만 읽고 commands 중 하나로 처리한 뒤 orch answer 로 닫는다."""
+    if kind not in DECIDE_KINDS:
+        raise OrchError(f"decide 종류가 아니다: {kind}", 2)
+    summary = summary.strip() or "(요약 없음)"
+    return post(p, "decide", f"[{kind}] {task or '-'}: {summary}",
+                {"kind": kind, "task": task, "summary": summary, "files": list(files), "commands": list(commands),
+                 **(extra or {})})
 
 
 @contextmanager
