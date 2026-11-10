@@ -227,6 +227,7 @@ class Drive:
                 self.log(f"{task_id} 이미 끝난 태스크({st.get('status')})의 worker_done 무시: {dispatch}")
                 return
             self.lift_person_prompt(st, dispatch)
+            self.liveness_known(task_id)  # 다음 라운드가 이 디스패치의 생존 모름 시각을 물려받지 않게 한다
             if st.get("agent") in self.cfg.agents:
                 agents.release_task(self.p, st["agent"], task_id)
             if payload.get("outcome") == "succeeded":
@@ -1002,12 +1003,19 @@ class Drive:
             out = agents.begin_reset(self.p, self.cfg, name)
             if not out:
                 continue
+            if out["status"] == "deferred":  # 처음 미룰 때 한 번만 온다
+                self.log(f"{name} 리셋 미룸: 작업 세션이 출력 중")
+                continue
             failed = out["status"] == "failed"
             self.log(f"{name} 리셋 시작: {out['status']}"
                      + (f"({out.get('count')}/{agents.RESET_FAIL_LIMIT}): {out.get('error')}" if failed else ""))
             if out["status"] == "unknown_stuck":
                 self.decide("escalation", None, f"{name} 에이전트의 작업 터미널 상태를 {out['minutes']}분 넘게 알 수 없어 "
                             "리셋(인수인계)을 취소했다. 터미널을 확인한 뒤 필요하면 다시 요청한다",
+                            commands=[f"orch agent reset {name}"])
+            elif out["status"] == "busy_stuck":
+                self.decide("escalation", None, f"{name} 에이전트의 작업 세션이 {out['minutes']}분 넘게 출력을 이어 가 "
+                            "리셋(인수인계)을 취소했다. 그 탭을 확인한 뒤 필요하면 다시 요청한다",
                             commands=[f"orch agent reset {name}"])
             elif failed and out.get("gave_up"):  # 앞선 실패는 reset_pending 을 두어 다음 틱에 다시 한다
                 self.decide("escalation", None,

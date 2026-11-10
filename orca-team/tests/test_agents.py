@@ -290,6 +290,11 @@ class AgentFixTest(AgentCase):
         self.orch("fix", "T-001", "--force", "--note", "멈추고 다시")
         for verb in ("worker-abandon", "worker-release"):
             self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        # worker-release 는 --keep-open 터미널을 닫지 않는다. 옛 세션이 이어 일하지 않게 새로 띄우기 전에 탭을 닫는다.
+        calls = [c[:2] for c in self.calls()]
+        [close] = self.calls_for("terminal close")
+        self.assertEqual((self.arg(close, "--terminal"), "--tab" in close), ("term_a1", True))
+        self.assertLess(calls.index(["terminal", "close"]), len(calls) - 1 - calls[::-1].index(["orchestration", "worker-start"]))
         self.assertIn("--keep-open", self.last_start())
         st = self.state("T-001")
         self.assertEqual((st["status"], st["round"], st["dispatch_id"], st["history"][-1]["note"]),
@@ -311,6 +316,19 @@ class AgentFixTest(AgentCase):
         self.assertIn("worker-abandon", st["history"][-1]["release_error"])
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))
+
+    def test_force_fix_tab_close_failure_escalates_and_keeps_agent(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond("terminal close", {"ok": False, "error": {"code": "x", "message": "close failed"}}, code=1)
+        starts = len(self.calls_for("orchestration worker-start"))
+        proc = self.orch("fix", "T-001", "--force", "--note", "x", check=False)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("terminal-close", proc.stderr)
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertIn("terminal-close", self.state("T-001")["history"][-1]["release_error"])
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["review_handle"], state["task"]), ("term_a1", "term_r1", "T-001"))
 
     def test_force_fix_that_ends_up_queued_records_previous_abandoned(self):
         self.started()
@@ -369,8 +387,20 @@ class AgentFixTest(AgentCase):
         self.assertEqual(out["status"], "dropped")
         for verb in ("worker-abandon", "worker-release"):
             self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        self.assertEqual(self.arg(self.calls_for("terminal close")[-1], "--terminal"), "term_a1")
+        self.assertNotIn("release_error", out)
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), (None, None))
+
+    def test_force_drop_tab_close_failure_drops_and_asks_user_to_close(self):
+        """drop 은 닫지 못해도 중단한다(지금 규칙). 사용자에게 탭을 닫아 달라고 안내한다."""
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond("terminal close", {"ok": False, "error": {"code": "x", "message": "close failed"}}, code=1)
+        out = json.loads(self.orch("drop", "T-001", "--reason", "그만", "--force").stdout)
+        self.assertEqual((out["status"], out["released"]), ("dropped", False))
+        self.assertIn("terminal-close", out["release_error"])
+        self.assertIn("탭", out["hint"])
 
     def test_extra_round(self):
         self.started()
@@ -515,12 +545,46 @@ class ResetTest(AgentCase):
         self.started()
         agents.mark_reset_pending(self.p, self.cfg())
         self.respond("terminal show", live_output(2))
+        self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "deferred")  # 처음 미룰 때만 알린다
         self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
         self.assertEqual(self.calls_for("orchestration task-create"), [])
-        self.assertTrue(self.agents_state()["production"]["reset_pending"])
+        state = self.agents_state()["production"]
+        self.assertTrue(state["reset_pending"])
+        self.assertTrue(state["reset_busy_since"])
         self.respond("terminal show", live_output(120))
         self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
         self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "handoff")
+        self.assertNotIn("reset_busy_since", self.agents_state()["production"])
+
+    def test_busy_deferral_is_capped(self):
+        """작업 세션 출력이 RESET_UNKNOWN_SECONDS 넘게 이어지면 리셋 표시를 지우고 한 번 알린다(직무가 멈추지 않게)."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("terminal show", live_output(2))
+        agents.update(self.p, "production", lambda e: e.update(reset_busy_since="2020-01-01T00:00:00+00:00"))
+        out = agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertEqual(out["status"], "busy_stuck")
+        self.assertGreaterEqual(out["minutes"], 30)
+        state = self.agents_state()["production"]
+        self.assertEqual((state["reset_pending"], "reset_busy_since" in state), (False, False))
+        self.assertEqual(self.calls_for("orchestration task-create"), [])
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+
+    def test_busy_since_is_cleared_when_session_goes_quiet_or_agent_is_taken(self):
+        """출력 대기 시각은 이어진 구간에만 쓴다. 에이전트가 일을 맡거나 출력이 멈추면 지운다."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("terminal show", live_output(2))
+        agents.begin_reset(self.p, self.cfg(), "production")
+        agents.update(self.p, "production", lambda e: e.update(task="T-009"))
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        self.assertNotIn("reset_busy_since", self.agents_state()["production"])
+        agents.update(self.p, "production", lambda e: e.update(task=None))
+        agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertTrue(self.agents_state()["production"]["reset_busy_since"])
+        self.respond("terminal show", STALE, code=1)  # 터미널이 죽었다: 리셋할 세션이 없다
+        self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "skipped")
+        self.assertNotIn("reset_busy_since", self.agents_state()["production"])
 
     def test_failed_handoff_start_closes_created_orca_task(self):
         """task-create 는 됐는데 worker-start 가 실패하면 만든 Orca 태스크를 failed 로 닫는다(고아 태스크를 남기지 않는다)."""
@@ -652,6 +716,8 @@ class RecoveryTest(AgentCase):
         self.assertIn("terminal-close", out["release_error"])
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
         self.assertIn("terminal-close", self.state("T-001")["history"][-1]["release_error"])
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))  # 닫지 못했으면 바꾸지 않는다
 
     def test_third_unknown_start_escalates(self):
         starts = self.unknown_started()

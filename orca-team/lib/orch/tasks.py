@@ -491,15 +491,30 @@ def close_dispatch(dispatch, verbs=("worker-abandon", "worker-release")) -> dict
     return failures
 
 
+def stop_agent_session(p: Project, agent: str, dispatch, handle=None) -> dict:
+    """고정 에이전트의 세션을 멈추고 작업 터미널을 잊는다(다음 태스크는 새 세션으로 띄운다). 디스패치를 정리하고
+    (close_dispatch), 작업 터미널 탭을 닫은 뒤(agents.close_tab: worker-release 는 --keep-open 터미널을 닫지 않아 옛 세션이
+    이어 일할 수 있다) 잊는다. handle 이 없으면 agents.json 의 작업 터미널이다. 하나라도 실패하면 잊지 않고(에이전트 상태를
+    바꾸지 않는다) 실패한 단계 → 오류를 돌려준다. 성공하면 빈 dict. orca 없음(12)은 올린다."""
+    failures = close_dispatch(dispatch)
+    if failures:
+        return failures
+    handle = handle or agents.entry(p, agent).get("handle")
+    if handle:
+        closed = agents.close_tab(str(handle))
+        if closed is not None:
+            return {"terminal-close": closed}
+    agents.forget(p, agent)
+    return {}
+
+
 def free_agent_task(p: Project, st: dict, agent: str, force: bool) -> dict:
-    """고정 에이전트가 지금 맡은 이 태스크를 뗀다. force 이고 working 워커가 아직 일하거나 알 수 없으면 이전 디스패치를
-    버리고 터미널을 닫은 뒤(close_dispatch) 작업 터미널을 잊는다(다음 태스크는 새 세션으로 띄운다).
-    닫지 못하면 아무것도 바꾸지 않고 {"release_error": …} 를 돌려준다."""
+    """고정 에이전트가 지금 맡은 이 태스크를 뗀다. force 이고 working 워커가 아직 일하거나 알 수 없으면 세션을 멈추고
+    작업 터미널 탭을 닫은 뒤 잊는다(stop_agent_session). 멈추지 못하면 아무것도 바꾸지 않고 {"release_error": …} 를 돌려준다."""
     if force and st.get("status") == "working" and busy_or_unknown(st)[0]:
-        failures = close_dispatch(st.get("dispatch_id"))
+        failures = stop_agent_session(p, agent, st.get("dispatch_id"))
         if failures:
             return {"release_error": failures}
-        agents.forget(p, agent)
         return {"previous_abandoned": st.get("dispatch_id")}
     agents.detach(p, agent, st["id"])
     return {}
@@ -780,10 +795,11 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     - 최근 출력이 있으면 세션이 일하는 중이다. 다시 띄우지 않고 {"status": "busy"} (이력은 디스패치마다 한 번).
     - 상태를 모르면 다시 띄우지 않고 {"status": "unknown"}. 관제는 둘 다 생존 모름 규칙(liveness_unknown)으로 다룬다.
     - 살아 있고 출력이 멈췄으면 입력이 사라졌다고 본다. 디스패치를 버리고(worker-abandon) 같은 터미널에 다시 넣는다.
-    - 죽었으면 디스패치를 정리하고, 옛 탭을 닫고(terminal close --tab, worker-release 는 --keep-open 터미널을 닫지 않는다)
-      작업 터미널을 잊은 뒤 새로 띄운다.
+    - 죽었으면 stop_agent_session 으로 디스패치를 정리하고 옛 탭을 닫고(terminal close --tab, worker-release 는
+      --keep-open 터미널을 닫지 않는다) 작업 터미널을 잊은 뒤 새로 띄운다.
     다시 넣거나 새로 띄우는 것만 세어 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다. 정리(abandon·release·
-    탭 닫기)가 하나라도 실패하면 이전 작업자가 멈췄다고 볼 수 없으므로 다시 띄우지 않고 release_error 와 함께 메인에 올린다."""
+    탭 닫기)가 하나라도 실패하면 이전 작업자가 멈췄다고 볼 수 없으므로 에이전트를 바꾸지 않고, 다시 띄우지 않고
+    release_error 와 함께 메인에 올린다."""
     require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
@@ -812,16 +828,13 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     if agent and state == "alive":
         failures = close_dispatch(dispatch, ("worker-abandon",))  # 같은 작업 터미널에 다시 넣는다(잊지 않는다)
         entry["same_terminal"] = handle
+    elif agent:
+        old = handle or info.get("handle")
+        if old:
+            entry["closed_tab"] = old
+        failures = stop_agent_session(p, agent, dispatch, old)  # 닫지 못하면 에이전트를 바꾸지 않는다
     else:
         failures = close_dispatch(dispatch)
-        old = handle or info.get("handle")
-        if agent and old and not failures:
-            entry["closed_tab"] = old
-            closed = agents.close_tab(str(old))
-            if closed is not None:
-                failures["terminal-close"] = closed
-        if agent:
-            agents.forget(p, agent)
     if failures:
         entry["release_error"] = failures
     st["history"].append(entry)

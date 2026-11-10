@@ -19,7 +19,7 @@ TEMP = "temp"  # 임시 워커(태스크마다 새 워커)
 WAIT = "wait"  # 고정 에이전트를 기다린다
 TAB_PREFIX = "orca-team "
 HANDOFF_DIR = "docs/handoff"
-RESET_UNKNOWN_SECONDS = 30 * 60  # 리셋할 작업 터미널의 상태를 이만큼 모르면 리셋 표시를 지우고 메인에 올린다
+RESET_UNKNOWN_SECONDS = 30 * 60  # 리셋할 작업 터미널의 상태를 모르거나 출력이 이만큼 이어지면 리셋 표시를 지우고 메인에 올린다
 RESET_SETTLE_SECONDS = 5.0  # /clear 뒤 tui-idle 이 떠도 새 세션 화면이 입력을 받기까지 기다린다(실험 E4)
 ACTIVE_OUTPUT_SECONDS = 30  # 작업 터미널에 이만큼 안에 출력이 있었으면 세션이 일하는 중이다(Claude 스피너는 1초 안팎마다 바뀐다)
 RESET_FAIL_LIMIT = 3  # 인수인계를 이만큼 넣지 못하면 리셋 표시를 지우고 메인에 올린다(그 전에는 다음 틱에 다시 한다)
@@ -290,15 +290,25 @@ def request_reset(p: Project, cfg: Config, name: str) -> dict:
     return {"name": name, "reset_pending": True}
 
 
+def _age_seconds(since) -> float:
+    try:
+        return (datetime.now().astimezone() - datetime.fromisoformat(since)).total_seconds()
+    except (TypeError, ValueError):
+        return 0
+
+
 def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     """비어 있고(맡은 태스크·대기열 없음) reset_pending 이면 인수인계 태스크를 넣는다. 아니면 None.
-    작업 터미널이 없으면 비울 세션이 없으므로 표시만 지운다. 세션이 다른 일을 하면(최근 출력) 넣지 않고 None.
+    작업 터미널이 없으면 비울 세션이 없으므로 표시만 지운다. 세션이 다른 일을 하면(최근 출력) 넣지 않는다: 처음 미룰 때만
+    {"status": "deferred"}, 그 뒤는 None. 출력이 RESET_UNKNOWN_SECONDS 넘게 이어지면 리셋 표시를 지우고 "busy_stuck"
+    (터미널 상태 모름의 "unknown_stuck" 과 같다. 리셋을 기다리는 직무가 멈추지 않게 한다).
     넣지 못하면 {"status": "failed", "error", "count", "gave_up"}: RESET_FAIL_LIMIT 번째(gave_up)에만 리셋 표시를 지운다."""
     agent = cfg.agents[name]
     e = entry(p, name)
     if not e.get("reset_pending") or e.get("task") or e.get("resetting") or e.get("queue"):
-        if e.get("reset_unknown_since"):  # 모름이 이어진 구간이 끊겼다. 다음 모름은 처음부터 잰다
-            update(p, name, lambda x: x.pop("reset_unknown_since", None))
+        if e.get("reset_unknown_since") or e.get("reset_busy_since"):
+            # 모름·출력이 이어진 구간이 끊겼다. 다음 대기는 처음부터 잰다
+            update(p, name, lambda x: (x.pop("reset_unknown_since", None), x.pop("reset_busy_since", None)))
         return None
     handle = e.get("handle")
     state, active = terminal_activity(handle)
@@ -308,23 +318,32 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
         if not since:
             update(p, name, lambda x: x.update(reset_unknown_since=now()))
             return None
-        try:
-            age = (datetime.now().astimezone() - datetime.fromisoformat(since)).total_seconds()
-        except (TypeError, ValueError):
-            age = 0
+        age = _age_seconds(since)
         if age < RESET_UNKNOWN_SECONDS:
             return None
         update(p, name, lambda x: (x.update(reset_pending=False), x.pop("reset_unknown_since", None),
-                                   x.pop("reset_failures", None)))
+                                   x.pop("reset_busy_since", None), x.pop("reset_failures", None)))
         return {"name": name, "status": "unknown_stuck", "minutes": int(age // 60)}
     if e.get("reset_unknown_since"):
         update(p, name, lambda x: x.pop("reset_unknown_since", None))
     if state == "dead":
         update(p, name, lambda x: (x.update(reset_pending=False, since_reset=0, handle=None),
-                                   x.pop("reset_failures", None)))
+                                   x.pop("reset_busy_since", None), x.pop("reset_failures", None)))
         return {"name": name, "status": "skipped"}
     if active:
-        return None  # 세션이 다른 일(자동 압축 등)을 한다. 지금 넣으면 worker-start 가 실패한다. 다음 틱에 다시 본다
+        # 세션이 다른 일(자동 압축 등)을 한다. 지금 넣으면 worker-start 가 실패한다. 다음 틱에 다시 본다.
+        since = e.get("reset_busy_since")
+        if not since:
+            update(p, name, lambda x: x.update(reset_busy_since=now()))
+            return {"name": name, "status": "deferred"}
+        age = _age_seconds(since)
+        if age < RESET_UNKNOWN_SECONDS:
+            return None
+        update(p, name, lambda x: (x.update(reset_pending=False), x.pop("reset_busy_since", None),
+                                   x.pop("reset_failures", None)))
+        return {"name": name, "status": "busy_stuck", "minutes": int(age // 60)}
+    if e.get("reset_busy_since"):  # 출력이 멈췄다. 인수인계를 넣는다
+        update(p, name, lambda x: x.pop("reset_busy_since", None))
     spec = render((TEMPLATES / "handoff.md").read_text(encoding="utf-8"),
                   {"agent": name, "agent_title": agent.title, "path": handoff_rel(name)})
     # 인수인계는 지금 세션의 맥락을 적는 일이다. 터미널이 그새 죽었으면 새 세션을 띄우지 않는다(맥락 없는 인수인계가 된다).

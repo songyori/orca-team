@@ -539,6 +539,25 @@ class PersonPromptTest(DriveCase):
         self.assertEqual(len(self.outbox("progress")), 1)
 
 
+class LivenessClearOnDoneTest(DriveCase):
+    def test_worker_done_clears_liveness_unknown_marks(self):
+        """그 디스패치의 worker_done 을 처리하면 생존 모름 시각을 지운다. 다음 라운드가 옛 시각으로 바로 올리지 않게 한다."""
+        self.started()
+        self.set_state("T-001", liveness_unknown_since="2026-01-01T00:00:00+00:00",
+                       liveness_escalated="2026-01-01T00:00:00+00:00")
+        self.drive.handle_message(self.done_msg())
+        st = self.state("T-001")
+        self.assertNotIn("liveness_unknown_since", st)
+        self.assertNotIn("liveness_escalated", st)
+        self.assertEqual(self.spawned[-1][0], ["review", "T-001"])
+
+    def test_stale_worker_done_keeps_liveness_marks(self):
+        self.started()
+        self.set_state("T-001", liveness_unknown_since="2026-01-01T00:00:00+00:00")
+        self.drive.handle_message(self.done_msg(dispatch="ctx_old"))
+        self.assertEqual(self.state("T-001")["liveness_unknown_since"], "2026-01-01T00:00:00+00:00")
+
+
 class FinishedTaskMailTest(DriveCase):
     def test_worker_done_for_dropped_task_is_ignored(self):
         self.started()
@@ -837,13 +856,35 @@ class ResetTest(DriveCase):
         self.drive.resets()
         self.assertEqual(len(self.outbox("decide")), 1)
 
+    def test_busy_session_defers_reset_with_one_log_line_then_escalates_once_after_cap(self):
+        name = "test"
+        agents.update(self.p, name, lambda e: e.update(reset_pending=True, handle="term_t1", since_reset=1))
+        self.respond("terminal show", live_output(1))  # 쉬는 세션이 자동 압축 중이다
+        self.drive.resets()
+        self.drive.resets()
+        log = self.p.drive_log.read_text(encoding="utf-8")
+        self.assertEqual(log.count(f"{name} 리셋 미룸: 작업 세션이 출력 중"), 1)
+        self.assertEqual((self.outbox("decide"), self.calls_for("orchestration task-create")), ([], []))
+        agents.update(self.p, name, lambda e: e.update(reset_busy_since="2020-01-01T00:00:00+00:00"))
+        self.drive.resets()
+        self.drive.resets()
+        [entry] = self.outbox("decide")
+        self.assertEqual(entry["kind"], "escalation")
+        self.assertIn("분 넘게 출력을 이어 가 리셋(인수인계)을 취소했다", entry["summary"])
+        self.assertEqual(entry["commands"], [f"orch agent reset {name}"])
+        e = agents.entry(self.p, name)
+        self.assertEqual((e["reset_pending"], "reset_busy_since" in e), (False, False))
+
     def test_unknown_terminal_cap_escalates_once_and_frees_roles(self):
         name = "test"
         agents.update(self.p, name, lambda e: e.update(reset_pending=True, handle="term_x",
                                                        reset_unknown_since="2020-01-01T00:00:00+00:00"))
-        with mock.patch.object(agents.orca, "terminal_state", return_value="unknown"):
+        self.respond("terminal show", live_output(300))  # 이 응답이 쓰이면(mock 이 빗나가면) 인수인계로 가서 실패한다
+        with mock.patch.object(agents.orca, "terminal_status", return_value=("unknown", None)) as status:
             self.drive.resets()
             self.drive.resets()
+        self.assertTrue(status.called)
+        self.assertEqual(self.calls_for("terminal show"), [])
         [entry] = self.outbox("decide")
         self.assertEqual(entry["kind"], "escalation")
         self.assertIn(name, entry["summary"])
