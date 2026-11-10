@@ -141,7 +141,8 @@ Codex 리뷰는 내장 Codex 래퍼의 bypass 모드(`--profile run`: 샌드박�
   | `approved` | 관제가 accept 한다 |
   | `awaiting_user` | 아직 묻지 않았으면 승인 대상 태스크가 모두 리뷰를 지난 뒤 관제가 디자인 승인 질문을 올린다. 물었으면 답이 오면 `orch design-decide <질문 id> --approve T-xxx,… --fix 'T-yyy=<요청>'` 으로 화면별 결정을 넘긴다 |
   | `changes` | 관제가 리뷰 지적대로 수정 라운드를 띄운다. 최대 라운드면 사용자에게 묻고 `orch fix T-xxx --extra-round --note "<지시>"` 또는 `orch drop` |
-  | `launch_failed` | 관제가 Orca 에 남은 워커를 확인하고 escalation decide 를 한 번 올린다. 메인은 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`, 포기하면 `orch drop`. 행에 `launching: true` 가 있으면 아직 워커를 띄우는 중이라 끝날 때까지 기다린다(그동안 `--retry` 는 exit 2) |
+  | `launch_failed` | 관제가 Orca 에 남은 워커를 확인하고 escalation decide 를 한 번 올린다. 메인은 `orch start T-xxx --retry` 또는 `orch fix T-xxx --retry`, 포기하면 `orch drop` |
+  | `launching` | 워커를 띄우는 중이다(상태 파일은 `launch_failed` 그대로이고 행에 `launching: true` 가 붙는다). 끝날 때까지 기다린다. 그동안 `--retry` 는 exit 2 |
   | `done`, `dropped` | 없음(`null`) |
 
 - `orch drop T-xxx --reason "<이유>"`(메인이 관제 큐로 보낸다): 최대 라운드에서 사용자가 중단을 고르거나 `launch_failed` 를 복구할 수 없을 때 태스크를 중단하고 소유 경로 잠금을 푼다. progress 는 올리지 않는다. 워커가 일하는 중인(settled 가 아닌) `working` 태스크는 거부하고, `--force` 로만 강제 중단한다.

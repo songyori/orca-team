@@ -365,6 +365,7 @@ class AgentFixTest(AgentCase):
                                                                            "terminal": "term_a2"}})
         self.orch("fix", "T-001", "--force", "--note", "x")
         self.assertEqual(len(self.calls_for("orchestration worker-abandon")), 1)
+        self.assertEqual(len(self.calls_for("orchestration worker-release")), 1)  # release 도 다시 부르지 않는다
         self.assertEqual(len(self.calls_for("terminal close")), 2)
         self.assertEqual(self.state("T-001")["dispatch_id"], "ctx_5")
 
@@ -373,6 +374,7 @@ class AgentFixTest(AgentCase):
         show_worker(self, "live", stage="running", state="abandoned")
         self.orch("fix", "T-001", "--force", "--note", "x")
         self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+        self.assertEqual(self.calls_for("orchestration worker-release"), [])
         self.assertEqual(self.arg(self.calls_for("terminal close")[-1], "--terminal"), "term_a1")
         self.assertIn("--keep-open", self.last_start())
 
