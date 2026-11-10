@@ -302,10 +302,27 @@ class AgentFixTest(AgentCase):
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"], state.get("queue") or []), ("term_a2", "T-001", []))
 
-    def test_force_fix_abandon_failure_escalates_without_relaunch(self):
+    def test_force_fix_abandon_failure_still_closes_tab_and_relaunches(self):
+        """abandon 이 실패해도 탭을 닫으면 세션은 멈춘 것이다. 실패는 이력에 남기고 새 세션으로 띄운다."""
         self.started()
         show_worker(self, "live", stage="running")
         self.respond("orchestration worker-abandon", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        self.orch("fix", "T-001", "--force", "--note", "x")
+        self.assertEqual(self.arg(self.calls_for("terminal close")[-1], "--terminal"), "term_a1")
+        self.assertIn("--keep-open", self.last_start())
+        last = self.state("T-001")["history"][-1]
+        self.assertEqual((last["stage"], last["closed_tab"]), ("fix", True))
+        self.assertIn("worker-abandon", last["dispatch_error"])
+        self.assertNotIn("previous_abandoned", last)
+        self.assertEqual(self.agents_state()["production"]["handle"], "term_a2")
+
+    def test_force_fix_abandon_and_tab_close_failure_escalates_without_relaunch(self):
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond("orchestration worker-abandon", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.respond("terminal close", {"ok": False, "error": {"code": "x", "message": "close failed"}}, code=1)
         starts = len(self.calls_for("orchestration worker-start"))
         proc = self.orch("fix", "T-001", "--force", "--note", "x", check=False)
         self.assertEqual(proc.returncode, 1, proc.stderr)
@@ -313,9 +330,32 @@ class AgentFixTest(AgentCase):
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
         st = self.state("T-001")
         self.assertEqual((st["status"], st["round"]), ("working", 1))
-        self.assertIn("worker-abandon", st["history"][-1]["release_error"])
+        error = st["history"][-1]["release_error"]
+        self.assertEqual(sorted(error), ["terminal-close", "worker-abandon"])
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))
+
+    def test_second_force_fix_skips_abandon_of_abandoned_dispatch(self):
+        """탭 닫기만 실패한 뒤 다시 fix --force 하면 이미 버린 디스패치에 abandon 을 다시 부르지 않고 탭 닫기로 간다."""
+        self.started()
+        show_worker(self, "live", stage="running")
+        self.respond_seq("terminal close", ({"ok": False, "error": {"code": "x"}}, 1))
+        self.assertEqual(self.orch("fix", "T-001", "--force", "--note", "x", check=False).returncode, 1)
+        self.assertEqual(self.state("T-001")["history"][-1]["previous_abandoned"], "ctx_1")
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        self.orch("fix", "T-001", "--force", "--note", "x")
+        self.assertEqual(len(self.calls_for("orchestration worker-abandon")), 1)
+        self.assertEqual(len(self.calls_for("terminal close")), 2)
+        self.assertEqual(self.state("T-001")["dispatch_id"], "ctx_5")
+
+    def test_force_fix_skips_abandon_when_worker_is_already_abandoned(self):
+        self.started()
+        show_worker(self, "live", stage="running", state="abandoned")
+        self.orch("fix", "T-001", "--force", "--note", "x")
+        self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+        self.assertEqual(self.arg(self.calls_for("terminal close")[-1], "--terminal"), "term_a1")
+        self.assertIn("--keep-open", self.last_start())
 
     def test_force_fix_tab_close_failure_escalates_and_keeps_agent(self):
         self.started()
@@ -657,6 +697,8 @@ class RecoveryTest(AgentCase):
         self.assertEqual(self.arg(close, "--terminal"), "term_a1")
         self.assertIn("--tab", close)
         self.assertIn("--keep-open", self.last_start())
+        recover = [h for h in self.state("T-001")["history"] if h.get("stage") == "recover"][-1]
+        self.assertIs(recover["closed_tab"], True)
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a2", "T-001"))
         self.assertEqual(self.state("T-001")["dispatch_id"], "ctx_5")
@@ -749,17 +791,47 @@ class RecoveryTest(AgentCase):
         self.assertIn("worker-abandon", out["release_error"])
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
 
-    def test_failed_release_escalates_without_relaunch(self):
+    def test_failed_release_with_closed_tab_relaunches(self):
+        """release 가 실패해도 옛 탭을 닫았으면 세션은 멈춘 것이다. 실패는 이력에 남기고 새로 띄운다."""
+        self.unknown_started()
+        self.respond("terminal show", self.SHELL_ONLY)
+        self.respond("orchestration worker-release", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual(out["status"], "relaunched")
+        recover = [h for h in self.state("T-001")["history"] if h.get("stage") == "recover"][-1]
+        self.assertIs(recover["closed_tab"], True)
+        self.assertIn("worker-release", recover["dispatch_error"])
+        self.assertNotIn("release_error", recover)
+
+    def test_failed_release_and_close_escalates_without_relaunch(self):
         starts = self.unknown_started()
         self.respond("terminal show", self.SHELL_ONLY)
         self.respond("orchestration worker-release", {"ok": False, "error": {"code": "x"}}, code=1)
+        self.respond("terminal close", {"ok": False, "error": {"code": "x"}}, code=1)
         out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
         self.assertEqual(out["status"], "escalate")
-        self.assertIn("worker-release", out["release_error"])
+        self.assertEqual(sorted(out["release_error"]), ["terminal-close", "worker-release"])
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
         last = self.state("T-001")["history"][-1]
         self.assertEqual(last["stage"], "recover")
         self.assertIn("worker-release", last["release_error"])
+        self.assertNotIn("closed_tab", last)  # 닫기를 불렀지만 실패했다
+
+    def test_closed_tab_is_not_recorded_without_a_terminal(self):
+        """닫을 터미널이 없으면 닫기를 부르지 않고 closed_tab 도 적지 않는다."""
+        self.commit_spec("T-001")
+        self.orch("start", "T-001")
+        self.respond("orchestration worker-show", {"ok": True, "result": {
+            "dispatchId": "ctx_1", "state": "start_unknown", "stage": "turn_start_unobserved", "liveness": "live"}})
+        agents.update(self.p, "production", lambda e: e.update(handle=None))
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
+                                                                           "terminal": "term_a2"}})
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "relaunched")
+        self.assertEqual(self.calls_for("terminal close"), [])
+        recover = [h for h in self.state("T-001")["history"] if h.get("stage") == "recover"][-1]
+        self.assertNotIn("closed_tab", recover)
 
     def test_not_unknown_does_nothing(self):
         self.commit_spec("T-001")

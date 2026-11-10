@@ -491,31 +491,55 @@ def close_dispatch(dispatch, verbs=("worker-abandon", "worker-release")) -> dict
     return failures
 
 
-def stop_agent_session(p: Project, agent: str, dispatch, handle=None) -> dict:
-    """고정 에이전트의 세션을 멈추고 작업 터미널을 잊는다(다음 태스크는 새 세션으로 띄운다). 디스패치를 정리하고
-    (close_dispatch), 작업 터미널 탭을 닫은 뒤(agents.close_tab: worker-release 는 --keep-open 터미널을 닫지 않아 옛 세션이
-    이어 일할 수 있다) 잊는다. handle 이 없으면 agents.json 의 작업 터미널이다. 하나라도 실패하면 잊지 않고(에이전트 상태를
-    바꾸지 않는다) 실패한 단계 → 오류를 돌려준다. 성공하면 빈 dict. orca 없음(12)은 올린다."""
-    failures = close_dispatch(dispatch)
+def stop_agent_session(p: Project, agent: str, dispatch, handle=None, abandoned: bool = False) -> dict:
+    """고정 에이전트의 세션을 멈추고 작업 터미널을 잊는다(다음 태스크는 새 세션으로 띄운다).
+
+    디스패치를 정리하고(close_dispatch. abandoned 면 이미 버린 디스패치라 건너뛴다), 작업 터미널 탭을 닫는다
+    (agents.close_tab: worker-release 는 --keep-open 터미널을 닫지 않아 옛 세션이 이어 일할 수 있다). handle 이 없으면
+    agents.json 의 작업 터미널이다. 정리가 실패해도 탭 닫기는 한다. 탭이 닫혔으면 세션은 멈춘 것으로 보고 잊는다.
+    → {"abandoned": 디스패치를 버렸나, "closed_tab": 탭 닫기를 불러 성공했나, "dispatch_error": 정리 실패(멈춘 경우에도 이력용),
+    "release_error": 멈추지 못한 이유}. release_error 가 있으면 잊지 않는다(에이전트 상태를 바꾸지 않는다).
+    탭이 없어 닫지 못했는데 정리도 실패했으면 멈췄다고 볼 수 없어 release_error 다. orca 없음(12)은 올린다."""
+    failures = {} if abandoned else close_dispatch(dispatch)
+    out: dict = {"abandoned": bool(dispatch) and (abandoned or "worker-abandon" not in failures), "closed_tab": False}
     if failures:
-        return failures
+        out["dispatch_error"] = failures
     handle = handle or agents.entry(p, agent).get("handle")
     if handle:
         closed = agents.close_tab(str(handle))
         if closed is not None:
-            return {"terminal-close": closed}
+            out["release_error"] = {**failures, "terminal-close": closed}
+            return out
+        out["closed_tab"] = True
+    elif failures:
+        out["release_error"] = failures
+        return out
     agents.forget(p, agent)
-    return {}
+    return out
+
+
+def dispatch_abandoned(st: dict, dispatch, info: dict | None) -> bool:
+    """이 디스패치를 이미 버렸나: 이력에 그 디스패치의 previous_abandoned 가 있거나 worker 상태가 abandoned 다."""
+    return bool(dispatch) and (any(h.get("previous_abandoned") == dispatch for h in st.get("history") or [])
+                               or (info or {}).get("state") == "abandoned")
 
 
 def free_agent_task(p: Project, st: dict, agent: str, force: bool) -> dict:
     """고정 에이전트가 지금 맡은 이 태스크를 뗀다. force 이고 working 워커가 아직 일하거나 알 수 없으면 세션을 멈추고
-    작업 터미널 탭을 닫은 뒤 잊는다(stop_agent_session). 멈추지 못하면 아무것도 바꾸지 않고 {"release_error": …} 를 돌려준다."""
-    if force and st.get("status") == "working" and busy_or_unknown(st)[0]:
-        failures = stop_agent_session(p, agent, st.get("dispatch_id"))
-        if failures:
-            return {"release_error": failures}
-        return {"previous_abandoned": st.get("dispatch_id")}
+    작업 터미널 탭을 닫은 뒤 잊는다(stop_agent_session). 이미 버린 디스패치면 abandon 을 다시 부르지 않는다.
+    멈추지 못하면 에이전트를 바꾸지 않고 {"release_error": …} 를 돌려준다(디스패치를 버렸으면 previous_abandoned 도 싣는다)."""
+    if force and st.get("status") == "working":
+        busy, _, info = worker_check(st)
+        if busy is not False:
+            dispatch = st.get("dispatch_id")
+            out = stop_agent_session(p, agent, dispatch, abandoned=dispatch_abandoned(st, dispatch, info))
+            freed = {"previous_abandoned": dispatch} if out["abandoned"] else {}
+            if out["closed_tab"]:
+                freed["closed_tab"] = True
+            for key in ("dispatch_error", "release_error"):
+                if out.get(key):
+                    freed[key] = out[key]
+            return freed
     agents.detach(p, agent, st["id"])
     return {}
 
@@ -582,8 +606,9 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
         # 에이전트가 아직 이 태스크를 맡고 있다(에스컬레이션 뒤, 또는 --force). 그 뒤에 줄 세우면 에이전트가 영영 비지 않는다.
         freed = free_agent_task(p, st, agent, force)
         if freed.get("release_error"):
+            # previous_abandoned 를 남겨 다시 fix --force 할 때 이미 버린 디스패치에 abandon 을 부르지 않는다
             st["history"].append({"stage": "force_fix", "round": st.get("round"), "at": now(),
-                                  "dispatch_id": st.get("dispatch_id"), "release_error": freed["release_error"]})
+                                  "dispatch_id": st.get("dispatch_id"), **freed})
             save_state(p, st)
             raise OrchError(f"{task_id}: 일하는 중일 수 있는 이전 작업자를 멈추지 못했다"
                             f"({json.dumps(freed['release_error'], ensure_ascii=False)[:300]}). 다시 띄우지 않았다. "
@@ -591,9 +616,8 @@ def fix(p: Project, cfg: Config, task_id: str, note: str | None = None, retry: b
                             f"orch drop {task_id} --reason \"<이유>\" --force", 1)
     if agent and not from_queue and (agents.working(p, agent) or agents.entry(p, agent).get("queue")):
         st["queued_fix"] = merge_queued_fix(st.get("queued_fix"), note, supplement, extra_round, force, retry)
-        if freed.get("previous_abandoned"):
-            st["history"].append({"stage": "force_fix", "round": st.get("round"), "at": now(),
-                                  "previous_abandoned": freed["previous_abandoned"]})
+        if freed:
+            st["history"].append({"stage": "force_fix", "round": st.get("round"), "at": now(), **freed})
         save_state(p, st)
         agents.enqueue(p, agent, task_id)
         return {"id": task_id, "status": "queued", "agent": agent}
@@ -747,7 +771,7 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
                 raise OrchError(f"{task_id}: 워커가 아직 일하고 있을 수 있다({desc}). drop 하면 소유 경로 잠금이 "
                                 "풀려 다음 태스크와 같은 파일을 동시에 고칠 수 있다. 워커를 먼저 멈추거나 worker_done 또는 "
                                 f"워커가 끝날(settled·exited 등) 때까지 기다린다. 그래도 중단하려면 --force", 2)
-        released, release_error = None, None
+        released, release_error, freed = None, None, {}
         temp = st.get("agent") in (None, agents.TEMP)
         if not temp:
             # 고정 에이전트는 해제하지 않는다. --force 로 아직 일할 수 있는 워커를 떼면 그 디스패치를 버리고 터미널을 잊는다
@@ -772,7 +796,8 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
                 released, release_error = False, str(exc)
         st.update(status="dropped", released=released, dropped_at=now(), drop_reason=reason)
         st["history"].append({"stage": "drop", "round": st.get("round"), "at": now(), "reason": reason,
-                              "released": released, "forced": force})
+                              "released": released, "forced": force,
+                              **{k: v for k, v in freed.items() if k in ("previous_abandoned", "closed_tab", "dispatch_error")}})
         clear_queued_fix(p, st)
         save_state(p, st)
     finally:
@@ -829,10 +854,12 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
         failures = close_dispatch(dispatch, ("worker-abandon",))  # 같은 작업 터미널에 다시 넣는다(잊지 않는다)
         entry["same_terminal"] = handle
     elif agent:
-        old = handle or info.get("handle")
-        if old:
-            entry["closed_tab"] = old
-        failures = stop_agent_session(p, agent, dispatch, old)  # 닫지 못하면 에이전트를 바꾸지 않는다
+        out = stop_agent_session(p, agent, dispatch, handle or info.get("handle"))  # 멈추지 못하면 에이전트를 바꾸지 않는다
+        if out["closed_tab"]:
+            entry["closed_tab"] = True
+        if out.get("dispatch_error"):
+            entry["dispatch_error"] = out["dispatch_error"]
+        failures = out.get("release_error") or {}
     else:
         failures = close_dispatch(dispatch)
     if failures:
