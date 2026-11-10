@@ -418,6 +418,38 @@ class Upgrade070Test(ProjectCase):
         self.assertIn("커밋 안 된 변경", out["config"]["skipped"])
         self.assertIn("[coordinator]", path.read_text(encoding="utf-8"))
 
+    def test_header_comment_is_updated_and_removed_table_leaves_one_blank_line(self):
+        """0.6.1 config 의 머리 주석(코디네이터, orch start 거부)은 0.7.0 머리 주석으로 바뀐다. 사용자 주석은 그대로 두고,
+        [coordinator] 를 지운 자리에 빈 줄이 겹치지 않는다."""
+        header = ("# orca-team 설정. orch 가 디스패치·리뷰 때 읽는다.\n"
+                  "# owns: 직무가 수정·커밋할 수 있는 경로(glob). 진행 중 태스크끼리 겹치면 orch start 가 거부한다.\n"
+                  "# auto_up: 메인 세션 훅이 코디네이터가 확실히 죽은 것을 보면 자동으로 다시 띄운다(기본 true). false 면 안내만 한다.\n\n")
+        self.commit_config(header + OLD_CONFIG.replace("[review]", "# 내 리뷰 메모\n[review]"))
+        self.upgrade()
+        after = (self.root / ".orchestration/config.toml").read_text(encoding="utf-8")
+        template = (PLUGIN / "templates/config.toml").read_text(encoding="utf-8")
+        new_header = template[:template.index("\n\n") + 1]
+        self.assertTrue(after.startswith(new_header + "\n"), after[:400])
+        self.assertNotIn("코디네이터", after)
+        self.assertNotIn("orch start 가 거부한다", after)
+        self.assertIn("# 내 리뷰 메모\n[review]", after)
+        self.assertNotIn("\n\n\n", after)
+        self.assertIn('user_approval_roles = ["designer"]\n\n# 내 리뷰 메모\n[review]', after)
+
+    def test_new_config_header_describes_070(self):
+        template = (PLUGIN / "templates/config.toml").read_text(encoding="utf-8")
+        header = template[:template.index("\n\n")]
+        self.assertNotIn("코디네이터", header)
+        self.assertNotIn("orch start 가 거부한다", header)
+        self.assertIn("pending", header)
+        self.assertIn("# auto_up: [drive] 표에 둔다", header)
+
+    def test_user_header_without_orca_mark_is_kept(self):
+        self.commit_config("# 내가 쓴 설정 설명\n\n" + OLD_CONFIG)
+        self.upgrade()
+        after = (self.root / ".orchestration/config.toml").read_text(encoding="utf-8")
+        self.assertTrue(after.startswith("# 내가 쓴 설정 설명\n\nmax_parallel = 4\n"), after[:200])
+
     def test_current_config_is_left_alone(self):
         path = self.root / ".orchestration/config.toml"
         text = OLD_CONFIG.replace("[coordinator]", "[drive]").replace('model = "opus"\neffort = "xhigh"\n', "")

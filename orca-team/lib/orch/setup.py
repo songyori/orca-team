@@ -181,8 +181,41 @@ def refuse_busy(p: Project, force: bool = False) -> None:
         raise OrchError(f"코디네이터가 아직 떠 있다({handle}). 코디네이터 탭을 닫은 뒤 다시 한다", 2)
 
 
+HEADER_MARK = "# orca-team 설정."  # scaffold 가 쓴 config.toml 머리 주석의 첫 줄
+
+
+def comment_head(text: str) -> int:
+    """파일 맨 위에서 이어진 주석 줄(머리 주석 블록)의 글자 수."""
+    size = 0
+    for line in text.splitlines(keepends=True):
+        if not line.startswith("#"):
+            break
+        size += len(line)
+    return size
+
+
+def refresh_header(text: str) -> str:
+    """머리 주석 블록이 orca-team 이 쓴 것(HEADER_MARK 로 시작)이면 템플릿의 머리 주석으로 바꾼다. 사용자 주석은 두지 않는다."""
+    if not text.startswith(HEADER_MARK):
+        return text
+    template = (TEMPLATES / "config.toml").read_text(encoding="utf-8")
+    return template[:comment_head(template)] + text[comment_head(text):]
+
+
+def drop_table(text: str, header: str) -> tuple[str, bool]:
+    """표 하나를 글자로 지운다. 지운 자리 앞뒤의 빈 줄은 하나로 줄인다."""
+    match = table_re(header).search(text)
+    if not match:
+        return text, False
+    before, after = text[:match.start()].rstrip("\n"), text[match.end():].lstrip("\n")
+    if not before:
+        return after, True
+    return before + "\n" + ("\n" + after if after else ""), True
+
+
 def migrate_config(p: Project) -> dict:
-    """[coordinator] → [drive], [overflow]·[agents] 추가, 0.6.0 기본 codex_effort → xhigh. 글자 단위로 고쳐 주석을 지킨다.
+    """[coordinator] → [drive], [overflow]·[agents] 추가, 0.6.0 기본 codex_effort → xhigh, orca-team 머리 주석 → 0.7.0 머리 주석.
+    글자 단위로 고쳐 주석을 지킨다.
     0.7.0 설정(drive 가 있고 coordinator 가 없다)은 사용자가 정한 값이라 건드리지 않는다."""
     rel = ".orchestration/config.toml"
     reason = editable_reason(p, rel)
@@ -197,10 +230,14 @@ def migrate_config(p: Project) -> dict:
     auto_up = True
     if "coordinator" in data:
         auto_up = data["coordinator"].get("auto_up", True) is not False
-        text, n = table_re("coordinator").subn("", text)
-        if not n or "coordinator" in tomllib.loads(text):
+        text, removed = drop_table(text, "coordinator")
+        if not removed or "coordinator" in tomllib.loads(text):
             return {"skipped": "[coordinator] 를 글자로 지울 수 없다. 직접 지운 뒤 다시 한다"}
         changed.append("[coordinator] 지움")
+    header = refresh_header(text)
+    if header != text:
+        text = header
+        changed.append("머리 주석")
     for header, old in OLD_CODEX_EFFORT.items():
         table = data.get("defaults", {}) if header == "defaults" else data.get("roles", {}).get(header[6:], {})
         if table.get("codex_effort") != old or old == "xhigh":

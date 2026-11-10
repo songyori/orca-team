@@ -281,6 +281,25 @@ class AgentFixTest(AgentCase):
         self.assertEqual((state["task"], state.get("queue") or []), ("T-001", []))
         self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
 
+    def test_since_reset_counts_tasks_not_fix_rounds(self):
+        """since_reset 은 처리한 태스크 수다. 같은 태스크의 수정 라운드는 다시 세지 않는다. 리셋하면 처음부터 센다."""
+        self.started()
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="changes")
+        self.respond("orchestration worker-start", NEXT)
+        self.orch("fix", "T-001", "--note", "고친다")
+        agents.release_task(self.p, "production", "T-001")
+        self.assertEqual(self.agents_state()["production"]["since_reset"], 1)
+        self.commit_spec("T-002", role="planner")
+        self.orch("start", "T-002")
+        agents.release_task(self.p, "production", "T-002")
+        self.assertEqual(self.agents_state()["production"]["since_reset"], 2)
+        agents.finish_reset(self.p, "production", True, sleep=lambda _: None)
+        self.assertEqual(self.agents_state()["production"]["since_reset"], 0)
+        agents.update(self.p, "production", lambda e: e.update(task="T-001"))
+        agents.release_task(self.p, "production", "T-001")  # 리셋 뒤 같은 태스크의 수정 라운드는 새 세션의 일이다
+        self.assertEqual(self.agents_state()["production"]["since_reset"], 1)
+
     def test_force_fix_on_live_own_task_abandons_and_relaunches_fresh(self):
         self.started()
         show_worker(self, "live", stage="running")

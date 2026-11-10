@@ -170,7 +170,7 @@ def record_start(p: Project, agent: Agent, receipt: dict, fresh: bool, task_id: 
     def claim(e: dict) -> None:
         e.update(task=task_id, model=agent.launch.model, effort=agent.launch.effort)
         if fresh:
-            e.update(handle=handle, review_handle=None, tab_id=None, launched_at=now(), since_reset=0)
+            e.update(handle=handle, review_handle=None, tab_id=None, launched_at=now(), since_reset=0, reset_tasks=[])
             e.pop("layout_error", None)
             e.pop("layout_retried", None)
 
@@ -203,11 +203,15 @@ def record_start(p: Project, agent: Agent, receipt: dict, fresh: bool, task_id: 
 
 
 def release_task(p: Project, name: str, task_id: str) -> None:
-    """worker_done 뒤 에이전트를 비운다. 처리한 태스크 수(since_reset)를 센다."""
+    """worker_done 뒤 에이전트를 비운다. 처리한 태스크 수(since_reset)를 센다. 같은 태스크의 수정 라운드는 다시 세지 않는다
+    (reset_tasks 에 리셋 뒤 센 태스크 id 를 둔다)."""
     def write(e: dict) -> None:
         if e.get("task") == task_id:
             e["task"] = None
-            e["since_reset"] = int(e.get("since_reset") or 0) + 1
+            counted = list(e.get("reset_tasks") or [])
+            if task_id not in counted:
+                e["reset_tasks"] = [*counted, task_id]
+                e["since_reset"] = int(e.get("since_reset") or 0) + 1
     update(p, name, write)
 
 
@@ -327,7 +331,7 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     if e.get("reset_unknown_since"):
         update(p, name, lambda x: x.pop("reset_unknown_since", None))
     if state == "dead":
-        update(p, name, lambda x: (x.update(reset_pending=False, since_reset=0, handle=None),
+        update(p, name, lambda x: (x.update(reset_pending=False, since_reset=0, reset_tasks=[], handle=None),
                                    x.pop("reset_busy_since", None), x.pop("reset_failures", None)))
         return {"name": name, "status": "skipped"}
     if active:
@@ -394,6 +398,7 @@ def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep, beat=None) -
         beat()
         sleep(RESET_SETTLE_SECONDS)
         beat()
-    update(p, name, lambda e: (e.update(resetting=None, reset_pending=False, since_reset=0, last_reset_at=now()),
+    update(p, name, lambda e: (e.update(resetting=None, reset_pending=False, since_reset=0, reset_tasks=[],
+                                        last_reset_at=now()),
                                e.pop("reset_failures", None)))
     return {"name": name, "status": "reset"}

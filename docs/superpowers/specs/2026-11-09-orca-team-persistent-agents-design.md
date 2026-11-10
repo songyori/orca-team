@@ -114,7 +114,8 @@ Orca 1.4.240, Claude Code 2.1.319, codex-cli 0.166.0, 버리는 시험 프로젝
 | `model`, `effort` | 띄울 때 쓴 값 |
 | `task` | 지금 맡은 태스크 id. 없으면 `null` |
 | `queue` | 이 에이전트를 기다리는 수정 라운드 태스크 id 목록(§5.5) |
-| `since_reset` | 마지막 리셋(또는 처음 띄운 뒤) 처리한 태스크 수 |
+| `since_reset` | 마지막 리셋(또는 처음 띄운 뒤) 처리한 태스크 수. 같은 태스크의 수정 라운드는 다시 세지 않는다 |
+| `reset_tasks` | `since_reset` 에 센 태스크 id 목록. 리셋하거나 새로 띄우면 비운다 |
 | `reset_pending` | 묶음이 끝나 다음 태스크 전에 리셋해야 하면 `true` |
 | `launched_at`, `last_reset_at` | 시각 |
 
