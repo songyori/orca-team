@@ -380,7 +380,8 @@ class LaunchInProgressTest(TaskCase):
     def test_live_work_launch_waits_and_refuses_start_retry(self):
         self.pend(os.getpid())
         row = self.row()
-        self.assertEqual(row["status"], "launch_failed")
+        self.assertEqual(row["status"], "launching")  # 상태 파일은 launch_failed 그대로다(재시도 게이트). 줄만 띄우는 중으로 보인다
+        self.assertEqual(self.state("T-001")["status"], "launch_failed")
         self.assertIs(row["launching"], True)
         self.assertEqual(row["next"], "워커를 띄우는 중이다. 끝날 때까지 기다린 뒤 orch status 로 다시 본다")
         for args in (("start", "T-001", "--retry"), ("start", "T-001")):

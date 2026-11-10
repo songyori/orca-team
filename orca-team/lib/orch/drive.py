@@ -140,7 +140,9 @@ class Drive:
         if command == "start":
             return tasks.start(p, cfg, a["id"], bool(a.get("retry")), a.get("overrides") or {})
         if command == "start-ready":
-            return plan.start_ready(p, cfg, beat=self.beat)
+            out = plan.start_ready(p, cfg, beat=self.beat)
+            self.log_drained(out)
+            return out
         if command == "fix":
             return self.fix_with_pending(a["id"], a.get("note"), retry=bool(a.get("retry")),
                                          overrides=a.get("overrides") or {}, force=bool(a.get("force")),
@@ -360,10 +362,24 @@ class Drive:
     def finish_job(self, job: Job) -> None:
         out, err = job.proc.communicate()
         if job.kind == "review":
-            self.apply_mark(job.task_id)
-            self.review_done(job.task_id, job.proc.returncode, out or "", err or "")
+            try:
+                self.apply_mark(job.task_id)
+                self.review_done(job.task_id, job.proc.returncode, out or "", err or "")
+            finally:
+                self.restore_title()
         elif job.kind == "final":
             self.final_done(job.proc.returncode, out or "", err or "")
+
+    def restore_title(self) -> None:
+        """Codex 리뷰가 관제 탭 이름을 "Codex" 로 바꾼다. 관제 이름(setup.DRIVE_TITLE)으로 되돌린다(최선 노력, orca 없음 12만 올린다)."""
+        handle = os.environ.get("ORCA_TERMINAL_HANDLE")
+        if not handle:
+            return
+        try:
+            orca.call(["terminal", "rename", "--terminal", handle, "--title", setup.DRIVE_TITLE], check=False)
+        except OrchError as exc:
+            if exc.code == 12:
+                raise
 
     def apply_mark(self, task_id: str) -> None:
         mark = self.pending_marks.pop(task_id, None)
@@ -417,11 +433,23 @@ class Drive:
         pending = None if retry else (tasks.load_state(self.p, task_id) or {}).get("pending_dep_fix")
         full = "\n".join(x for x in (pending, note) if x) or None
         result = tasks.fix(self.p, self.cfg, task_id, full, retry, **kw)
+        self.fix_started(task_id, result)
         if pending:
             st = tasks.load_state(self.p, task_id) or {}
             if st.pop("pending_dep_fix", None) is not None:
                 tasks.save_state(self.p, st)
         return result
+
+    def fix_started(self, task_id: str, result) -> None:
+        """수정 라운드를 띄웠으면(tasks.fix 의 launch 기록) drive.log 에 한 줄 남긴다. 대기열에 넣은 것은 아직 띄운 것이 아니다."""
+        if isinstance(result, dict) and result.get("stage") == "fix" and result.get("ok"):
+            self.log(f"{task_id} r{result.get('round')} 수정 시작")
+
+    def log_drained(self, out: dict) -> None:
+        """start_ready 가 대기열에서 띄운 수정 라운드를 drive.log 에 남긴다."""
+        for row in out.get("fixes") or []:
+            if row.get("status") == "working":
+                self.log(f"{row['id']} r{(tasks.load_state(self.p, row['id']) or {}).get('round')} 수정 시작")
 
     def run_fix(self, task_id: str, note: str | None) -> bool:
         """관제가 정한 절차의 fix. 거부되면 못 전한 지시와 함께 메인에 올린다."""
@@ -623,6 +651,7 @@ class Drive:
                 f"r{st.get('round')} {(st.get('verdicts') or {}).get(str(st.get('round')), '-')}" for st in states]
         bases = [st["base"] for st in states if st.get("base")]
         changed = git(self.p.root, "diff", "--name-only", f"{bases[0]}..HEAD", check=False).split() if bases else []
+        changed = [f for f in changed if not f.startswith(".orchestration/")]  # 태스크 spec 등 내부 파일은 사용자 산출물이 아니다
         body = ["모든 태스크가 끝났다.", *rows]
         if changed:
             body.append("바뀐 주요 파일: " + ", ".join(changed[:15]) + (" …" if len(changed) > 15 else ""))
@@ -764,6 +793,7 @@ class Drive:
                 raise
             self.log(f"start-ready 실패: {exc}")
             return
+        self.log_drained(out)
         for row in [*out.get("fixes", []), *out["started"]]:
             st = tasks.load_state(self.p, row["id"]) or {}
             if row.get("status") == "launch_failed" or (row.get("status") == "error" and st.get("status") == "launch_failed"):
@@ -839,8 +869,9 @@ class Drive:
                         files=self.task_files(task_id),
                         commands=[f"orch fix {task_id} --extra-round", f'orch drop {task_id} --reason "<이유>"'])
             return
-        self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, tasks.DIED_NOTE.format(task_id=task_id), force=forced),
-                   task_id)
+        result = self.guard(lambda: tasks.fix(self.p, self.cfg, task_id, tasks.DIED_NOTE.format(task_id=task_id),
+                                              force=forced), task_id)
+        self.fix_started(task_id, result)
 
     def worker_terminal_dead(self, info: dict, agent: str | None) -> bool:
         """생존을 모르는 작업자의 터미널이 확실히 죽었나: 에이전트 터미널이 이번 재확인에서 죽었거나(forget_dead),
@@ -883,8 +914,8 @@ class Drive:
         (worker-list)는 관제가 확인해 요약에 싣는다. 같은 실패(단계·라운드·이력 길이)로는 다시 올리지 않는다."""
         task_id = st["id"]
         marker = f"{st.get('stage')} r{st.get('round')} #{len(st.get('history') or [])}"
-        if st.get("launch_failed_asked") == marker:
-            return
+        if st.get("launch_failed_asked") == marker or tasks.launch_in_progress(st):
+            return  # 이미 올렸거나, launch 가 아직 Orca 를 부르는 중이다(실패가 아니다)
         stage, rnd = st.get("stage"), st.get("round")
         refs = [ref for h in st.get("history") or [] if h.get("stage") == stage and h.get("round") == rnd
                 for ref in (h.get("task_id"), h.get("dispatch_id")) if ref]
@@ -986,6 +1017,8 @@ class Drive:
         self.last_reconcile = self.clock()
         self.dead_agents = set(self.isolated("reconcile:setup", "재확인 준비",
                                              lambda: agents.forget_dead(self.p, self.cfg)) or [])
+        for name in sorted(self.dead_agents):  # forget_dead 가 handle 을 지워 같은 터미널로 다시 적지 않는다
+            self.log(f"{name} 작업 터미널이 닫혀 잊음")
         self.isolated("reconcile:reset", "인수인계 정리", self.settle_resets)
         for task_id in sorted(self.retry_reviews):
             self.retry_reviews.discard(task_id)

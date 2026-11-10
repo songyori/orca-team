@@ -102,6 +102,24 @@ class QueueTest(ProjectCase):
         self.assertEqual(out, {"echo": {"id": "T-001"}, "command": "start"})
         self.assertEqual(sorted(self.p.queue_dir.iterdir()), [])
 
+    def test_request_numbers_keep_growing_after_files_are_removed(self):
+        """처리된 요청 파일이 지워져도 번호가 다시 1 부터 매겨지지 않는다(drive.log 에서 요청을 가른다)."""
+        self.make_alive()
+        ids = []
+        for _ in range(2):
+            thread = self.serve(lambda req: (ids.append(req["id"]), {"ok": True, "result": {}})[1])
+            queue.submit(self.p, "start", {"id": "T-001"}, wait=5)
+            thread.join()
+            self.assertEqual(sorted(self.p.queue_dir.iterdir()), [])
+        self.assertEqual(ids, ["q-000001", "q-000002"])
+
+    def test_sequence_starts_after_leftover_files(self):
+        self.make_alive()
+        self.p.queue_dir.mkdir(parents=True, exist_ok=True)
+        (self.p.queue_dir / "000007.abandoned").touch()
+        out = queue.submit(self.p, "fix", {"id": "T-001"}, wait=0.1)
+        self.assertEqual(out["request"], "q-000008")
+
     def test_failed_result_raises_with_code(self):
         self.make_alive()
         thread = self.serve(lambda req: {"ok": False, "error": "거부한다", "code": 2})

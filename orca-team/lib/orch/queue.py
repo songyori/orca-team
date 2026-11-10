@@ -10,7 +10,7 @@ from pathlib import Path
 
 from . import comm
 from .paths import OrchError, Project
-from .util import drive_alive, now, pid_alive, read_json, write_json
+from .util import drive_alive, now, pid_alive, read_json, write_json, write_text_atomic
 
 WAIT_SECONDS = 90.0  # Bash 도구 기본 제한(120초)보다 짧게 둔다. Bash 가 먼저 끝내면 그만둔 표시를 남기지 못한다
 POLL_SECONDS = 0.2
@@ -34,8 +34,16 @@ def _paths(p: Project, number: str) -> tuple[Path, Path, Path]:
 
 
 def _next_number(p: Project) -> str:
-    numbers = [int(f.name[:6]) for f in p.queue_dir.iterdir() if f.name[:6].isdigit()]
-    return f"{max(numbers, default=0) + 1:06d}"
+    """다음 요청 번호(큐 잠금 안에서 부른다). drive/queue.seq 에 다음 번호를 적어, 처리된 요청 파일이 지워져도 번호가
+    줄지 않는다(drive.log 에서 요청을 가른다). 파일이 없으면 남은 요청 파일 번호 최댓값 + 1 부터 시작한다."""
+    seq = p.drive_dir / "queue.seq"
+    left = max((int(f.name[:6]) for f in p.queue_dir.iterdir() if f.name[:6].isdigit()), default=0) + 1
+    try:
+        number = max(int(seq.read_text(encoding="utf-8").strip()), left)
+    except (OSError, ValueError):
+        number = left
+    write_text_atomic(seq, f"{number + 1}\n")
+    return f"{number:06d}"
 
 
 def submit(p: Project, command: str, args: dict, wait: float = WAIT_SECONDS) -> dict:

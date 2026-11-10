@@ -6,9 +6,10 @@ from unittest import mock
 from helpers import FAKES
 from test_agents import FRESH, LIVE, NEXT, SPLIT, START_FAILED, UNKNOWN, live_output
 from test_tasks import TaskCase
-from orch import agents, ask, comm, drive, plan, tasks
+from orch import agents, ask, comm, drive, plan, setup, tasks
 from orch.config import Config
 from orch.paths import OrchError, Project
+from orch.util import now
 
 
 class FakeProc:
@@ -556,6 +557,95 @@ class LivenessClearOnDoneTest(DriveCase):
         self.set_state("T-001", liveness_unknown_since="2026-01-01T00:00:00+00:00")
         self.drive.handle_message(self.done_msg(dispatch="ctx_old"))
         self.assertEqual(self.state("T-001")["liveness_unknown_since"], "2026-01-01T00:00:00+00:00")
+
+
+class DriveTitleTest(DriveCase):
+    def test_review_end_restores_drive_tab_title(self):
+        """Codex 리뷰가 관제 탭 이름을 "Codex" 로 바꾼다. 리뷰가 끝날 때마다(성공·실패) 관제 이름으로 되돌린다."""
+        self.started()
+        self.drive.start_review("T-001")
+        self.finish_review("APPROVE")
+        self.drive.start_review("T-001")
+        self.spawned[-1][1].finish(1, "", "boom")
+        self.drive.poll_jobs()
+        renames = [c for c in self.calls_for("terminal rename") if self.arg(c, "--terminal") == "term_drive"]
+        self.assertEqual([self.arg(c, "--title") for c in renames], [setup.DRIVE_TITLE] * 2)
+
+
+class LaunchingTest(DriveCase):
+    def test_launch_in_progress_is_not_escalated(self):
+        """launch 가 아직 Orca 를 부르는 중(launch_failed + 살아 있는 pending)이면 실패로 올리지 않는다."""
+        self.write_spec("T-001")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "[T-001] spec")
+        st = {"id": "T-001", "role": "developer", "title": "로그인", "status": "launch_failed", "stage": "work",
+              "round": 1, "base": "x", "owns": ["src/**"], "depends_on": [], "task_id": None, "dispatch_id": None,
+              "verdicts": {}, "agent": "temp",
+              "history": [{"stage": "work", "round": 1, "at": now(), "ok": None, "pending": True,
+                           "pid": os.getpid()}]}
+        tasks.save_state(self.p, st)
+        self.drive.launch_failed_decide(st, error="x")
+        self.assertEqual(self.outbox("decide"), [])
+
+
+class DriveLogTest(DriveCase):
+    def log_count(self, text):
+        return self.p.drive_log.read_text(encoding="utf-8").count(text) if self.p.drive_log.exists() else 0
+
+    def test_fix_round_start_is_logged_once(self):
+        self.started()
+        self.drive.start_review("T-001")
+        self.finish_review("REQUEST_CHANGES")  # 관제 절차 fix(run_fix)
+        self.assertEqual(self.state("T-001")["round"], 2)
+        self.assertEqual(self.log_count("T-001 r2 수정 시작"), 1)
+        self.set_state("T-001", status="changes")
+        self.drive.execute({"command": "fix", "args": {"id": "T-001", "note": "다시"}})  # 메인 요청 fix
+        self.assertEqual(self.log_count("T-001 r3 수정 시작"), 1)
+        self.assertEqual(self.log_count("수정 시작"), 2)
+
+    def test_drained_fix_is_logged(self):
+        self.started()
+        self.set_state("T-001", round=2)
+        out = {"started": [], "waiting": [], "fixes": [{"id": "T-001", "status": "working", "dispatch_id": "ctx_2"}]}
+        with mock.patch.object(plan, "start_ready", return_value=out):
+            self.drive.start_ready()
+        self.assertEqual(self.log_count("T-001 r2 수정 시작"), 1)
+
+    def test_died_worker_fix_is_logged(self):
+        self.started()
+        self.respond("orchestration worker-show", {"ok": True, "result": {"worker": {
+            "agentTerminalHandle": "term_w1", "stage": "settled", "state": "failed"}}})
+        self.drive.reconcile()
+        self.assertEqual(self.state("T-001")["round"], 2)
+        self.assertEqual(self.log_count("T-001 r2 수정 시작"), 1)
+
+
+class AgentForgetLogTest(AgentDriveCase):
+    def test_dead_agent_terminal_is_logged_once(self):
+        self.started("T-001")
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="done")
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        self.drive.reconcile()
+        self.drive.reconcile()
+        log = self.p.drive_log.read_text(encoding="utf-8")
+        self.assertEqual(log.count("production 작업 터미널이 닫혀 잊음"), 1)
+
+
+class DoneSummaryTest(DriveCase):
+    def test_changed_files_skip_orchestration(self):
+        self.started()
+        for path in (".orchestration/tasks/T-009.md", "src/a.ts", "docs/b.md"):
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text("x\n", encoding="utf-8")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "work")
+        self.set_state("T-001", status="done")
+        self.drive.report_done(["T-001"])
+        [done] = self.outbox("done")
+        line = next(ln for ln in done["body"].splitlines() if ln.startswith("바뀐 주요 파일"))
+        self.assertEqual(line, "바뀐 주요 파일: docs/b.md, src/a.ts")
 
 
 class FinishedTaskMailTest(DriveCase):

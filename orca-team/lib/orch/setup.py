@@ -432,8 +432,9 @@ def status(p: Project, cfg: Config | None, config_error: str | None = None) -> d
 
 
 def task_row(p: Project, cfg: Config | None, st: dict) -> dict:
-    """status 의 태스크 한 줄. launch 가 아직 Orca 를 부르는 중이면 status(launch_failed)는 그대로 두고 launching 을 더한다."""
+    """status 의 태스크 한 줄. launch 가 아직 Orca 를 부르는 중이면 상태 파일의 launch_failed(재시도 게이트가 쓴다)는 두고
+    줄에는 status "launching" 과 launching 을 보인다(next 도 띄우는 중이다)."""
     row = {**{k: st.get(k) for k in ("id", "role", "title", "status", "stage", "round")}, "next": next_action(p, cfg, st)}
     if launch_in_progress(st):
-        row["launching"] = True
+        row.update(status="launching", launching=True)
     return row
