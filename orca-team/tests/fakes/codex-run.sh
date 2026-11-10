@@ -3,7 +3,7 @@
 
 argv 를 $FAKE_DIR/codex-run.log 에 남기고 $FAKE_DIR/codex_run_modes.txt 의 첫 단어(없으면 approve)대로 행동한다.
 모드: approve | changes | noverdict | fail | modify | touch_other | commit | other_commit | rewrite | evil_merge
-      | pycache | edit_tracked | start_other | mv_staged | rename_commit | body
+      | pycache | edit_tracked | start_other | mv_staged | rename_commit | handoff_commit | body
 body: $FAKE_DIR/review_body.md 를 리뷰 파일로 그대로 쓴다(판정 줄 포함).
 리뷰 파일 경로는 프롬프트의 `REVIEW_FILE: <경로>` 줄에서 읽는다.
 """
@@ -42,7 +42,7 @@ else:
     verdict = {"approve": "APPROVE", "changes": "REQUEST_CHANGES", "modify": "APPROVE",
                "touch_other": "APPROVE", "commit": "APPROVE", "other_commit": "APPROVE", "rewrite": "APPROVE", "evil_merge": "APPROVE",
                "pycache": "APPROVE", "edit_tracked": "APPROVE", "start_other": "APPROVE", "mv_staged": "APPROVE",
-               "rename_commit": "APPROVE"}.get(mode)
+               "rename_commit": "APPROVE", "handoff_commit": "APPROVE"}.get(mode)
     review.parent.mkdir(parents=True, exist_ok=True)
     review.write_text("# 리뷰\n\n없음\n" + (f"\nVERDICT: {verdict}\n" if verdict else ""), encoding="utf-8")
     if mode == "body":
@@ -72,6 +72,11 @@ else:
         git("mv", "src/login.ts", "tests/login.ts")
         if mode == "rename_commit":
             git("commit", "-q", "-m", "move")
+    if mode == "handoff_commit":  # 리뷰를 기다리는 동안 비어 있는 고정 에이전트가 인수인계를 커밋한다
+        (cwd / "docs" / "handoff").mkdir(parents=True, exist_ok=True)
+        (cwd / "docs" / "handoff" / "production.md").write_text("# 인수인계\n", encoding="utf-8")
+        git("add", "--", "docs/handoff/production.md")
+        git("commit", "-q", "-m", "[handoff] 생산 인수인계")
     if mode in ("commit", "other_commit"):
         sub, name = ("src", "sneaky.txt") if mode == "commit" else ("tests", "other-task.txt")
         (cwd / sub).mkdir(exist_ok=True)

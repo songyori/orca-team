@@ -472,13 +472,13 @@ def fix_refusal(task_id: str, desc: str, agent: bool) -> str:
             "새 워커를 띄워 동시에 고친다. worker_done 을 기다리거나 워커가 끝난 뒤 한다. 그래도 하려면 --force")
 
 
-def close_dispatch(dispatch) -> dict:
+def close_dispatch(dispatch, verbs=("worker-abandon", "worker-release")) -> dict:
     """디스패치를 버리고(worker-abandon) 그 터미널을 닫는다(worker-release). 실패한 동사 → 오류. 없으면 빈 dict.
-    orca 없음(12)은 올린다."""
+    verbs 로 일부만 할 수 있다(같은 작업 터미널에 다시 넣을 때는 abandon 만). orca 없음(12)은 올린다."""
     failures: dict = {}
     if not dispatch:
         return failures
-    for verb in ("worker-abandon", "worker-release"):
+    for verb in verbs:
         try:
             code, data = orca.call(["orchestration", verb, "--dispatch", str(dispatch)], check=False)
         except OrchError as exc:
@@ -773,12 +773,17 @@ def drop(p: Project, task_id: str, reason: str, force: bool = False) -> dict:
 
 
 def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
-    """working 태스크의 디스패치가 start_unknown(입력이 들어갔는지 모름)이면 디스패치를 정리하고 새 작업자로 다시 띄운다.
+    """working 태스크의 디스패치가 start_unknown(입력이 들어갔는지 모름)이면 디스패치를 정리하고 다시 띄운다.
 
-    늦게 입력이 들어가 같은 체크아웃에서 두 작업자가 일하지 않도록 그 터미널을 닫는다(worker-release). 고정 에이전트면
-    작업 터미널을 잊고 새로 띄운다. 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다.
-    worker-abandon / worker-release 가 하나라도 실패하면(종료 코드 또는 ok 가 거짓) 이전 터미널이 닫혔다고 볼 수 없으므로
-    다시 띄우지 않고 release_error 와 함께 메인에 올린다(escalate)."""
+    임시 워커는 늦게 입력이 들어가 같은 체크아웃에서 두 작업자가 일하지 않도록 그 터미널을 닫고(worker-release) 새로 띄운다.
+    고정 에이전트는 먼저 작업 터미널을 본다(agents.terminal_activity).
+    - 최근 출력이 있으면 세션이 일하는 중이다. 다시 띄우지 않고 {"status": "busy"} (이력은 디스패치마다 한 번).
+    - 상태를 모르면 다시 띄우지 않고 {"status": "unknown"}. 관제는 둘 다 생존 모름 규칙(liveness_unknown)으로 다룬다.
+    - 살아 있고 출력이 멈췄으면 입력이 사라졌다고 본다. 디스패치를 버리고(worker-abandon) 같은 터미널에 다시 넣는다.
+    - 죽었으면 디스패치를 정리하고, 옛 탭을 닫고(terminal close --tab, worker-release 는 --keep-open 터미널을 닫지 않는다)
+      작업 터미널을 잊은 뒤 새로 띄운다.
+    다시 넣거나 새로 띄우는 것만 세어 같은 태스크에서 UNKNOWN_START_LIMIT 번째면 다시 띄우지 않는다. 정리(abandon·release·
+    탭 닫기)가 하나라도 실패하면 이전 작업자가 멈췄다고 볼 수 없으므로 다시 띄우지 않고 release_error 와 함께 메인에 올린다."""
     require_drive(p)
     doc = load_doc(p, cfg, task_id)
     st = must_state(p, task_id)
@@ -786,14 +791,37 @@ def recover_unknown_start(p: Project, cfg: Config, task_id: str) -> dict:
     info = orca.worker_info(dispatch) if dispatch else None
     if st.get("status") != "working" or not info or info.get("state") != "start_unknown":
         return {"id": task_id, "status": "not_unknown"}
+    agent = st.get("agent") if st.get("agent") in cfg.agents else None
+    handle = agents.entry(p, agent).get("handle") if agent else None
+    state = None
+    if agent:
+        state, active = agents.terminal_activity(handle)
+        if state == "unknown":
+            return {"id": task_id, "status": "unknown"}
+        if active:
+            if not any(h.get("stage") == "recover" and h.get("verdict") == "busy" and h.get("dispatch_id") == dispatch
+                       for h in st["history"]):
+                st["history"].append({"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
+                                      "reason": "start_unknown", "verdict": "busy"})
+                save_state(p, st)
+            return {"id": task_id, "status": "busy"}
     count = int(st.get("unknown_starts") or 0) + 1
     st["unknown_starts"] = count
-    failures = close_dispatch(dispatch)
-    agent = st.get("agent") if st.get("agent") in cfg.agents else None
-    if agent:
-        agents.forget(p, agent)
     entry = {"stage": "recover", "round": st.get("round"), "at": now(), "dispatch_id": dispatch,
              "reason": "start_unknown", "count": count}
+    if agent and state == "alive":
+        failures = close_dispatch(dispatch, ("worker-abandon",))  # 같은 작업 터미널에 다시 넣는다(잊지 않는다)
+        entry["same_terminal"] = handle
+    else:
+        failures = close_dispatch(dispatch)
+        old = handle or info.get("handle")
+        if agent and old and not failures:
+            entry["closed_tab"] = old
+            closed = agents.close_tab(str(old))
+            if closed is not None:
+                failures["terminal-close"] = closed
+        if agent:
+            agents.forget(p, agent)
     if failures:
         entry["release_error"] = failures
     st["history"].append(entry)

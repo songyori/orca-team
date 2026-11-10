@@ -102,6 +102,7 @@ class ReviewTest(ReviewCase):
         proc = self.review(check=False)
         self.assertEqual(proc.returncode, 1)
         self.assertIn("src/login.ts", proc.stderr)
+        self.assertIn("리뷰 중 추적 파일이 바뀌었다", proc.stderr)
         self.assertEqual(self.state("T-001")["status"], "working")
         self.assertNotIn("[T-001] review", self.git("log", "--format=%s"))
 
@@ -172,8 +173,19 @@ class ReviewTest(ReviewCase):
         self.modes("commit")
         proc = self.review(check=False)
         self.assertEqual(proc.returncode, 1)
-        self.assertIn("HEAD", proc.stderr)
+        self.assertIn("리뷰 중 HEAD 가 바뀌었다", proc.stderr)  # 커밋한 쪽(Codex·에이전트)을 단정하지 않는다
+        self.assertIn("src/sneaky.txt", proc.stderr)
+        self.assertNotIn("Codex 가 리뷰 중", proc.stderr)
         self.assertEqual(self.state("T-001")["status"], "working")
+
+    def test_handoff_commit_during_review_keeps_verdict(self):
+        """리뷰를 기다리는 동안 비어 있는 고정 에이전트가 인수인계(docs/handoff/)를 커밋해도 판정은 그대로다."""
+        self.commit_work()
+        self.modes("handoff_commit")
+        out = json.loads(self.review().stdout)
+        self.assertEqual((out["verdict"], out["source"]), ("APPROVE", "codex"))
+        self.assertEqual(self.state("T-001")["status"], "approved")
+        self.assertIn("[handoff] 생산 인수인계", self.git("log", "--format=%s"))
 
     def test_concurrent_other_task_commit_is_accepted(self):
         self.write_spec("T-002", role="tester")

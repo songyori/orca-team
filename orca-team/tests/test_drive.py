@@ -4,7 +4,7 @@ import unittest
 from unittest import mock
 
 from helpers import FAKES
-from test_agents import FRESH, LIVE, NEXT, SPLIT
+from test_agents import FRESH, LIVE, NEXT, SPLIT, START_FAILED, UNKNOWN, live_output
 from test_tasks import TaskCase
 from orch import agents, ask, comm, drive, plan, tasks
 from orch.config import Config
@@ -639,6 +639,31 @@ class LivenessTest(AgentDriveCase):
         self.assertEqual((st["status"], st["round"]), ("working", 1))
 
 
+class UnknownStartDriveTest(AgentDriveCase):
+    def test_working_session_is_not_relaunched_and_uses_liveness_cap(self):
+        """start_unknown 인데 작업 터미널이 일하는 중이면 다시 띄우지 않는다. 오래 이어지면 생존 모름 규칙으로 한 번 올린다."""
+        self.started("T-001")
+        self.respond("orchestration worker-show", UNKNOWN)
+        self.respond("terminal show", live_output(1))
+        history = self.state("T-001")["history"]
+        history[-1]["at"] = "2026-01-01T00:00:00+00:00"  # UNKNOWN_GRACE_SECONDS 가 지났다
+        self.set_state("T-001", history=history)
+        starts = len(self.calls_for("orchestration worker-start"))
+        self.drive.reconcile()
+        self.drive.reconcile()
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+        self.assertEqual(self.outbox("decide"), [])
+        self.assertTrue(self.state("T-001")["liveness_unknown_since"])
+        self.set_state("T-001", liveness_unknown_since="2026-01-01T00:00:00+00:00")
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
+        self.assertIn("확인하지 못했다", entry["summary"])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(len([h for h in self.state("T-001")["history"] if h.get("verdict") == "busy"]), 1)
+
+
 class TempLivenessTest(DriveCase):
     def test_unknown_verdict_with_dead_worker_terminal_is_treated_as_finished(self):
         self.started()
@@ -722,17 +747,32 @@ class ResetTest(DriveCase):
                         encoding="utf-8")
         self.drive = drive.Drive(self.p, Config.load(self.root / ".orchestration/config.toml"), spawn=self.fake_spawn)
 
-    def test_failed_handoff_escalates_once_and_clears_pending(self):
-        cfg = self.drive.cfg
+    def test_failed_handoff_retries_then_escalates_once_with_cause(self):
+        """인수인계를 넣지 못하면 리셋 표시를 두고 다음 틱에 다시 한다. 3번째 실패에서만 원인과 함께 한 번 올린다."""
         name = "test"
-        self.assertIn(name, cfg.agents)
-        agents.update(self.p, name, lambda e: e.update(reset_pending=True))
-        with mock.patch.object(agents, "begin_reset", side_effect=[{"name": name, "status": "failed"}, None]) as begin:
+        self.assertIn(name, self.drive.cfg.agents)
+        agents.update(self.p, name, lambda e: e.update(reset_pending=True, handle="term_t1", since_reset=1))
+        self.respond("terminal show", live_output(300))  # 쉬는 세션
+        self.respond("orchestration task-create", {"ok": True, "result": {"taskId": "task_h"}})
+        self.respond("orchestration worker-start", START_FAILED, code=1)
+        for count in (1, 2):
             self.drive.resets()
-            self.drive.resets()
-        self.assertEqual(begin.call_count, 2 * len(cfg.agents))
+            self.assertEqual(self.outbox("decide"), [])
+            e = agents.entry(self.p, name)
+            self.assertEqual((e["reset_pending"], e["reset_failures"]), (True, count))
+        self.drive.resets()
+        [entry] = self.outbox("decide")
+        self.assertEqual(entry["kind"], "escalation")
+        self.assertIn("terminal_busy: terminal is not accepting input", entry["summary"])
+        self.assertIn("자동 압축 중이거나 다른 일을 하면 실패한다. 화면을 본 뒤 다시 요청한다", entry["summary"])
+        self.assertEqual(entry["commands"], [f"orch agent reset {name}"])
+        e = agents.entry(self.p, name)
+        self.assertEqual((e["reset_pending"], "reset_failures" in e), (False, False))
+        self.assertEqual([self.arg(c, "--status") for c in self.calls_for("orchestration task-update")], ["failed"] * 3)
+        log = self.p.drive_log.read_text(encoding="utf-8")
+        self.assertIn(f"{name} 리셋 시작: failed(3/3): terminal_busy: terminal is not accepting input", log)
+        self.drive.resets()
         self.assertEqual(len(self.outbox("decide")), 1)
-        self.assertFalse(agents.entry(self.p, name).get("reset_pending"))
 
     def test_unknown_terminal_cap_escalates_once_and_frees_roles(self):
         name = "test"

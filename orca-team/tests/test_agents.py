@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import unittest
 from unittest import mock
 
@@ -14,6 +15,14 @@ STALE = {"ok": False, "error": {"code": "terminal_handle_stale"}}
 FRESH = {"ok": True, "result": {"taskId": "task_1", "dispatchId": "ctx_1", "terminal": "term_a1"}}
 SPLIT = {"ok": True, "result": {"split": {"handle": "term_r1", "tabId": "tab_1"}}}
 NEXT = {"ok": True, "result": {"taskId": "task_2", "dispatchId": "ctx_2", "terminal": "term_a1"}}
+START_FAILED = {"ok": False, "error": {"code": "terminal_busy", "message": "terminal is not accepting input"}}
+
+
+def live_output(seconds_ago):
+    """실제 Orca 1.4.250 `terminal show` 모양: lastOutputAt 은 ms epoch 정수다(일하는 Claude 는 스피너로 1초 안팎마다 바뀐다)."""
+    return {"ok": True, "result": {"terminal": {"connected": True, "writable": True, "agentIdentity": "claude",
+                                                "agentWait": None, "lastOutputAt": int((time.time() - seconds_ago) * 1000),
+                                                "title": "생산", "paneTitle": "생산 (Claude)", "tabId": "tab_1"}}}
 
 
 class AgentCase(TaskCase):
@@ -501,12 +510,42 @@ class ResetTest(AgentCase):
         self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
         self.assertTrue(self.agents_state()["production"]["reset_pending"])
 
+    def test_begin_reset_waits_while_session_outputs(self):
+        """쉬는 세션이 자동 압축 중이면(최근 출력) 인수인계를 넣지 않고 다음 틱으로 미룬다. 출력이 멈추면 넣는다."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("terminal show", live_output(2))
+        self.assertIsNone(agents.begin_reset(self.p, self.cfg(), "production"))
+        self.assertEqual(self.calls_for("orchestration task-create"), [])
+        self.assertTrue(self.agents_state()["production"]["reset_pending"])
+        self.respond("terminal show", live_output(120))
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
+        self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "handoff")
+
+    def test_failed_handoff_start_closes_created_orca_task(self):
+        """task-create 는 됐는데 worker-start 가 실패하면 만든 Orca 태스크를 failed 로 닫는다(고아 태스크를 남기지 않는다)."""
+        self.started()
+        agents.mark_reset_pending(self.p, self.cfg())
+        self.respond("orchestration worker-start", START_FAILED, code=1)
+        out = agents.begin_reset(self.p, self.cfg(), "production")
+        self.assertEqual(out["status"], "failed")
+        self.assertIn("terminal_busy", out["error"])
+        [update] = self.calls_for("orchestration task-update")
+        self.assertEqual((self.arg(update, "--id"), self.arg(update, "--status")), ("task_2", "failed"))
+        self.assertIn("terminal_busy", self.arg(update, "--result"))
+        state = self.agents_state()["production"]
+        self.assertEqual((state["reset_pending"], state["reset_failures"]), (True, 1))
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
+        self.assertEqual(agents.begin_reset(self.p, self.cfg(), "production")["status"], "handoff")
+        self.assertNotIn("reset_failures", self.agents_state()["production"])
+
     def test_handoff_never_launches_fresh_session(self):
         """인수인계 직전에 터미널이 죽어도 새 세션에 인수인계를 쓰게 하지 않는다(새 세션은 맥락이 없다)."""
         self.started()
         agents.mark_reset_pending(self.p, self.cfg())
         starts = len(self.calls_for("orchestration worker-start"))
-        with mock.patch.object(orca, "terminal_state", side_effect=["alive", "dead"]):
+        with mock.patch.object(orca, "terminal_status", return_value=("alive", None)), \
+                mock.patch.object(orca, "terminal_state", return_value="dead"):
             out = agents.begin_reset(self.p, self.cfg(), "production")
         self.assertEqual(out["status"], "failed")
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
@@ -531,10 +570,18 @@ class RecoveryTest(AgentCase):
         self.assertIsNone(self.agents_state()["production"]["handle"])
         self.assertEqual(self.agents_state()["production"]["task"], "T-001")  # 태스크 처리는 drive 가 한다
 
-    def test_unknown_start_is_relaunched_on_new_agent(self):
+    SHELL_ONLY = {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}}  # claude 가 끝나 셸만 남았다
+
+    def unknown_started(self):
         self.commit_spec("T-001")
         self.orch("start", "T-001")
         self.respond("orchestration worker-show", UNKNOWN)
+        return len(self.calls_for("orchestration worker-start"))
+
+    def test_unknown_start_on_dead_terminal_closes_old_tab_and_relaunches(self):
+        """(c)(d) 작업 터미널이 죽었으면 옛 탭을 닫고(terminal close --tab) 새 세션으로 띄운다."""
+        self.unknown_started()
+        self.respond("terminal show", self.SHELL_ONLY)
         self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_5", "dispatchId": "ctx_5",
                                                                            "terminal": "term_a2"}})
         self.respond("terminal split", {"ok": True, "result": {"split": {"handle": "term_r2", "tabId": "tab_2"}}})
@@ -542,6 +589,9 @@ class RecoveryTest(AgentCase):
         self.assertEqual((out["status"], out["count"]), ("relaunched", 1))
         for verb in ("worker-abandon", "worker-release"):
             self.assertEqual(self.arg(self.calls_for(f"orchestration {verb}")[-1], "--dispatch"), "ctx_1")
+        [close] = self.calls_for("terminal close")
+        self.assertEqual(self.arg(close, "--terminal"), "term_a1")
+        self.assertIn("--tab", close)
         self.assertIn("--keep-open", self.last_start())
         state = self.agents_state()["production"]
         self.assertEqual((state["handle"], state["task"]), ("term_a2", "T-001"))
@@ -550,23 +600,93 @@ class RecoveryTest(AgentCase):
         self.assertTrue(any(h.get("stage") == "recover" and h.get("reason") == "start_unknown"
                             and h.get("dispatch_id") == "ctx_1" for h in self.state("T-001")["history"]))
 
+    def test_unknown_start_with_working_session_waits(self):
+        """(a) 작업 터미널에 최근 출력이 있으면 세션이 일하는 중이다. 다시 넣지 않고 기다린다(이력은 디스패치마다 한 번)."""
+        starts = self.unknown_started()
+        self.respond("terminal show", live_output(1))
+        for _ in range(2):
+            self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "busy")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+        self.assertEqual(self.calls_for("terminal close"), [])
+        st = self.state("T-001")
+        busy = [h for h in st["history"] if h.get("stage") == "recover"]
+        self.assertEqual(busy, [{**busy[0], "reason": "start_unknown", "verdict": "busy", "dispatch_id": "ctx_1"}])
+        self.assertEqual((st["dispatch_id"], st.get("unknown_starts")), ("ctx_1", None))
+        self.assertEqual(self.agents_state()["production"]["handle"], "term_a1")
+
+    def test_unknown_start_with_idle_session_resends_to_same_terminal(self):
+        """(b) 살아 있고 출력이 멈췄으면 입력이 사라졌다고 본다. 디스패치를 버리고 같은 터미널에 다시 넣는다."""
+        starts = self.unknown_started()
+        self.respond("terminal show", live_output(120))
+        self.respond("orchestration worker-start", NEXT)
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual((out["status"], out["count"]), ("relaunched", 1))
+        self.assertEqual(self.arg(self.calls_for("orchestration worker-abandon")[-1], "--dispatch"), "ctx_1")
+        self.assertEqual(self.calls_for("orchestration worker-release"), [])  # 같은 터미널을 쓴다
+        self.assertEqual(self.calls_for("terminal close"), [])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts + 1)
+        call = self.last_start()
+        self.assertEqual((self.arg(call, "--task"), self.arg(call, "--terminal")), ("task_2", "term_a1"))
+        self.assertNotIn("--keep-open", call)
+        state = self.agents_state()["production"]
+        self.assertEqual((state["handle"], state["task"]), ("term_a1", "T-001"))
+        st = self.state("T-001")
+        self.assertEqual((st["dispatch_id"], st["unknown_starts"], st["history"][-1]["fresh"]), ("ctx_2", 1, False))
+
+    def test_unknown_start_with_unknown_terminal_waits(self):
+        """작업 터미널 상태를 모르면 다시 띄우지 않고 다음 확인으로 미룬다."""
+        starts = self.unknown_started()
+        self.respond("terminal show", {"ok": True, "result": {}})
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "unknown")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.calls_for("orchestration worker-abandon"), [])
+
+    def test_unknown_start_close_failure_escalates_without_relaunch(self):
+        """(d) 옛 탭을 닫지 못하면 다시 띄우지 않고 메인에 올린다."""
+        starts = self.unknown_started()
+        self.respond("terminal show", self.SHELL_ONLY)
+        self.respond("terminal close", {"ok": False, "error": {"code": "x", "message": "close failed"}}, code=1)
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual(out["status"], "escalate")
+        self.assertIn("terminal-close", out["release_error"])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertIn("terminal-close", self.state("T-001")["history"][-1]["release_error"])
+
     def test_third_unknown_start_escalates(self):
-        self.commit_spec("T-001")
-        self.orch("start", "T-001")
+        starts = self.unknown_started()
         self.set_state("T-001", unknown_starts=2)
-        self.respond("orchestration worker-show", UNKNOWN)
-        starts = len(self.calls_for("orchestration worker-start"))
+        self.respond("terminal show", self.SHELL_ONLY)
         self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "escalate")
         self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
         self.assertEqual(self.state("T-001")["unknown_starts"], 3)
         self.assertIsNone(self.agents_state()["production"]["handle"])
 
+    def test_busy_check_does_not_count_toward_limit(self):
+        """UNKNOWN_START_LIMIT 은 다시 넣거나 새로 띄운 횟수만 센다. 기다린 확인은 세지 않는다."""
+        starts = self.unknown_started()
+        self.set_state("T-001", unknown_starts=2)
+        self.respond("terminal show", live_output(1))
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "busy")
+        self.respond("terminal show", live_output(120))
+        self.assertEqual(tasks.recover_unknown_start(self.p, self.cfg(), "T-001")["status"], "escalate")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+        self.assertEqual(self.state("T-001")["unknown_starts"], 3)
+        self.assertEqual(self.agents_state()["production"]["handle"], "term_a1")  # 같은 터미널 경로는 잊지 않는다
+
+    def test_failed_abandon_on_same_terminal_escalates_without_resend(self):
+        starts = self.unknown_started()
+        self.respond("terminal show", live_output(120))
+        self.respond("orchestration worker-abandon", {"ok": False, "error": {"code": "x"}}, code=1)
+        out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
+        self.assertEqual(out["status"], "escalate")
+        self.assertIn("worker-abandon", out["release_error"])
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)
+
     def test_failed_release_escalates_without_relaunch(self):
-        self.commit_spec("T-001")
-        self.orch("start", "T-001")
-        self.respond("orchestration worker-show", UNKNOWN)
+        starts = self.unknown_started()
+        self.respond("terminal show", self.SHELL_ONLY)
         self.respond("orchestration worker-release", {"ok": False, "error": {"code": "x"}}, code=1)
-        starts = len(self.calls_for("orchestration worker-start"))
         out = tasks.recover_unknown_start(self.p, self.cfg(), "T-001")
         self.assertEqual(out["status"], "escalate")
         self.assertIn("worker-release", out["release_error"])

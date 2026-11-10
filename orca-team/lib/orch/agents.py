@@ -21,6 +21,8 @@ TAB_PREFIX = "orca-team "
 HANDOFF_DIR = "docs/handoff"
 RESET_UNKNOWN_SECONDS = 30 * 60  # 리셋할 작업 터미널의 상태를 이만큼 모르면 리셋 표시를 지우고 메인에 올린다
 RESET_SETTLE_SECONDS = 5.0  # /clear 뒤 tui-idle 이 떠도 새 세션 화면이 입력을 받기까지 기다린다(실험 E4)
+ACTIVE_OUTPUT_SECONDS = 30  # 작업 터미널에 이만큼 안에 출력이 있었으면 세션이 일하는 중이다(Claude 스피너는 1초 안팎마다 바뀐다)
+RESET_FAIL_LIMIT = 3  # 인수인계를 이만큼 넣지 못하면 리셋 표시를 지우고 메인에 올린다(그 전에는 다음 틱에 다시 한다)
 
 
 def load_all(p: Project) -> dict:
@@ -85,6 +87,33 @@ def _best_effort(args: list[str]) -> dict | None:
     return data if code == 0 and data.get("ok") else None
 
 
+def terminal_activity(handle: str | None) -> tuple[str, bool]:
+    """작업 터미널 → (생존 판정, 일하는 중인가). 일하는 중은 살아 있고 마지막 출력(lastOutputAt)이 ACTIVE_OUTPUT_SECONDS
+    안에 있는 것이다. 맡은 태스크 없이 도는 일(자동 압축 "Compacting conversation…")도 일하는 중이다. handle 이 없으면
+    dead. lastOutputAt 이 없으면(옛 Orca) 일하는 중으로 보지 않는다."""
+    if not handle:
+        return "dead", False
+    state, last = orca.terminal_status(handle, wait=True)
+    if state != "alive" or last is None:
+        return state, False
+    return state, time.time() * 1000 - last < ACTIVE_OUTPUT_SECONDS * 1000
+
+
+def close_tab(handle: str) -> dict | str | None:
+    """작업 터미널의 탭(작업 pane·리뷰 보기 pane)을 닫는다(`terminal close --tab`). worker-release 는 --keep-open 터미널을
+    닫지 않는다. 닫았거나 이미 없으면(terminal_handle_stale) None, 실패면 그 응답. orca 없음(12)은 올린다."""
+    try:
+        code, data = orca.call(["terminal", "close", "--terminal", handle, "--tab"], check=False)
+    except OrchError as exc:
+        if exc.code == 12:
+            raise
+        return str(exc)
+    error = data.get("error")
+    if (code == 0 and data.get("ok")) or (isinstance(error, dict) and error.get("code") == "terminal_handle_stale"):
+        return None
+    return data
+
+
 def start(p: Project, agent: Agent, spec: str, title: str, allow_fresh: bool = True) -> tuple[int, dict, bool]:
     """태스크를 고정 에이전트에 넣는다 → (종료 코드, 영수증, 새로 띄웠는가).
     작업 터미널이 살아 있으면 Orca 태스크를 만들어 그 터미널에 넣고, 확실히 죽었으면(dead) --keep-open 으로 새로 띄운다.
@@ -102,6 +131,10 @@ def start(p: Project, agent: Agent, spec: str, title: str, allow_fresh: bool = T
             return code or 1, created, False
         code, receipt = orca.call(["orchestration", "worker-start", "--task", str(orca_task), "--terminal", handle,
                                    "--worktree", "current"], check=False)
+        if code != 0 or not receipt.get("ok"):
+            # 만든 Orca 태스크가 고아로 남지 않게 닫는다(최선 노력, 실패해도 원래 결과를 돌려준다).
+            _best_effort(["orchestration", "task-update", "--id", str(orca_task), "--status", "failed",
+                          "--result", f"worker-start 실패: {orca.error_text(receipt)}"])
         return code, receipt, False
     if not allow_fresh:
         return 1, {"ok": False, "error": {"code": "terminal_not_alive", "message": f"작업 터미널({handle})이 죽었다"}}, False
@@ -259,7 +292,8 @@ def request_reset(p: Project, cfg: Config, name: str) -> dict:
 
 def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
     """비어 있고(맡은 태스크·대기열 없음) reset_pending 이면 인수인계 태스크를 넣는다. 아니면 None.
-    작업 터미널이 없으면 비울 세션이 없으므로 표시만 지운다."""
+    작업 터미널이 없으면 비울 세션이 없으므로 표시만 지운다. 세션이 다른 일을 하면(최근 출력) 넣지 않고 None.
+    넣지 못하면 {"status": "failed", "error", "count", "gave_up"}: RESET_FAIL_LIMIT 번째(gave_up)에만 리셋 표시를 지운다."""
     agent = cfg.agents[name]
     e = entry(p, name)
     if not e.get("reset_pending") or e.get("task") or e.get("resetting") or e.get("queue"):
@@ -267,7 +301,7 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
             update(p, name, lambda x: x.pop("reset_unknown_since", None))
         return None
     handle = e.get("handle")
-    state = orca.terminal_state(handle, wait=True) if handle else "dead"
+    state, active = terminal_activity(handle)
     if state == "unknown":
         # 터미널 상태를 알 수 없다. 다음에 다시 보되, RESET_UNKNOWN_SECONDS 가 지나면 리셋 표시를 지워 직무가 멈추지 않게 한다.
         since = e.get("reset_unknown_since")
@@ -280,21 +314,36 @@ def begin_reset(p: Project, cfg: Config, name: str) -> dict | None:
             age = 0
         if age < RESET_UNKNOWN_SECONDS:
             return None
-        update(p, name, lambda x: (x.update(reset_pending=False), x.pop("reset_unknown_since", None)))
+        update(p, name, lambda x: (x.update(reset_pending=False), x.pop("reset_unknown_since", None),
+                                   x.pop("reset_failures", None)))
         return {"name": name, "status": "unknown_stuck", "minutes": int(age // 60)}
     if e.get("reset_unknown_since"):
         update(p, name, lambda x: x.pop("reset_unknown_since", None))
     if state == "dead":
-        update(p, name, lambda x: x.update(reset_pending=False, since_reset=0, handle=None))
+        update(p, name, lambda x: (x.update(reset_pending=False, since_reset=0, handle=None),
+                                   x.pop("reset_failures", None)))
         return {"name": name, "status": "skipped"}
+    if active:
+        return None  # 세션이 다른 일(자동 압축 등)을 한다. 지금 넣으면 worker-start 가 실패한다. 다음 틱에 다시 본다
     spec = render((TEMPLATES / "handoff.md").read_text(encoding="utf-8"),
                   {"agent": name, "agent_title": agent.title, "path": handoff_rel(name)})
     # 인수인계는 지금 세션의 맥락을 적는 일이다. 터미널이 그새 죽었으면 새 세션을 띄우지 않는다(맥락 없는 인수인계가 된다).
     code, receipt, _ = start(p, agent, spec, f"[handoff] {agent.title} 인수인계", allow_fresh=False)
     dispatch = orca.find_key(receipt, ("dispatchId",))
     if code != 0 or not receipt.get("ok") or not dispatch:
-        return {"name": name, "status": "failed", "receipt": receipt}
-    update(p, name, lambda x: x.update(resetting={"dispatch_id": dispatch, "at": now()}))
+        # 일시 실패(예: 자동 압축이 막 시작됐다)는 reset_pending 을 두어 다음 틱에 다시 한다. RESET_FAIL_LIMIT 번째에만 포기한다.
+        def failed(x: dict) -> None:
+            x["reset_failures"] = int(x.get("reset_failures") or 0) + 1
+            if x["reset_failures"] >= RESET_FAIL_LIMIT:
+                x["reset_pending"] = False
+        count = update(p, name, failed)["reset_failures"]
+        gave_up = count >= RESET_FAIL_LIMIT
+        if gave_up:
+            update(p, name, lambda x: x.pop("reset_failures", None))
+        return {"name": name, "status": "failed", "receipt": receipt, "error": orca.error_text(receipt),
+                "count": count, "gave_up": gave_up}
+    update(p, name, lambda x: (x.update(resetting={"dispatch_id": dispatch, "at": now()}),
+                               x.pop("reset_failures", None)))
     _best_effort(["terminal", "rename", "--terminal", handle, "--title", TAB_PREFIX + agent.title])
     return {"name": name, "status": "handoff", "dispatch_id": dispatch}
 
@@ -317,7 +366,7 @@ def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep, beat=None) -
     beat = beat or (lambda: None)
     handle = entry(p, name).get("handle")
     if not ok:
-        update(p, name, lambda e: e.update(resetting=None, reset_pending=False))
+        update(p, name, lambda e: (e.update(resetting=None, reset_pending=False), e.pop("reset_failures", None)))
         return {"name": name, "status": "handoff_failed"}
     if handle:
         _best_effort(["terminal", "send", "--terminal", handle, "--text", "/clear", "--enter", "--wait-submit", "10"])
@@ -326,5 +375,6 @@ def finish_reset(p: Project, name: str, ok: bool, sleep=time.sleep, beat=None) -
         beat()
         sleep(RESET_SETTLE_SECONDS)
         beat()
-    update(p, name, lambda e: e.update(resetting=None, reset_pending=False, since_reset=0, last_reset_at=now()))
+    update(p, name, lambda e: (e.update(resetting=None, reset_pending=False, since_reset=0, last_reset_at=now()),
+                               e.pop("reset_failures", None)))
     return {"name": name, "status": "reset"}

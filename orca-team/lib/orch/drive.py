@@ -740,8 +740,9 @@ class Drive:
     # --- 재확인
     @staticmethod
     def launch_age(st: dict) -> float:
+        """마지막 디스패치를 띄운 뒤 지난 초. 복구 기록(stage recover, 예: 세션이 일하는 중이라 기다렸다)은 띄운 것이 아니다."""
         for entry in reversed(st.get("history") or []):
-            if entry.get("dispatch_id") and entry.get("at"):
+            if entry.get("dispatch_id") and entry.get("at") and entry.get("stage") != "recover":
                 try:
                     return (datetime.now().astimezone() - datetime.fromisoformat(entry["at"])).total_seconds()
                 except ValueError:
@@ -764,6 +765,13 @@ class Drive:
                 return
             out = self.guard(lambda: tasks.recover_unknown_start(self.p, self.cfg, task_id), task_id) or {}
             self.log(f"{task_id} start_unknown: {out.get('status')}")
+            if out.get("status") in ("busy", "unknown"):
+                # 고정 에이전트 세션이 일하는 중이거나 작업 터미널 상태를 모른다. 다시 띄우지 않고 생존 모름 규칙으로 기다린다
+                # (worker_done 이 오면 평소대로 처리한다. 오래 이어지면 한 번 올린다).
+                why = "작업 터미널 출력이 이어진다" if out["status"] == "busy" else "작업 터미널 상태 모름"
+                self.liveness_unknown(st, f"{desc}, start_unknown, {why}")
+                return
+            self.liveness_known(task_id)
             if out.get("status") == "escalate":
                 summary = f"작업자 시작을 {out.get('count')}번 확인하지 못했다"
                 if out.get("release_error"):
@@ -954,15 +962,18 @@ class Drive:
             out = agents.begin_reset(self.p, self.cfg, name)
             if not out:
                 continue
-            self.log(f"{name} 리셋 시작: {out['status']}")
+            failed = out["status"] == "failed"
+            self.log(f"{name} 리셋 시작: {out['status']}"
+                     + (f"({out.get('count')}/{agents.RESET_FAIL_LIMIT}): {out.get('error')}" if failed else ""))
             if out["status"] == "unknown_stuck":
                 self.decide("escalation", None, f"{name} 에이전트의 작업 터미널 상태를 {out['minutes']}분 넘게 알 수 없어 "
                             "리셋(인수인계)을 취소했다. 터미널을 확인한 뒤 필요하면 다시 요청한다",
                             commands=[f"orch agent reset {name}"])
-            elif out["status"] == "failed":
-                self.decide("escalation", None, f"{name} 에이전트에 인수인계 태스크를 넣지 못했다",
-                            commands=[f"orch agent reset {name}"])
-                agents.update(self.p, name, lambda e: e.update(reset_pending=False))
+            elif failed and out.get("gave_up"):  # 앞선 실패는 reset_pending 을 두어 다음 틱에 다시 한다
+                self.decide("escalation", None,
+                            f"{name} 에이전트에 인수인계 태스크를 {out.get('count')}번 넣지 못해 리셋을 취소했다: "
+                            f"{out.get('error')}. 작업 터미널이 자동 압축 중이거나 다른 일을 하면 실패한다. "
+                            "화면을 본 뒤 다시 요청한다", commands=[f"orch agent reset {name}"])
 
     def tick(self, wait_ms: int = WAIT_MS) -> None:
         self.beat()

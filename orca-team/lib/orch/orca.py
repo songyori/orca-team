@@ -79,17 +79,38 @@ def _terminal_verdict(code: int, data: dict) -> str:
     return "unknown"
 
 
-def terminal_state(handle: str | None, wait: bool = False) -> str:
-    """생존 판정 "alive" | "dead" | "unknown". 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
+def terminal_status(handle: str | None, wait: bool = False) -> tuple[str, int | None]:
+    """(생존 판정 "alive" | "dead" | "unknown", 마지막 출력 시각). 마지막 출력 시각은 `terminal show` 의
+    lastOutputAt(ms epoch 정수)이고 없으면 None 이다. 예외를 내지 않는다(orca 없음·실행 불가·파싱 실패·시간 초과도 unknown).
     훅(10초 제한) 안에서도 돌므로 기본은 TERMINAL_STATE_TIMEOUT 초만 기다린다. 관제는 wait=True 로 끝까지 기다린다."""
     if not handle:
-        return "unknown"
+        return "unknown", None
     try:
         code, data = call(["terminal", "show", "--terminal", handle], check=False,
                           timeout=None if wait else TERMINAL_STATE_TIMEOUT)
     except (OrchError, OSError, ValueError):
-        return "unknown"
-    return _terminal_verdict(code, data)
+        return "unknown", None
+    result = data.get("result") if isinstance(data.get("result"), dict) else {}
+    term = result.get("terminal") if isinstance(result.get("terminal"), dict) else {}
+    last = term.get("lastOutputAt")
+    return _terminal_verdict(code, data), last if isinstance(last, int) and not isinstance(last, bool) else None
+
+
+def terminal_state(handle: str | None, wait: bool = False) -> str:
+    """생존 판정 "alive" | "dead" | "unknown"(terminal_status 의 앞쪽). 예외를 내지 않는다."""
+    return terminal_status(handle, wait)[0]
+
+
+def error_text(data, limit: int = 200) -> str:
+    """실패 응답의 오류 코드·메시지(`code: message`). 오류 필드가 없으면 응답 앞부분 limit 자."""
+    error = data.get("error") if isinstance(data, dict) else None
+    if isinstance(error, dict) and (error.get("code") or error.get("message")):
+        text = ": ".join(str(x) for x in (error.get("code"), error.get("message")) if x)
+    elif isinstance(error, str) and error.strip():
+        text = error.strip()
+    else:
+        text = json.dumps(data, ensure_ascii=False)
+    return text[:limit]
 
 
 def terminal_alive(handle: str | None) -> bool:
