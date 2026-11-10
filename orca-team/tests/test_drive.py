@@ -500,6 +500,45 @@ class ReplyTest(DriveCase):
         self.assertIn('orch scope T-001 "<답>"', str(ctx.exception))
 
 
+class PersonPromptTest(DriveCase):
+    # 실제 Orca 1.4.250 "needs a person" escalation 원문 모양(300자 넘게 이어진다)
+    BODY = ('Worker term_w1 is stopped at a prompt that needs a person (approval or a question) while running task '
+            '"T-001 work r1 [developer] 로그인" (task_1).\nThe Dispatch is still open. Answer it with your Orca CLI\'s '
+            '`orchestration send --to dispatch:ctx_1 --body ...`, or have the user answer it in the terminal. '
+            + "More detail. " * 20)
+
+    def needs_person(self):
+        self.drive.handle_message({"id": "m_e", "type": "escalation", "body": self.BODY,
+                                   "payload": {"taskId": "task_1", "dispatchId": "ctx_1"}})
+        [entry] = self.outbox("decide")
+        return entry
+
+    def test_needs_person_is_summarized_in_korean_with_commands(self):
+        self.started()
+        entry = self.needs_person()
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
+        self.assertEqual(entry["summary"],
+                         "T-001 작업자가 사람 확인이 필요한 창에서 멈췄다. Claude Code 자체 안전 확인이면 약 2분 뒤 자동으로 "
+                         "거부되고 작업자가 이어 간다. 이어 가지 않으면 Orca 화면에서 그 탭을 보고 승인하거나 다시 시킨다")
+        self.assertEqual(entry["commands"], ['orch fix T-001 --force --note "<지시>"', 'orch drop T-001 --reason "<이유>"'])
+        self.assertTrue(entry["detail"].startswith("Worker term_w1 is stopped at a prompt that needs a person"))
+        self.assertEqual(self.state("T-001")["decide"], entry["id"])
+
+    def test_worker_done_after_needs_person_lifts_hold_and_reviews(self):
+        """사람 확인 창이 자동으로 풀려 작업자가 이어 가 worker_done 을 보내면 멈춘 처리를 풀고 리뷰로 간다."""
+        self.started()
+        entry = self.needs_person()
+        self.drive.handle_message(self.done_msg())
+        self.assertEqual(self.spawned[-1][0], ["review", "T-001"])
+        [progress] = self.outbox("progress")
+        self.assertIn(f"{entry['id']} 은 작업자가 이어 가서 닫아도 된다", progress["body"])
+        st = self.state("T-001")
+        self.assertNotIn("decide", st)
+        self.assertNotIn("person_prompt", st)
+        self.drive.handle_message(self.done_msg())  # 같은 알림을 두 번 올리지 않는다
+        self.assertEqual(len(self.outbox("progress")), 1)
+
+
 class FinishedTaskMailTest(DriveCase):
     def test_worker_done_for_dropped_task_is_ignored(self):
         self.started()
@@ -510,26 +549,50 @@ class FinishedTaskMailTest(DriveCase):
         self.assertEqual(self.outbox("decide"), [])
 
 
-class LaunchFailedReconcileTest(DriveCase):
-    WORKERS = {"ok": True, "result": {"workers": [
-        {"dispatchId": "ctx_9", "state": "running", "task": {"title": "T-001 work r1 [developer] 로그인"}},
-        {"dispatchId": "ctx_8", "state": "running", "task": {"title": "T-002 work r1 [developer] 가입"}}]}}
+def worker_row(dispatch, task, state, liveness="unverifiable", terminal_state="retained"):
+    """실제 Orca 1.4.250 worker-list 항목 모양. title 이 없고 끝난 워커도 나온다."""
+    return {"agent": "claude", "dispatchId": dispatch, "host": "local", "liveness": liveness, "state": state,
+            "taskId": task, "terminal": f"term_{dispatch}", "terminalState": terminal_state, "workspace": "ws_1"}
 
-    def test_crashed_launch_is_escalated_once_with_leftover_workers(self):
+
+class LaunchFailedReconcileTest(DriveCase):
+    WORKERS = {"ok": True, "result": {"scope": "run", "workers": [
+        worker_row("ctx_0", "task_1", "succeeded"),
+        worker_row("ctx_7", "task_1", "abandoned", "exited", "released"),
+        worker_row("ctx_9", "task_1", "dispatched", "live"),
+        worker_row("ctx_8", "task_2", "dispatched", "live")]}}
+
+    def launch_failed(self, history):
         self.write_spec("T-001")
         self.git("add", "-A")
         self.git("commit", "-q", "-m", "[T-001] spec")
         tasks.save_state(self.p, {"id": "T-001", "role": "developer", "title": "로그인", "status": "launch_failed",
                                   "stage": "work", "round": 1, "base": "x", "owns": ["src/**"], "depends_on": [],
                                   "task_id": None, "dispatch_id": None, "verdicts": {}, "agent": "temp",
-                                  "history": [{"stage": "work", "round": 1, "at": "2026-01-01T00:00:00+00:00",
-                                               "ok": None, "pending": True, "pid": 0}]})
+                                  "history": history})
+
+    def test_leftover_workers_are_matched_by_refs_and_finished_ones_are_skipped(self):
+        self.launch_failed([{"stage": "work", "round": 1, "at": "2026-01-01T00:00:00+00:00", "ok": False,
+                             "task_id": "task_1", "dispatch_id": "ctx_9", "agent": "temp"}])
         self.respond("orchestration worker-list", self.WORKERS)
         self.drive.reconcile()
         [entry] = self.outbox("decide")
         self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
         self.assertIn("ctx_9", entry["summary"])
-        self.assertNotIn("ctx_8", entry["summary"])
+        for other in ("ctx_0", "ctx_7", "ctx_8"):  # 끝난 워커와 다른 태스크 워커는 남은 워커가 아니다
+            self.assertNotIn(other, entry["summary"])
+
+    def test_crashed_launch_is_escalated_once_with_leftover_workers(self):
+        """Orca 를 부르는 도중 죽은 실행은 taskId·dispatchId 기록이 없다. worker-list 에는 제목이 없어 가릴 수 없다고 적는다."""
+        self.launch_failed([{"stage": "work", "round": 1, "at": "2026-01-01T00:00:00+00:00", "ok": None,
+                             "pending": True, "pid": 0}])
+        self.respond("orchestration worker-list", self.WORKERS)
+        self.drive.reconcile()
+        [entry] = self.outbox("decide")
+        self.assertEqual((entry["kind"], entry["task"]), ("escalation", "T-001"))
+        self.assertIn("남은 워커를 가리지 못했다", entry["summary"])
+        self.assertNotIn("ctx_9", entry["summary"])
+        self.assertEqual(self.calls_for("orchestration worker-list"), [])
         self.assertEqual(entry["commands"], ["orch start T-001 --retry", 'orch drop T-001 --reason "<이유>"'])
         self.drive.reconcile()
         ask.answer(self.p, entry["id"], "확인")
@@ -548,7 +611,7 @@ class LaunchFailedReconcileTest(DriveCase):
         self.drive.start_ready()
         [entry] = self.outbox("decide")
         self.assertIn("worker-start 실패", entry["summary"])
-        self.assertIn("남은 워커 없음", entry["summary"])
+        self.assertIn("남은 워커를 가리지 못했다", entry["summary"])  # 실패 영수증에 taskId·dispatchId 가 없다
         ask.answer(self.p, entry["id"], "확인")
         self.drive.reconcile()
         self.assertEqual(len(self.outbox("decide")), 1)

@@ -171,20 +171,16 @@ def worker_info(dispatch_id: str) -> dict | None:
             "state": worker.get("state") or concise("state")}
 
 
-def _strings(node):
-    if isinstance(node, str):
-        yield node
-    elif isinstance(node, dict):
-        for value in node.values():
-            yield from _strings(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _strings(value)
+FINISHED_WORKER_STATES = ("succeeded", "failed", "abandoned", "cancelled", "released")  # worker-list 의 끝난 워커 state
 
 
-def task_workers(title_prefix: str, refs=()) -> tuple[list[dict], str | None]:
-    """worker-list 에서 한 실행의 워커 → (워커 요약 목록, 조회 오류). 제목이 title_prefix(예: `T-001 work r1 `)로
-    시작하거나 refs(그 실행의 taskId·dispatchId) 중 하나를 담은 워커다. orca 없음(12)은 올린다."""
+def task_workers(refs=()) -> tuple[list[dict], str | None]:
+    """worker-list 에서 한 실행의 남은 워커 → (워커 요약 목록, 조회 오류). refs(그 실행의 taskId·dispatchId) 중 하나가
+    taskId 나 dispatchId 인 항목이다(Orca 1.4.250 항목에는 title 이 없다). 끝난 워커(state 가 FINISHED_WORKER_STATES)는
+    뺀다. 모르는 state 는 남은 것으로 본다. orca 없음(12)은 올린다."""
+    wanted = {str(r) for r in refs if r}
+    if not wanted:
+        return [], None
     try:
         code, data = call(["orchestration", "worker-list"], check=False)
     except OrchError as exc:
@@ -193,13 +189,15 @@ def task_workers(title_prefix: str, refs=()) -> tuple[list[dict], str | None]:
         return [], str(exc)
     if code != 0 or not data.get("ok"):
         return [], json.dumps(data, ensure_ascii=False)[:300]
-    wanted = {str(r) for r in refs if r}
     found: list[dict] = []
 
     def walk(node) -> None:
         if isinstance(node, dict):
-            if "dispatchId" in node and any(s.startswith(title_prefix) or s in wanted for s in _strings(node)):
-                found.append({k: node[k] for k in ("dispatchId", "taskId", "state", "stage", "status") if k in node})
+            if "dispatchId" in node:
+                if (str(node.get("dispatchId")) in wanted or str(node.get("taskId")) in wanted) \
+                        and node.get("state") not in FINISHED_WORKER_STATES:
+                    found.append({k: node[k] for k in ("dispatchId", "taskId", "state", "liveness", "terminal")
+                                  if k in node})
                 return
             for value in node.values():
                 walk(value)

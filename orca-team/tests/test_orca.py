@@ -242,6 +242,20 @@ class TerminalStateTest(ProjectCase):
         self.assertEqual(orca.terminal_state(None), "unknown")
         self.assertEqual(self.calls(), [])
 
+    def test_terminal_status_reads_last_output(self):
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {
+            "connected": True, "agentIdentity": "claude", "lastOutputAt": 1762700000123}}})
+        self.assertEqual(orca.terminal_status("term_x"), ("alive", 1762700000123))
+        self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": "claude"}}})
+        self.assertEqual(orca.terminal_status("term_x"), ("alive", None))
+        self.respond("terminal show", {"ok": False, "error": {"code": "terminal_handle_stale"}}, code=1)
+        self.assertEqual(orca.terminal_status("term_x"), ("dead", None))
+
+    def test_error_text(self):
+        self.assertEqual(orca.error_text({"ok": False, "error": {"code": "busy", "message": "not ready"}}), "busy: not ready")
+        self.assertEqual(orca.error_text({"ok": False, "error": "boom"}), "boom")
+        self.assertEqual(orca.error_text({"ok": False, "x": "y" * 500}), json.dumps({"ok": False, "x": "y" * 500})[:200])
+
     def test_alive_uses_same_verdict(self):
         self.respond("terminal show", {"ok": True, "result": {"terminal": {"connected": True, "agentIdentity": None}}})
         self.assertFalse(orca.terminal_alive("term_x"))
@@ -281,6 +295,22 @@ class WorkerShapeTest(ProjectCase):
         self.respond("terminal show", {"ok": False, "error": {"code": "runtime_unavailable"}}, code=1)
         self.assertEqual(orca.shell_alive("term_d"), "unknown")
         self.assertEqual(orca.shell_alive(None), "unknown")
+
+    def test_task_workers_matches_refs_and_skips_finished(self):
+        """실제 Orca 1.4.250 worker-list 모양: title 이 없고 끝난 워커도 나온다. refs 로만 맞추고 끝난 것은 뺀다."""
+        def row(dispatch, task, state):
+            return {"agent": "claude", "dispatchId": dispatch, "host": "local", "liveness": "unverifiable",
+                    "state": state, "taskId": task, "terminal": "term_" + dispatch, "terminalState": "retained",
+                    "workspace": "ws_1"}
+        self.respond("orchestration worker-list", {"ok": True, "result": {"scope": "run", "workers": [
+            row("ctx_1", "task_1", "succeeded"), row("ctx_2", "task_1", "failed"), row("ctx_3", "task_1", "abandoned"),
+            row("ctx_4", "task_1", "cancelled"), row("ctx_5", "task_1", "released"), row("ctx_6", "task_1", "dispatched"),
+            row("ctx_7", "task_x", "succeeded"), row("ctx_8", "task_y", "new_state"), row("ctx_9", "task_z", "dispatched")]}})
+        workers, error = orca.task_workers(["task_1", "ctx_8", None])
+        self.assertIsNone(error)
+        self.assertEqual([w["dispatchId"] for w in workers], ["ctx_6", "ctx_8"])  # 모르는 state 는 남은 것으로 본다
+        self.assertEqual(workers[0]["terminal"], "term_ctx_6")
+        self.assertEqual(orca.task_workers([]), ([], None))
 
     def test_fake_sequence_then_fallback(self):
         self.respond("orchestration check", {"ok": True, "result": {"messages": []}})

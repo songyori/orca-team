@@ -3,8 +3,9 @@ import unittest
 from unittest import mock
 
 from helpers import fake_test_commands, write_test_config
-from test_drive import DriveCase
+from test_drive import AgentDriveCase, DriveCase
 from orch import agents, ask, comm, followups, plan, tasks
+from test_agents import NEXT
 
 
 class Crash(Exception):
@@ -67,6 +68,43 @@ class BatchRecoveryTest(DriveCase):
             self.drive.batch_done("T-001")
         self.assertEqual(self.drive.finish_state()["batches"], ["T-001"])
         self.assertEqual(len([e for e in self.outbox("progress") if "묶음 완료" in e["body"]]), 1)
+
+
+class BatchResetOrderTest(AgentDriveCase):
+    def test_followup_waits_for_reset_then_starts_on_reset_session(self):
+        """묶음 테스트가 끝나면 리셋 표시가 먼저다. 후속 태스크는 리셋 전 세션에 들어가지 않고 pending 으로 기다렸다가
+        리셋이 끝난 뒤 같은 에이전트에서 시작한다(다른 에이전트·임시 워커로 새지 않는다)."""
+        self.started("T-001", extra="owns: src/login/**\n")
+        agents.release_task(self.p, "production", "T-001")
+        self.set_state("T-001", status="done")
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_t", "dispatchId": "ctx_t"}})
+        self.started("T-002", role="tester", extra="owns: tests/**\n")
+        self.assertEqual(self.state("T-002")["agent"], "temp")
+        self.set_state("T-002", status="approved")
+        starts = len(self.calls_for("orchestration worker-start"))
+        found = {"tasks": ["T-001", "T-002"], "regressions": [], "followups": [item("T-001", "변수 이름", "r1-F2")],
+                 "planning_gaps": []}
+        with mock.patch.object(followups, "followups", return_value=found):
+            self.drive.execute({"command": "accept", "args": {"id": "T-002"}})
+        [new] = [st for st in tasks.all_states(self.p) if st["id"] not in ("T-001", "T-002")]
+        self.assertEqual(new["status"], "pending")
+        self.assertEqual(len(self.calls_for("orchestration worker-start")), starts)  # 리셋 전 세션에도, 임시 워커에도 넣지 않는다
+        production = agents.entry(self.p, "production")
+        self.assertEqual((production.get("task"), production["reset_pending"]), (None, True))
+        self.respond("orchestration worker-start", {"ok": True, "result": {"taskId": "task_h", "dispatchId": "ctx_h"}})
+        self.drive.resets()
+        self.assertEqual(agents.entry(self.p, "production")["resetting"]["dispatch_id"], "ctx_h")
+        self.drive.start_ready()
+        self.assertEqual(self.state(new["id"])["status"], "pending")  # 인수인계 중에도 기다린다
+        with mock.patch.object(agents, "RESET_SETTLE_SECONDS", 0):
+            self.drive.handle_message({"id": "m_h", "type": "worker_done", "body": "",
+                                       "payload": {"dispatchId": "ctx_h", "outcome": "succeeded"}})
+        self.respond("orchestration worker-start", NEXT)
+        self.drive.start_ready()
+        st = self.state(new["id"])
+        self.assertEqual((st["status"], st["agent"], st["dispatch_id"]), ("working", "production", "ctx_2"))
+        self.assertEqual(self.arg(self.last_start(), "--terminal"), "term_a1")
+        self.assertEqual(agents.entry(self.p, "production")["since_reset"], 0)
 
 
 class FinishTest(DriveCase):

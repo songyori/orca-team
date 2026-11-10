@@ -30,6 +30,7 @@ BIND_RETRY_SECONDS = 5.0
 RECONCILE_SECONDS = 60  # 메일 없이 끝난 일(죽은 워커, 끊긴 리뷰)을 찾는 간격
 UNKNOWN_GRACE_SECONDS = 60  # start_unknown 이 이만큼 지나도 그대로면 복구한다
 LOCK_WAIT_TEXT = "테스트 잠금"
+PERSON_TEXT = "needs a person"  # Orca escalation: 작업자가 사람 확인 창(승인·질문)에서 멈췄다
 TEST_CONFIG_TEXTS = ("`[test]` 명령을 실행할 수 없다", "`[test]` 검증 실패", "tasks.toml` 읽기 실패")
 
 
@@ -225,6 +226,7 @@ class Drive:
             if st.get("status") in tasks.FINISHED:  # 예: drop --force 뒤 늦게 끝난 워커. 리뷰도 판단도 필요 없다
                 self.log(f"{task_id} 이미 끝난 태스크({st.get('status')})의 worker_done 무시: {dispatch}")
                 return
+            self.lift_person_prompt(st, dispatch)
             if st.get("agent") in self.cfg.agents:
                 agents.release_task(self.p, st["agent"], task_id)
             if payload.get("outcome") == "succeeded":
@@ -246,7 +248,41 @@ class Drive:
             if task_id and self.stale_dispatch(tasks.load_state(self.p, task_id) or {}, dispatch):
                 self.log(f"{task_id} 지난 디스패치의 escalation 무시: {dispatch}")
                 return
+            if PERSON_TEXT in body:
+                self.person_prompt(task_id, dispatch, body)
+                return
             self.decide("escalation", task_id, body[:300] or "워커가 worker_done 없이 멈췄다", files=self.task_files(task_id))
+
+    def person_prompt(self, task_id: str | None, dispatch, body: str) -> None:
+        """작업자가 사람 확인 창(Claude Code 자체 안전 확인 등)에서 멈췄다는 Orca escalation. 메인이 쓸 수 없는 Orca 명령을
+        안내하는 영어 원문 대신 한국어로 올린다(원문은 detail). 그 디스패치의 worker_done 이 오면 멈춘 처리를 푼다."""
+        st = tasks.load_state(self.p, task_id) if task_id else None
+        summary = (f"{task_id + ' ' if st else ''}작업자가 사람 확인이 필요한 창에서 멈췄다. Claude Code 자체 안전 확인이면 "
+                   "약 2분 뒤 자동으로 거부되고 작업자가 이어 간다. 이어 가지 않으면 Orca 화면에서 그 탭을 보고 승인하거나 다시 시킨다")
+        commands = ([self.fix_command(st, force=True), f'orch drop {task_id} --reason "<이유>"'] if st
+                    else ["orch status"])
+        entry = self.decide("escalation", task_id if st else None, summary, files=self.task_files(task_id if st else None),
+                            commands=commands, extra={"detail": body[:300]})
+        if st and f"review:{task_id}" not in self.jobs:
+            current = tasks.load_state(self.p, task_id) or st
+            current["person_prompt"] = {"decide": entry["id"], "dispatch_id": dispatch or current.get("dispatch_id")}
+            tasks.save_state(self.p, current)
+
+    def lift_person_prompt(self, st: dict, dispatch) -> None:
+        """사람 확인 escalation 뒤 그 디스패치의 worker_done 이 왔다(작업자가 스스로 이어 갔다). 그 decide 가 이 태스크를
+        멈추지 않게(재확인은 열린 decide 라운드를 건너뛴다) 표시를 지운다. decide 를 닫는 일은 메인 몫이라 progress 로 알린다."""
+        mark = st.get("person_prompt")
+        if not isinstance(mark, dict) or (dispatch and mark.get("dispatch_id") not in (None, dispatch)):
+            return
+        current = tasks.load_state(self.p, st["id"]) or st
+        current.pop("person_prompt", None)
+        if current.get("decide") == mark.get("decide"):
+            current.pop("decide", None)
+            current.pop("decide_round", None)
+        tasks.save_state(self.p, current)
+        if mark.get("decide") not in comm.load_answered(self.p)["ids"]:
+            comm.post(self.p, "progress", f"{st['id']}: {mark.get('decide')} 은 작업자가 이어 가서 닫아도 된다"
+                                          "(worker_done 이 와서 리뷰로 간다)")
 
     def msg_task(self, msg: dict) -> str | None:
         payload = msg.get("payload") if isinstance(msg.get("payload"), dict) else {}
@@ -471,16 +507,17 @@ class Drive:
         return any(source_line in path.read_text(encoding="utf-8") for path in self.p.tasks_dir.glob("T-*.md"))
 
     def batch_done(self, task_id: str) -> None:
-        """묶음 테스트(tester)가 끝났다: 후속 태스크를 만들고, 고정 에이전트 리셋을 표시하고, 메인에 알린다."""
+        """묶음 테스트(tester)가 끝났다: 고정 에이전트 리셋을 표시하고, 후속 태스크를 만들고, 메인에 알린다."""
         source = f"출처: {task_id} followups"
         record = self.finish_state()
         batches = list(record.get("batches") or [])
         first = task_id not in batches
+        names = agents.mark_reset_pending(self.p, self.cfg) if first else []  # 멱등: reset_pending=True 만 적는다
+        # 리셋 표시가 먼저다(설계 §5.3). 후속 태스크는 place 가 리셋을 기다리게(WAIT) 해 리셋 전 세션에 들어가지 않는다.
         if first and not self.already_made(source):
             found = followups.followups(self.p, task_id)
             self.make_followups(found, source, task_id)
         if first:
-            names = agents.mark_reset_pending(self.p, self.cfg)  # 멱등: reset_pending=True 만 적는다
             self.save_finish(batches=[*batches, task_id])
             comm.post(self.p, "progress",
                       f"묶음 완료: {task_id}" + (f". 리셋할 에이전트: {', '.join(names)}" if names else ""))
@@ -849,9 +886,12 @@ class Drive:
             return
         stage, rnd = st.get("stage"), st.get("round")
         refs = [ref for h in st.get("history") or [] if h.get("stage") == stage and h.get("round") == rnd
-                for ref in (h.get("task_id"), h.get("dispatch_id"))]
-        workers, list_error = orca.task_workers(f"{task_id} {stage} r{rnd} ", refs)  # launch 의 --task-title 앞부분
-        if list_error:
+                for ref in (h.get("task_id"), h.get("dispatch_id")) if ref]
+        workers, list_error = orca.task_workers(refs)
+        if not refs:  # worker-list 항목에는 제목이 없어 Orca 기록 없이는 이 실행의 워커를 찾을 수 없다
+            left = ("이 실행의 Orca 기록(taskId·dispatchId)이 없어 남은 워커를 가리지 못했다. 사용자에게 이 태스크 작업자 "
+                    "탭이 떠 있는지 확인한 뒤 다시 한다")
+        elif list_error:
             left = f"남은 워커를 확인하지 못했다(worker-list: {list_error[:150]})"
         elif workers:
             left = ("Orca 에 이 태스크 워커가 남아 있다: " + ", ".join(json.dumps(w, ensure_ascii=False) for w in workers)
